@@ -1,0 +1,50 @@
+{
+  "说明": "2026-11-02：用户提供 Linux 构建安装记录；测试库、开发库实际扩展验收和测试库导出恢复均通过。未独立重建服务器二进制。",
+  "postgresql": "18.6",
+  "vector": "0.8.1",
+  "pg_trgm": "1.6",
+  "zhparser": {
+    "repository": "https://github.com/amutu/zhparser.git",
+    "commit": "2e995c4df672563992b4d7a147b8fa2d0d4cda6c",
+    "extension_version": "2.4",
+    "license_file": "COPYRIGHT",
+    "dictionary_startup": "客户端连接启动时传入 zhparser.extra_dicts=a02_custom_dict.txt；不使用 ALTER DATABASE SET 或预加载"
+  },
+  "scws": {
+    "repository": "https://github.com/hightman/scws.git",
+    "commit": "b5ae33f6a71ecbf5442a2e485703af4d372f3341",
+    "version": "1.2.3",
+    "license_file": "COPYING",
+    "compatibility_patch": {
+      "file": "database/verification/a02_scws_automake.patch",
+      "sha256": "5294eba7e63db44e3cbda9e1b18ee33aff45e297053f720c4de5169e350db885",
+      "reason": "删除 sync-web 规则内已注释的旧 unison 命令，兼容现代 automake；不修改分词逻辑"
+    }
+  },
+  "pg_jieba_fallback": {
+    "repository": "https://github.com/jaiminpan/pg_jieba.git",
+    "commit": "d0ffac8028328b2566a889ff4db3d74ba63d1b42",
+    "status": "仅为 zhparser 实际失败后的备用来源，尚未验证 PostgreSQL 18 兼容性",
+    "license_file": "LICENSE"
+  },
+  "dictionaries": {
+    "dict.utf8.xdb": {
+      "sha256": "fd76a689f996c4e68ce53325a6a24dc652a678b1e7f676e4c5ca76265609a3e2",
+      "source": "固定 zhparser 源码提交内附文件"
+    },
+    "rules.utf8.ini": {
+      "sha256": "45395f794226581fb1cc02b44ae1481804152511fc59fa677e2f7b755440479c",
+      "source": "固定 zhparser 源码提交内附文件"
+    },
+    "a02_custom_dict.txt": {
+      "sha256": "cfdcbe35976ee9b67be463237b10b4466afe253fc3aa89aae57c020f4dd19fde",
+      "source": "database/verification/a02_custom_dict.txt"
+    }
+  },
+  "platform": {
+    "os": "Ubuntu 24.04.5 LTS",
+    "architecture": "aarch64",
+    "installation": "宝塔原生 PostgreSQL，/www/server/pgsql",
+    "evidence": "发行版及编译安装过程来自用户终端记录，数据库版本与词典摘要已实时核验"
+  }
+}

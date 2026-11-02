@@ -1,0 +1,10 @@
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -21,7 +21,6 @@
+ #	-rm -f $(distdir)/libscws/version.h
+ 
+ sync-web:
+-	#unison ./web ssh://xunsearch/web/scws $(UNISON_OPT)
+ 	rsync -avzp --delete ./web/* d10:/data/dockers/php-runner/www/xunsearch/web/scws
+ 
+ dist-web: dist-bzip2

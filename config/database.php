@@ -97,6 +97,10 @@ return [
             'prefix_indexes' => true,
             'search_path' => 'public',
             'sslmode' => env('DB_SSLMODE', 'prefer'),
+            // zhparser 的词典参数只能在连接启动时传入，不能在连接后执行 SET。
+            'server_options' => array_filter([
+                'zhparser.extra_dicts' => env('DB_ZHPARSER_EXTRA_DICTS'),
+            ], static fn (?string $value): bool => $value !== null && $value !== ''),
         ],
 
         'sqlsrv' => [
