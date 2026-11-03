@@ -11,7 +11,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /** 单次阶段执行记录，保存输入输出快照而不自动推进流水线。 */
-#[Fillable(['novel_id', 'stage', 'status', 'execution_count', 'input', 'output', 'error_message', 'started_at', 'finished_at'])]
+#[Fillable(['novel_id', 'stage', 'status', 'execution_count', 'input', 'output', 'error_message', 'cost', 'duration_ms', 'started_at', 'finished_at'])]
 class NovelStage extends Model
 {
     /** 使用隔离测试工厂创建关联数据。
@@ -38,10 +38,33 @@ class NovelStage extends Model
             'execution_count' => 'integer',
             'input' => 'array',
             'output' => 'array',
+            'cost' => 'array',
+            'duration_ms' => 'integer',
             'started_at' => 'immutable_datetime',
             'finished_at' => 'immutable_datetime',
             'created_at' => 'immutable_datetime',
             'updated_at' => 'immutable_datetime',
+        ];
+    }
+
+    /** 供命令与 tinker 读取统一执行记录，不补造旧记录的费用或耗时。
+     * @return array<string, mixed>
+     */
+    public function toExecutionRecord(): array
+    {
+        return [
+            'id' => $this->id,
+            'novel_id' => $this->novel_id,
+            'stage' => $this->stage->value,
+            'status' => $this->status->value,
+            'execution_count' => $this->execution_count,
+            'input' => $this->input,
+            'output' => $this->output,
+            'cost' => $this->cost,
+            'duration_ms' => $this->duration_ms,
+            'error_message' => $this->error_message,
+            'started_at' => $this->started_at?->toIso8601String(),
+            'finished_at' => $this->finished_at?->toIso8601String(),
         ];
     }
 

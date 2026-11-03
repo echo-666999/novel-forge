@@ -29,13 +29,16 @@ final class NovelPipelineService
                 return $claim;
             }
             [$snapshot, $stage] = $claim;
+            // 使用单调时钟只测量执行器，不混入领用、结算事务或墙上时钟校准。
+            $started = hrtime(true);
             try {
                 $result = $this->executors->forStage($stage->stage)->execute($snapshot, $stage);
             } catch (Throwable $exception) {
                 // 不保存异常消息或堆栈，避免故障执行器把认证信息带入记录。
                 $result = StageResult::failed('模拟阶段执行异常：'.class_basename($exception));
             }
-            $settled = $novel->getConnection()->transaction(fn (): PipelineResult => $this->settle($novel, $stage->id, $result));
+            $durationMs = (int) ((hrtime(true) - $started) / 1_000_000);
+            $settled = $novel->getConnection()->transaction(fn (): PipelineResult => $this->settle($novel, $stage->id, $result, $durationMs));
             if ($settled->reason !== 'advanced') {
                 return $settled;
             }
@@ -107,7 +110,15 @@ final class NovelPipelineService
         $ordinal = (int) $novel->stages()->where('stage', $next->value)->max('execution_count') + 1;
         $stage = $novel->stages()->create([
             'stage' => $next, 'status' => StageStatus::Running, 'execution_count' => $ordinal,
-            'input' => ['simulation' => true, 'pipeline' => ['version' => 'a05-v1', 'enable_fine_outline' => $frozen], 'previous_stage_id' => $previous?->id, 'previous_output' => $previous?->output],
+            'input' => [
+                'simulation' => true,
+                'pipeline' => ['version' => 'a05-v1', 'enable_fine_outline' => $frozen],
+                // 仅保存本次实际可见的业务输入，避免把全局配置或凭据混入快照。
+                'novel' => $novel->only(['id', 'title', 'genre', 'premise_raw', 'target_chapters', 'chapter_length_policy']),
+                'execution' => ['execution_count' => $novel->execution_count + 1, 'max_execution_count' => $novel->max_execution_count, 'attempt_no' => $ordinal],
+                'previous_stage_id' => $previous?->id,
+                'previous_output' => $previous?->output,
+            ],
             'started_at' => now(),
         ]);
         $novel->update(['status' => NovelStatus::Running, 'current_stage' => $next, 'execution_count' => $novel->execution_count + 1]);
@@ -116,7 +127,7 @@ final class NovelPipelineService
     }
 
     /** 结算当前领用结果；已结束或失去归属的尝试不允许被迟到结果覆盖。 */
-    private function settle(Novel $reference, int $stageId, StageResult $result): PipelineResult
+    private function settle(Novel $reference, int $stageId, StageResult $result, int $durationMs): PipelineResult
     {
         $novel = $this->lockedNovel($reference);
         $stage = $novel->stages()->whereKey($stageId)->lockForUpdate()->firstOrFail();
@@ -133,6 +144,8 @@ final class NovelPipelineService
             'status' => $result->succeeded ? StageStatus::Completed : StageStatus::Failed,
             'output' => ['simulation' => true, 'stage' => $stage->stage->value, 'data' => $result->output],
             'error_message' => $result->error !== null ? mb_substr($result->error, 0, 2000) : null,
+            'cost' => $result->cost,
+            'duration_ms' => $durationMs,
             'finished_at' => now(),
         ]);
         if ($result->succeeded) {

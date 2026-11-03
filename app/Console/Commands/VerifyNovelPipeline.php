@@ -31,7 +31,7 @@ class VerifyNovelPipeline extends Command
             }
             $novel = Novel::query()->create(['title' => '[A05验收] '.Str::uuid7(), 'genre' => '系统验收', 'premise_raw' => '固定假数据状态机验收，不代表小说作品。', 'target_chapters' => 1, 'max_execution_count' => $limit]);
             $result = $pipeline->run($novel, $this->option('disable-fine-outline') ? false : null);
-            $report = [...$result->toArray(), 'stages' => $novel->stages()->orderBy('id')->get()->map(static fn (NovelStage $stage): array => ['id' => $stage->id, 'stage' => $stage->stage->value, 'status' => $stage->status->value, 'execution_count' => $stage->execution_count, 'input' => $stage->input, 'output' => $stage->output, 'error_message' => $stage->error_message])->all()];
+            $report = [...$result->toArray(), 'stages' => $novel->stages()->orderBy('id')->get()->map(static fn (NovelStage $stage): array => $stage->toExecutionRecord())->all()];
             $code = match (true) {
                 $result->status === NovelStatus::Completed => 0,
                 $result->status === NovelStatus::Paused && $result->reason === 'execution_limit' => 2,

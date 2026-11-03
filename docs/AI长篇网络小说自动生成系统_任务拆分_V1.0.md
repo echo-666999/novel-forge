@@ -175,7 +175,7 @@ vendor/bin/phpunit tests/Feature/A03AiGenerationTest.php tests/Feature/A03Postgr
 
 #### A05 实施与验收记录（2026年11月3日）
 
-**状态：已完成。固定假数据阶段流转、执行次数硬上限、显式恢复、并发重复领用保护、完整回归及开发库命令验收均通过。A06 尚未执行。**
+**状态：已完成。固定假数据阶段流转、执行次数硬上限、显式恢复、并发重复领用保护、完整回归及开发库命令验收均通过。A06 在本次验收时尚未执行，当前进度见下节。**
 
 - 新增 `App\Services\Pipeline\NovelPipelineService`、阶段执行契约、结果快照、固定注册表和纯假数据执行器。阶段仅来自既有 Stage 枚举：setting → outline → fine_outline（可选）→ content → polish → export。注册表不提供运行时扩展入口，执行器不创建任务树、不自行推进或重试。
 - `run(Novel, ?bool $enableFineOutline = null)` 启动或继续可运行状态；`resume(Novel)` 仅显式恢复 paused/error。每次阶段尝试新建 NovelStage，Novel.execution_count 累计加1，记录的 execution_count 为该阶段尝试序号；失败历史不覆盖，普通run不自动恢复。阶段异常只保存安全类别，不保存异常消息或堆栈。
@@ -213,8 +213,36 @@ vendor/bin/phpunit tests/Feature/A05PipelineTest.php tests/Feature/A05PostgresTe
   2. 抽查 2 个阶段的 input/output 内容完整可读
 - **建议工时**：0.5 天
 
+#### A06 实施与验收记录（2026年11月3日）
+
+**状态：已完成。阶段快照、费用耗时、只读查询、开发库验收及 A06 独立 PostgreSQL 专项均通过；未排除测试的完整回归101项、1046个断言全部通过，阶段A出口验收收口。**
+
+- 新增增量迁移 `2026_11_03_164201_add_observability_to_novel_stages_table`，仅增加可空 `cost`（JSONB，费用快照）、`duration_ms`（bigint，执行耗时毫秒）及 PostgreSQL 非负耗时约束。表备注保持“阶段执行记录”，旧迁移、旧业务字段和历史指标不回填。
+- `StageResult::completed/failed` 增加可选费用参数，兼容既有调用；费用包含 `billing_status`、`currency`、`estimated_cost`、`actual_cost`。沿用 A03 的 simulated/estimated/unknown 语义，金额使用非负八位小数字符串，拒绝浮点、越界金额和矛盾状态；未提供计量明确记为 unknown，不当作零。假执行器明确记 simulated、零金额、空币种，不创建请求费用明细。
+- 阶段领用时补充小说创意、篇幅策略和本次额度/尝试序号的输入快照，保留原冻结细纲开关、模拟版本及前阶段传递结构。执行器通过单调时钟计时，不含领用和结算事务；成功、失败、异常均保存费用与耗时，异常保留安全说明，不保存内部消息或堆栈。0毫秒可表示执行不足1毫秒；running 或旧记录的空值表示未采集。恢复和迟到结果保护沿用 A05，不覆盖已结束的历史尝试。
+- 新增只读命令 `app:show-novel-stages {novel} {--stage-id=} {--json}`，完整输出有序阶段快照、费用、耗时及起止时间；模型的 `toExecutionRecord()` 同样可供 tinker 使用。空历史返回空列表，非法/空参数、记录不存在及跨小说阶段返回退出1；正常查询退出0，不启动、重试或恢复流水线。既有验收命令同步输出这些持久化指标，保留 `[A05验收]` 合成数据标记和原退出码。
+- 代码类、方法及关键逻辑已添加中文注释。新增迁移表/字段中文备注、PHP 语法、Pint 和差异检查通过。没有增加第三方依赖、后台页面、真实模型调用、自动租约回收或正式剧情提交能力。
+- 最终验证：`vendor/bin/phpunit tests/Feature/A06PostgresTest.php` 的4项专项、86个断言通过；随后运行未排除测试的 `vendor/bin/phpunit`，101项测试、1046个断言全部通过。包含 A06 单元测试14项、行为测试9项、PostgreSQL 专项4项及既有回归。覆盖完整中文/嵌套快照、模拟及未知费用、费用格式、失败/异常、暂停恢复、迟到结果、只读查询、空参数、真实 JSONB/类型/备注、非负约束和增量升级/回滚等边界。最终回执为 `postgres-tests-final.json`、`tests-final.json`；此前97项、960个断言的 `tests.json` 保留为阶段性历史证据，其当时的待建库状态已解除。
+- 开发库迁移前备份 `storage/app/private/backups/a06-before-observability-20261103-164839.dump`，60,116字节，SHA-256 `f265acc0ffbb65c62ea507208db809f2eaef7193157cd8002882b0cf12391a1c`；归档目录可读，不表示本次进行了恢复演练。开发库仅执行本次增量迁移，实际核对新增类型、可空性及中文备注。
+- 使用既有命令显式额度6完成一次六阶段假数据验收：小说ID4，阶段ID13～18，累计6次、状态completed、进度100.00。setting（ID13）和 outline（ID14）通过只读查询抽查，完整 input/output 与数据库内容一致，费用均为 simulated 零金额，耗时均为0毫秒。新建合成记录保留，不重跑既有小说。
+- 完整性核查确认原 users、settings、cost_logs、novels、novel_stages、chapters 的既有字段逐行摘要未变；原11条阶段的新指标均为空。仅新增1条小说及6条阶段记录，没有新增章节或模型调用费用。验收后数量：users=2、settings=8、cost_logs=5、novels=3、novel_stages=17、chapters=0。
+- 证据目录：`storage/app/private/a06-evidence/20261103-164839/`，包含迁移前摘要 `before.json`、完整流水线结果 `complete.json`、抽查 `setting.json`/`outline.json`、完整性核查 `after.json`、数据库结构 `schema.json`、阶段性回执 `tests.json`，以及最终专项回执 `postgres-tests-final.json` 和完整回归回执 `tests-final.json`。最终测试在前一轮实际执行，本轮收口仅保存真实结果与更新文档，没有重复运行测试或开发库流水线。
+
+**只读复核：** 下列命令不新增小说，也不重新执行阶段。
+
+```bash
+php artisan app:show-novel-stages 4 --json --no-interaction
+php artisan app:show-novel-stages 4 --stage-id=13 --json --no-interaction
+php artisan app:show-novel-stages 4 --stage-id=14 --json --no-interaction
+php artisan tinker --execute 'dump(App\Models\NovelStage::findOrFail(13)->toExecutionRecord());'
+```
+
+**最终收口：** 用户已通过管理员连接创建 `novel_forge_app_a06_test`。实际核验所有者为 `novel_forge_app`，用途备注为 `novel-forge A06 isolated tests`，随后四项 PostgreSQL 专项及完整回归全部通过。专项在清理或迁移前强制核对库名与用途，不复用开发库或其他任务测试库。建库阻塞已解除，A06 无剩余待验收项；既有备份、阶段历史和开发库验收样本保留，本次未推进B阶段。
+
 **阶段 A 出口标准**：  
 技术组合验证通过 + 固定状态机可空跑 + 执行次数上限生效 + 输入输出可查。
+
+**出口验收结果：已通过（2026年11月3日）。** A01～A06 的既定技术验证、状态机额度限制及阶段输入输出可查已完成；完整回归101项、1046个断言全部通过，不代表已实现后续B阶段业务流程或正式剧情提交能力。
 
 ---
 
