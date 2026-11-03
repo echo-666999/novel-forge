@@ -96,6 +96,41 @@
   2. 数据库 cost_logs 有对应记录
 - **建议工时**：1 天
 
+#### A03 实施与验收记录（2026年11月3日）
+
+**状态：已完成（2026年11月3日）。SDK、Fake、成本日志、开发库增量迁移、全部回归及一次真实 OpenAI 文本生成均验收通过。默认模型已统一为 `gpt-4.1-mini`。**
+
+- 用户确认采用 OpenAI；首次验收尝试使用 `gpt-4`，随后明确选择 `gpt-4.1-mini` 并同步作为后续默认模型。安装官方 `laravel/ai v1.3.0`，源码引用 `6837b4c557f67e04e8a13d882fe7724032278c27`，更新 Composer 锁文件；没有升级其他包，SDK 所需的既有 symfony/yaml 从开发依赖移入运行依赖。只发布并整理配置，不创建 SDK 会话表。
+- `AiTextGenerationService` 是统一入口，支持 fake/real 模式及可选小说/阶段关联，返回持久化 CostLog；阶段与小说不一致时在调用前拒绝。真实模式沿用 SDK 原生 OpenAI Responses 路径，已通过当前账号的 `gpt-4.1-mini` 实际调用验证；不以模型列表可见或文档说明替代实际调用验收。地址仅允许已批准的官方 `https://api.openai.com/v1`，关闭服务端响应存储。
+- Fake 适配器不依赖密钥或 HTTP，固定返回 `{"ok":true,"message":"A03 Fake Provider"}`；与 SDK 真实适配器分离，不修改全局 fake 状态。当前入口只用于 A03 短文本验收，最大输出128 Token、超时30秒、单步骤，不代表小说正文生成阶段已实现。
+- SDK 内部遇到短 Retry-After 可能重试，本次网关覆写该行为，429/503/连接超时均只进行一次请求；不自动重试、换模型或回退 Fake。真实调用禁止处于外层数据库事务中，确保请求前日志不会随调用方回滚。
+- 新增 `cost_logs` 模型、工厂和增量迁移，沿用 n_ 前缀；记录本地唯一调用号、模式、小说/阶段、请求与实际供应商/模型、路由/提示版本、请求参数、状态、供应商请求号、计量、脱敏响应和安全错误。表及全部36个字段均有简短中文备注；JSONB、timestamptz、numeric(20,8)、唯一键、RESTRICT外键和非负/状态检查通过真实 PostgreSQL 核验。
+- 未报告的 Token 与金额保持空值，缓存和推理用量不重复累计。费用估算使用 BCMath 十进制字符串，按调用前冻结的实际响应模型价格配置计算；未配置已核实单价或缺少用量时保持 unknown，估算不冒充实际账单。当前 `config/ai.php` 价格集合为空，未硬编码供应商价格。Fake 的零费用明确标记 simulated。
+- 发出请求前必须成功保存 pending 日志；鉴权/配置错误保存 failed，超时及结果不明保存 unknown。结果落库失败返回失败，不重发；密钥与认证头不写日志，正文及原始响应中的已知密钥回显脱敏。非法计量保留原始响应，但不写入受非负约束的计量栏位。
+- 专用库 `novel_forge_app_a03_test` 由 DBX 已有管理员连接创建，所有者 novel_forge_app，用途备注 `novel-forge A03 isolated tests`；迁移清理前核对身份。未复用或重置 A02/A04/开发库。
+- 自动化验收：A03 离线20项测试、100个断言；A03 PostgreSQL 4项测试、107个断言；全套58项测试、556个断言通过，无失败或incomplete。覆盖真实SDK协议解析与SDK fake、模式切换、缺失用量、定点金额、价格冻结、缺失密钥、401脱敏、429/503隐式重试禁用、连接超时、空正文、非法计量、日志写入失败、事务及关联边界，以及新旧模型默认值一致性、增量迁移幂等与回滚保护。
+- 开发库迁移前备份 `storage/app/private/backups/a03-before-migration-20261103-124345.dump`，42,193字节，SHA-256 `059294385accad2555cfd087fd0fdb3f962788a23bdda7aba78c3a8d26b890a6`；归档目录可读，不宣称本次做了开发库实际恢复。只执行 A03 一份增量迁移。用户1条、设置8条和三张空业务表的完整内容摘要一致，证据保存于 `storage/app/private/a03-evidence/before.json` 与 `after.json`。
+- 开发库实际命令验收：Fake 退出0，成本日志ID1、状态succeeded、billing_status=simulated；真实模式退出1，成本日志ID2、requested_model=gpt-4、error_category=missing_credentials，未发送外部请求，未伪造真实模型/用量/金额。
+
+**真实验收收口记录：**
+
+- 后续只读核查发现密钥已加载且官方模型列表查询成功，但先前成本日志ID3、ID4均为 `gpt-4` / HTTP404 / model_not_found；两条失败记录原样保留。不能据此断言该模型在所有接口或所有账号上不可用。
+- 用户明确选择 `gpt-4.1-mini` 并同时更新默认模型。新增 `database/settings/2026_11_03_131945_update_default_model_for_a03.php`，仅将 `gpt-4` 或 `gpt-6.1` 更新为新默认值；其他显式模型保持原样。回滚只将仍为新默认值的设置恢复为 `gpt-4`，不覆盖迁移后另选的模型。类默认值、数据库设置及实际读取值均为 `gpt-4.1-mini`；历史初始化迁移未改动。此设置迁移不创建或修改表结构、字段定义。
+- 设置切换前完整备份：`storage/app/private/backups/a03-before-model-switch-20261103-132121.dump`，58,592字节，SHA-256 `6ffffb93c732faa597268c4b4779c22610d81be64174ff72eb4f6eba45021901`；归档目录可读。独立证据目录为 `storage/app/private/a03-evidence/model-switch-20261103-132121/`，保留 before.json、after.json、real-command.json，未覆盖先前证据。
+- 执行一次 real 命令，退出0；成本日志ID5，本地调用标识 `01a19fdb-0f6c-70ff-94ad-88d77ddefcdc`，供应商请求号 `req_1c26e64888b84380baa0f2a11a0ba767`。请求模型 `gpt-4.1-mini`，实际响应模型 `gpt-4.1-mini-2025-04-14`，正文“A03连接成功。”；输入30、输出6、缓存读写与推理均0 Token。未自动重试或换模型。
+- 日志ID5为 real / succeeded；未配置核实后的单价，estimated_cost、actual_cost保持空值，billing_status=unknown。真实生成成功不等于费用已核实，未伪造零费用或估算价格。
+- 完整性复核通过：原有用户及三张业务表摘要一致；8条设置中仅 general.default_model 更新，其他设置保留；成本日志ID1～4内容摘要完全一致，仅新增成功记录ID5。未重复已完成的安装、CostLog建表迁移或开发库Fake验收，未调用模型生成小说正文。
+
+**验收命令：** 以下 real 命令会产生新的外部请求和日志；本次已经成功，无需为重复确认再次执行。
+```bash
+# 项目根目录；Fake 不发外部请求，real 最多一次短文本模型请求。
+php artisan app:verify-ai --mode=fake --json --no-interaction
+php artisan app:verify-ai --mode=real --json --no-interaction
+vendor/bin/phpunit tests/Feature/A03AiGenerationTest.php tests/Feature/A03PostgresTest.php
+```
+
+参考：[Laravel AI SDK](https://github.com/laravel/ai/tree/v1.3.0)、[OpenAI GPT-4.1 Mini 模型文档](https://developers.openai.com/api/docs/models/gpt-4.1-mini)。本次未执行 A05/A06、B02/B09 的业务流程或成本后台。
+
 ### A04 核心枚举与基础模型骨架
 - **目标**：建立 Stage、NovelStatus、事实类别等枚举及 Novel / NovelStage / Chapter 基础模型
 - **输入前提**：A01 完成

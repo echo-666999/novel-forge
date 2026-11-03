@@ -9,7 +9,7 @@ use Spatie\LaravelSettings\Settings as BaseSettings;
  */
 class GeneralSettings extends BaseSettings
 {
-    public string $default_model = 'gpt-4';
+    public string $default_model = 'gpt-4.1-mini';
 
     public float $temperature = 0.7;
 
