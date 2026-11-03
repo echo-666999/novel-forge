@@ -261,6 +261,28 @@ php artisan tinker --execute 'dump(App\Models\NovelStage::findOrFail(13)->toExec
   2. 数据库存在对应记录，状态为 running 或 pending
 - **建议工时**：1 天
 
+#### B01 实施与验收记录（2026年11月3日）
+
+**状态：已完成。后台创建、Redis 异步启动、模拟阶段实际消费、只读详情及完整回归均通过。**
+
+- 新增「小说管理」列表、创建和只读详情页，沿用现有 Filament 样式。支持书名搜索、状态筛选和5秒列表轮询；详情提供状态刷新。创建字段为书名、可选题材、完整原始创意、目标章数及每章字数上下限，默认10章、2500～3500字。没有编辑、删除或恢复入口。
+- `CreateNovelService` 校验正整数、字数范围及非空白中文输入，只保存白名单字段；原始创意不摘要、不改写。创建时冻结通用设置中的执行次数上限和细纲开关，小说事务提交后才显式投递 Redis。投递未确认时保留小说及原文，显示安全提示，仅对未领用记录标记异常，避免覆盖正在运行的历史。
+- `RunNovelPipelineJob` 固定使用模拟执行器，不随全局执行器绑定变成真实模型调用；最多尝试一次，超时60秒，小于当前 Redis 的90秒重新投递间隔。重复消息复用既有状态机保护，不自动恢复暂停小说、不重复消耗次数。
+- 自动化验证：B01 专项23项、146个断言；包含现有 PostgreSQL 专项的完整回归124项、1192个断言全部通过。覆盖字段校验、事务提交顺序、白名单、投递失败及不确定回执、重复提交/消费、固定模拟边界、搜索筛选、原文转义和只读权限。PHP 语法检查、Pint 及差异空白检查通过；本任务没有新增迁移或变更依赖。
+- 开发库验收前备份：`storage/app/private/backups/b01-before-browser-20261103-175003.dump`，61,266字节，SHA-256 `840b4d3b22a01d41a34839a67959a8b5903fe7277d89c26e0503c1965ce4ffb5`。已验证归档目录可读，本次没有执行实际恢复。
+- 真实浏览器只提交一次 `[B01验收] 灯塔来信 20261103-175003`，生成小说ID5；创意两行原文及篇幅策略与输入完全一致。消费者启动前为pending、执行次数0、阶段0条、Redis任务1条。随后启动 Herd 独立队列消费者，实际完成setting、outline、fine_outline、content、polish五个模拟阶段（ID19～23），按既有上限5在export之前暂停，进度83.33%，Redis任务归零、失败任务0条。这是额度保护的预期结果。
+- 浏览器已核对列表中的已暂停、导出、5/5，以及详情页完整创意、篇幅、进度和刷新动作。验收中一度出现浏览器空白画面，打开控制台触发重绘后恢复，控制台未见脚本错误；未确认其根因，未据此修改应用代码。
+- 完整性核查：所有原有行摘要保持一致，只新增小说ID5及五条模拟阶段。验收后users=2、settings=8、cost_logs=5、novels=4、novel_stages=22、chapters=0、jobs=0、failed_jobs=0、migrations=12。阶段输入输出、模拟零费用和耗时已留存于 `storage/app/private/b01-evidence/20261103-175003/` 的before、pending、after及验收摘要。
+- 本地运行使用 Herd 独立 `queue` 和 `vite` 进程，当前均在运行；完整dev栈保持停止，避免额外启动 `artisan serve`。这不包含操作系统开机启动配置。后续可在项目目录执行：
+
+```bash
+herd processes --site=novel-forge --json --no-interaction
+herd processes:start queue --site=novel-forge --no-interaction
+herd processes:stop queue --site=novel-forge --no-interaction
+```
+
+**范围边界：** 本次只实现创意保存和模拟启动，不调用真实模型、不生成正文、不增加模型费用；B02 真实设定阶段和 B08 运行恢复台仍按原任务顺序实施。既有 A 阶段数据和验收记录保留。
+
 ### B02 Setting 阶段真实执行
 - **目标**：SettingExecutor 调用 LLM，产出结构化设定
 - **输入前提**：B01、A03 完成

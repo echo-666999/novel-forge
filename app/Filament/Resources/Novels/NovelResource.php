@@ -1,0 +1,84 @@
+<?php
+
+namespace App\Filament\Resources\Novels;
+
+use App\Enums\NovelStatus;
+use App\Filament\Resources\Novels\Pages\CreateNovel;
+use App\Filament\Resources\Novels\Pages\ListNovels;
+use App\Filament\Resources\Novels\Pages\ViewNovel;
+use App\Filament\Resources\Novels\Schemas\NovelForm;
+use App\Filament\Resources\Novels\Schemas\NovelInfolist;
+use App\Filament\Resources\Novels\Tables\NovelsTable;
+use App\Models\Novel;
+use BackedEnum;
+use Filament\Resources\Pages\PageRegistration;
+use Filament\Resources\Resource;
+use Filament\Schemas\Schema;
+use Filament\Support\Icons\Heroicon;
+use Filament\Tables\Table;
+
+/** 私有工作台的小说入口，仅允许创建和只读查看，运行恢复留给后续任务。 */
+class NovelResource extends Resource
+{
+    protected static ?string $model = Novel::class;
+
+    protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedBookOpen;
+
+    protected static ?string $modelLabel = '小说';
+
+    protected static ?string $pluralModelLabel = '小说';
+
+    protected static ?string $navigationLabel = '小说管理';
+
+    protected static ?int $navigationSort = 1;
+
+    protected static ?string $recordTitleAttribute = 'title';
+
+    /** 复用创建表单结构，运行字段不进入可编辑表单。 */
+    public static function form(Schema $schema): Schema
+    {
+        return NovelForm::configure($schema);
+    }
+
+    /** 完整展示保存的创意、篇幅与运行状态。 */
+    public static function infolist(Schema $schema): Schema
+    {
+        return NovelInfolist::configure($schema);
+    }
+
+    /** 提供搜索、状态筛选与运行状态轮询。 */
+    public static function table(Table $table): Table
+    {
+        return NovelsTable::configure($table);
+    }
+
+    /** 使用中文状态，并明确区分模拟流程完成与作品正式完成。 */
+    public static function statusLabel(NovelStatus $status): string
+    {
+        return $status === NovelStatus::Completed ? '模拟完成' : $status->label();
+    }
+
+    /** 为状态提供稳定颜色，不仅依靠颜色传达运行结果。 */
+    public static function statusColor(NovelStatus $status): string
+    {
+        return match ($status) {
+            NovelStatus::Pending => 'gray',
+            NovelStatus::Running => 'info',
+            NovelStatus::Paused => 'warning',
+            NovelStatus::Completed => 'success',
+            NovelStatus::Error => 'danger',
+        };
+    }
+
+    /** 只注册列表、创建与详情路由，不暴露编辑或删除入口。
+     * @return array<string, PageRegistration>
+     */
+    public static function getPages(): array
+    {
+        return [
+            'index' => ListNovels::route('/'),
+            'create' => CreateNovel::route('/create'),
+            'view' => ViewNovel::route('/{record}'),
+        ];
+    }
+}
