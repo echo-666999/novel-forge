@@ -8,6 +8,7 @@ use App\Enums\Stage;
 use App\Filament\Resources\Novels\Pages\CreateNovel;
 use App\Filament\Resources\Novels\Pages\ListNovels;
 use App\Filament\Resources\Novels\Pages\ViewNovel;
+use App\Filament\Resources\Novels\Pages\ViewOutlinePlan;
 use App\Filament\Resources\Novels\Schemas\NovelForm;
 use App\Filament\Resources\Novels\Schemas\NovelInfolist;
 use App\Filament\Resources\Novels\Tables\NovelsTable;
@@ -58,6 +59,13 @@ class NovelResource extends Resource
     public static function statusLabel(NovelStatus $status, ?Novel $record = null): string
     {
         if ($record?->generation_mode === GenerationMode::SettingReal) {
+            if ($status === NovelStatus::Paused && in_array($record->current_stage, [Stage::FineOutline, Stage::Content], true)) {
+                return '大纲已生成，等待后续阶段';
+            }
+            if ($record->current_stage === Stage::Outline && $record->outlinePlans()->exists()) {
+                return $status === NovelStatus::Paused ? '大纲已暂停' : $status->label();
+            }
+
             return $status === NovelStatus::Paused && $record->current_stage === Stage::Outline ? '设定已生成，等待大纲阶段' : $status->label();
         }
 
@@ -85,6 +93,7 @@ class NovelResource extends Resource
             'index' => ListNovels::route('/'),
             'create' => CreateNovel::route('/create'),
             'view' => ViewNovel::route('/{record}'),
+            'outline' => ViewOutlinePlan::route('/{record}/outline'),
         ];
     }
 }

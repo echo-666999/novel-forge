@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Enums\GenerationMode;
 use App\Enums\NovelStatus;
+use App\Enums\Stage;
 use App\Enums\StageStatus;
 use App\Models\CostLog;
 use App\Models\Novel;
@@ -38,7 +39,7 @@ class RunSettingJob implements ShouldQueue
     public function handle(SettingExecutor $executor): void
     {
         $novel = Novel::query()->find($this->novelId);
-        if ($novel === null || $novel->generation_mode !== GenerationMode::SettingReal) {
+        if ($novel === null || $novel->generation_mode !== GenerationMode::SettingReal || ($novel->current_stage !== null && $novel->current_stage !== Stage::Setting)) {
             return;
         }
         $pipeline = new NovelPipelineService(new StageExecutorRegistry($executor, true));
@@ -50,7 +51,7 @@ class RunSettingJob implements ShouldQueue
     {
         DB::transaction(function (): void {
             $novel = Novel::query()->lockForUpdate()->find($this->novelId);
-            if ($novel === null || $novel->generation_mode !== GenerationMode::SettingReal || data_get($novel->generation_config, 'invocation_id') !== $this->invocationId) {
+            if ($novel === null || $novel->generation_mode !== GenerationMode::SettingReal || ($novel->current_stage !== null && $novel->current_stage !== Stage::Setting) || data_get($novel->generation_config, 'invocation_id') !== $this->invocationId) {
                 return;
             }
             $stage = $novel->stages()->where('status', StageStatus::Running->value)->lockForUpdate()->latest('id')->first();

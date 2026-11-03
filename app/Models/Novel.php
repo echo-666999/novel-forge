@@ -72,4 +72,20 @@ class Novel extends Model
     {
         return $this->hasMany(Chapter::class);
     }
+
+    /** 作者确认的设定版本。
+     * @return HasMany<NovelSettingConfirmation, $this>
+     */
+    public function settingConfirmations(): HasMany
+    {
+        return $this->hasMany(NovelSettingConfirmation::class);
+    }
+
+    /** 按确认版本保留的大纲计划。
+     * @return HasMany<NovelOutlinePlan, $this>
+     */
+    public function outlinePlans(): HasMany
+    {
+        return $this->hasMany(NovelOutlinePlan::class);
+    }
 }

@@ -32,7 +32,11 @@ final class OpenAiTextProvider implements TextProvider
 
         try {
             $this->manager->textProvider('openai')->useTextGateway(new SingleAttemptOpenAiGateway($this->events));
-            $agent = $options->structuredSetting ? new SettingGenerationAgent($options) : new TextGenerationAgent;
+            $agent = match (true) {
+                $options->outlineRange !== null => new OutlineGenerationAgent($options),
+                $options->structuredSetting => new SettingGenerationAgent($options),
+                default => new TextGenerationAgent,
+            };
             $response = $agent->prompt($prompt, provider: 'openai', model: $model, timeout: $options->timeoutSeconds);
         } catch (Throwable $exception) {
             // 不透传供应商消息或请求异常链，其中可能包含密钥和认证请求头。
@@ -63,7 +67,7 @@ final class OpenAiTextProvider implements TextProvider
         }
         $result = new TextGenerationResult(
             text: $this->sanitize(['text' => $response->text], $key)['text'],
-            structured: $options->structuredSetting ? $response->structured : null,
+            structured: $options->isStructured() ? $response->structured : null,
             provider: filled($response->meta->provider) ? $response->meta->provider : null,
             model: filled($response->meta->model) ? $response->meta->model : null,
             usage: $usage,

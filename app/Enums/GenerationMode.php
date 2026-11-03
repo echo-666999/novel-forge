@@ -8,7 +8,7 @@ enum GenerationMode: string
     /** 全流程离线模拟。 */
     case Simulation = 'simulation';
 
-    /** 只生成真实设定候选，完成后等待大纲实现。 */
+    /** 先生成真实设定候选，大纲仅经作者确认后显式启动。 */
     case SettingReal = 'setting_real';
 
     /** 返回作者可理解的模式名称。 */

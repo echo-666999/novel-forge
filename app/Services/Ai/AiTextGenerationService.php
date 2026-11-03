@@ -20,7 +20,7 @@ final class AiTextGenerationService
     public function generate(string $prompt, string $mode = 'fake', ?string $model = null, ?int $novelId = null, ?int $novelStageId = null, ?string $promptVersion = null, ?TextRequestOptions $options = null): CostLog
     {
         $options ??= TextRequestOptions::probe();
-        if ($options->structuredSetting && $mode !== 'real') {
+        if ($options->isStructured() && $mode !== 'real') {
             throw new InvalidArgumentException('结构化设定必须走显式真实调用路径');
         }
         if (! in_array($mode, ['fake', 'real'], true) || trim($prompt) === '') {
@@ -44,7 +44,7 @@ final class AiTextGenerationService
         $log = CostLog::query()->create([
             'request_uuid' => (string) Str::uuid7(), 'mode' => $mode, 'requested_provider' => $mode === 'real' ? 'openai' : 'fake',
             'requested_model' => $model, 'novel_id' => $novelId, 'novel_stage_id' => $novelStageId,
-            'route_version' => $mode === 'real' ? ($options->structuredSetting ? 'b02-openai-setting-v1' : 'a03-openai-v1') : 'a03-fake-v1', 'prompt_version' => $promptVersion,
+            'route_version' => $mode === 'real' ? ($options->outlineRange !== null ? 'b03-openai-outline-v1' : ($options->structuredSetting ? 'b02-openai-setting-v1' : 'a03-openai-v1')) : 'a03-fake-v1', 'prompt_version' => $promptVersion,
             'prompt_hash' => hash('sha256', $prompt), 'request_parameters' => $options->toArray(),
             'status' => 'pending', 'billing_status' => $mode === 'fake' ? 'simulated' : 'unknown', 'started_at' => now(),
         ]);

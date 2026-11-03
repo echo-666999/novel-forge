@@ -11,6 +11,7 @@ use App\Models\Novel;
 use App\Models\NovelStage;
 use Filament\Infolists\Components\RepeatableEntry;
 use Filament\Infolists\Components\TextEntry;
+use Filament\Schemas\Components\Component;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
 
@@ -23,7 +24,7 @@ class NovelInfolist
         return $schema
             ->components([
                 Section::make('创作信息')->columns(2)->columnSpanFull()
-                    ->description(fn (Novel $record): string => $record->generation_mode === GenerationMode::SettingReal ? '真实生成的设定是候选，尚未获得作者批准；成功后暂停等待大纲阶段。' : '当前为模拟流程。模拟完成不代表小说作品已生成。')
+                    ->description(fn (Novel $record): string => $record->generation_mode === GenerationMode::SettingReal ? '原始生成结果始终保留为候选；作者确认另存版本，只有显式启动才生成大纲。' : '当前为模拟流程。模拟完成不代表小说作品已生成。')
                     ->schema([
                         TextEntry::make('generation_mode')->label('生成模式')->formatStateUsing(fn (GenerationMode $state): string => $state->label())->columnSpanFull(),
                         TextEntry::make('title')->label('书名'),
@@ -36,7 +37,7 @@ class NovelInfolist
                     TextEntry::make('chapter_length_policy.max_characters')->label('每章字数上限')->suffix('字')->placeholder('未设置'),
                 ]),
                 Section::make('运行状态')->columns(3)->columnSpanFull()
-                    ->description(fn (Novel $record): string => $record->generation_mode === GenerationMode::SettingReal ? '只执行设定阶段；失败时保留历史。重试需显式操作且消耗剩余执行次数。' : '执行次数达到上限会暂停；开启细纲且上限为5时，通常在导出前暂停。')
+                    ->description(fn (Novel $record): string => $record->generation_mode === GenerationMode::SettingReal ? '设定和大纲按显式操作执行；每次尝试消耗执行次数。成功大纲不代表正文已生成。' : '执行次数达到上限会暂停；开启细纲且上限为5时，通常在导出前暂停。')
                     ->schema([
                         TextEntry::make('status')->label('状态')->badge()
                             ->formatStateUsing(fn (NovelStatus $state, Novel $record): string => NovelResource::statusLabel($state, $record))
@@ -48,6 +49,23 @@ class NovelInfolist
                         TextEntry::make('progress')->label(fn (Novel $record): string => $record->generation_mode === GenerationMode::SettingReal ? '流水线进度' : '模拟进度')->suffix('%'),
                         TextEntry::make('created_at')->label('创建时间')->dateTime('Y-m-d H:i:s'),
                         TextEntry::make('updated_at')->label('最近活动')->dateTime('Y-m-d H:i:s'),
+                    ]),
+                Section::make('最新确认设定版本')->columnSpanFull()
+                    ->visible(fn (Novel $record): bool => $record->generation_mode === GenerationMode::SettingReal && $record->settingConfirmations()->exists())
+                    ->description('这里保存作者修订与决定；下方供应商原始候选保留原样。确认不等于已经发送大纲请求。')
+                    ->schema([
+                        RepeatableEntry::make('confirmed_versions')->label('确认版本')->hiddenLabel()
+                            ->state(fn (Novel $record): array => $record->settingConfirmations()->latest('id')->limit(1)->get()->map->toArray()->all())
+                            ->columns(3)->schema([
+                                TextEntry::make('id')->label('确认版本编号'),
+                                TextEntry::make('confirmed_by')->label('确认用户编号'),
+                                TextEntry::make('confirmed_at')->label('确认时间')->dateTime('Y-m-d H:i:s'),
+                                ...self::settingFields('setting.'),
+                                RepeatableEntry::make('decisions')->label('作者问题决定')->columnSpanFull()->schema([
+                                    TextEntry::make('question')->label('来源问题'),
+                                    TextEntry::make('answer')->label('作者决定')->placeholder('非阻塞问题尚未决定'),
+                                ]),
+                            ]),
                     ]),
                 Section::make('设定执行记录')->columnSpanFull()
                     ->visible(fn (Novel $record): bool => $record->generation_mode === GenerationMode::SettingReal)
@@ -63,28 +81,38 @@ class NovelInfolist
                                 TextEntry::make('cost')->label('费用'),
                                 TextEntry::make('cost_log_id')->label('调用日志编号')->placeholder('尚无调用记录'),
                                 TextEntry::make('error')->label('失败说明')->placeholder('无')->columnSpanFull(),
-                                TextEntry::make('world.era')->label('时代')->placeholder('尚无有效候选'),
-                                TextEntry::make('world.background')->label('世界背景')->placeholder('尚无有效候选')->columnSpanFull(),
-                                TextEntry::make('world.rules')->label('世界规则')->listWithLineBreaks()->columnSpanFull(),
-                                RepeatableEntry::make('characters')->label('人物卡')->columnSpanFull()->columns(2)->schema([
-                                    TextEntry::make('name')->label('姓名'), TextEntry::make('role')->label('角色'),
-                                    TextEntry::make('goal')->label('目标'), TextEntry::make('personality')->label('性格'),
-                                    TextEntry::make('speech_style')->label('语言习惯'), TextEntry::make('abilities')->label('能力'),
-                                    TextEntry::make('limitations')->label('限制'),
-                                ]),
-                                TextEntry::make('tone.narrative_style')->label('文风'),
-                                TextEntry::make('tone.pov')->label('叙事视角'),
-                                TextEntry::make('tone.pacing')->label('节奏'),
-                                TextEntry::make('core_conflict')->label('核心矛盾')->columnSpanFull(),
-                                TextEntry::make('preserved_details')->label('保留的创意细节')->listWithLineBreaks()->columnSpanFull(),
-                                RepeatableEntry::make('open_questions')->label('待作者确认')->placeholder('尚无待确认问题记录')->columnSpanFull()->schema([
-                                    TextEntry::make('question')->label('问题'),
-                                    TextEntry::make('impact')->label('影响'),
-                                    TextEntry::make('blocking')->label('是否阻塞后续规划')->formatStateUsing(fn (bool $state): string => $state ? '是' : '否'),
-                                ]),
+                                ...self::settingFields(),
                             ]),
                     ]),
             ]);
+    }
+
+    /** 原始候选与作者确认版本复用中文只读展示，文本始终按默认方式转义。
+     * @return list<Component>
+     */
+    private static function settingFields(string $prefix = ''): array
+    {
+        return [
+            TextEntry::make($prefix.'world.era')->label('时代')->placeholder('尚无有效候选'),
+            TextEntry::make($prefix.'world.background')->label('世界背景')->placeholder('尚无有效候选')->columnSpanFull(),
+            TextEntry::make($prefix.'world.rules')->label('世界规则')->listWithLineBreaks()->columnSpanFull(),
+            RepeatableEntry::make($prefix.'characters')->label('人物卡')->columnSpanFull()->columns(2)->schema([
+                TextEntry::make('name')->label('姓名'), TextEntry::make('role')->label('角色'),
+                TextEntry::make('goal')->label('目标'), TextEntry::make('personality')->label('性格'),
+                TextEntry::make('speech_style')->label('语言习惯'), TextEntry::make('abilities')->label('能力'),
+                TextEntry::make('limitations')->label('限制'),
+            ]),
+            TextEntry::make($prefix.'tone.narrative_style')->label('文风'),
+            TextEntry::make($prefix.'tone.pov')->label('叙事视角'),
+            TextEntry::make($prefix.'tone.pacing')->label('节奏'),
+            TextEntry::make($prefix.'core_conflict')->label('核心矛盾')->columnSpanFull(),
+            TextEntry::make($prefix.'preserved_details')->label('保留的创意细节')->listWithLineBreaks()->columnSpanFull(),
+            RepeatableEntry::make($prefix.'open_questions')->label('待作者确认')->placeholder('尚无待确认问题记录')->columnSpanFull()->schema([
+                TextEntry::make('question')->label('问题'),
+                TextEntry::make('impact')->label('影响'),
+                TextEntry::make('blocking')->label('是否阻塞后续规划')->formatStateUsing(fn (bool $state): string => $state ? '是' : '否'),
+            ]),
+        ];
     }
 
     /** 一次性读取有序尝试并投影可展示字段，认证信息和原始供应商响应不进入页面。
@@ -92,7 +120,7 @@ class NovelInfolist
      */
     private static function attempts(Novel $novel): array
     {
-        $logs = CostLog::query()->where('novel_id', $novel->id)->orderBy('id')->get()->keyBy('novel_stage_id');
+        $logs = CostLog::query()->select(['id', 'novel_stage_id'])->where('novel_id', $novel->id)->orderBy('id')->get()->keyBy('novel_stage_id');
 
         return $novel->stages()->where('stage', Stage::Setting->value)->orderBy('id')->get()->map(function (NovelStage $stage) use ($logs): array {
             $setting = data_get($stage->output, 'data.setting', []);
