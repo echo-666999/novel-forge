@@ -2,7 +2,9 @@
 
 namespace App\Filament\Resources\Novels;
 
+use App\Enums\GenerationMode;
 use App\Enums\NovelStatus;
+use App\Enums\Stage;
 use App\Filament\Resources\Novels\Pages\CreateNovel;
 use App\Filament\Resources\Novels\Pages\ListNovels;
 use App\Filament\Resources\Novels\Pages\ViewNovel;
@@ -53,8 +55,12 @@ class NovelResource extends Resource
     }
 
     /** 使用中文状态，并明确区分模拟流程完成与作品正式完成。 */
-    public static function statusLabel(NovelStatus $status): string
+    public static function statusLabel(NovelStatus $status, ?Novel $record = null): string
     {
+        if ($record?->generation_mode === GenerationMode::SettingReal) {
+            return $status === NovelStatus::Paused && $record->current_stage === Stage::Outline ? '设定已生成，等待大纲阶段' : $status->label();
+        }
+
         return $status === NovelStatus::Completed ? '模拟完成' : $status->label();
     }
 

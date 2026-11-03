@@ -16,8 +16,9 @@ final class OpenAiTextProvider implements TextProvider
     public function __construct(private AiManager $manager, private Dispatcher $events) {}
 
     /** 校验固定路由并执行一次请求，SDK 默认的缺失用量零值不得当作真实计量。 */
-    public function generate(string $prompt, string $model): TextGenerationResult
+    public function generate(string $prompt, string $model, ?TextRequestOptions $options = null): TextGenerationResult
     {
+        $options ??= TextRequestOptions::probe();
         $key = trim((string) config('ai.providers.openai.key'));
         if ($key === '' || in_array($key, ['sk-...', 'your-api-key', 'your_openai_api_key'], true)) {
             throw new AiGenerationException('请先在本机配置有效 OPENAI_API_KEY；尚未发送请求。', 'missing_credentials');
@@ -31,7 +32,8 @@ final class OpenAiTextProvider implements TextProvider
 
         try {
             $this->manager->textProvider('openai')->useTextGateway(new SingleAttemptOpenAiGateway($this->events));
-            $response = (new TextGenerationAgent)->prompt($prompt, provider: 'openai', model: $model, timeout: 30);
+            $agent = $options->structuredSetting ? new SettingGenerationAgent($options) : new TextGenerationAgent;
+            $response = $agent->prompt($prompt, provider: 'openai', model: $model, timeout: $options->timeoutSeconds);
         } catch (Throwable $exception) {
             // 不透传供应商消息或请求异常链，其中可能包含密钥和认证请求头。
             $requestException = $this->requestException($exception);
@@ -61,7 +63,7 @@ final class OpenAiTextProvider implements TextProvider
         }
         $result = new TextGenerationResult(
             text: $this->sanitize(['text' => $response->text], $key)['text'],
-            structured: null,
+            structured: $options->structuredSetting ? $response->structured : null,
             provider: filled($response->meta->provider) ? $response->meta->provider : null,
             model: filled($response->meta->model) ? $response->meta->model : null,
             usage: $usage,

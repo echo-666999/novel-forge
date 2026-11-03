@@ -295,6 +295,35 @@ herd processes:stop queue --site=novel-forge --no-interaction
   2. 后台查看该阶段输出，确认结构完整、中文可读
 - **建议工时**：1.5 天
 
+#### B02 实施与验收记录（2026年11月3日）
+
+**状态：已完成。显式真实设定入口、SDK 结构化输出、失败留证与显式重试、后台只读展示、完整回归及唯一一次真实请求验收均通过。**
+
+- 创建页默认仍为模拟，新增“真实设定（调用模型）”选项。新增 `GenerationMode` 枚举和增量迁移，为小说保存 `generation_mode`、`generation_config`；字段分别备注“生成模式”“生成参数快照”，表备注保留“小说”。旧书默认模拟、参数快照为空，既有创意和阶段不回填、不重跑；PostgreSQL 模式检查约束兼容项目表前缀，存在真实书时拒绝回滚删除模式信息。
+- 创建服务只接受合法模式，模型、温度、细纲开关、提示版本及请求限制由服务端冻结，不接受伪造配置。真实路径使用独立 `RunSettingJob` 和 `SettingExecutor`，保持 B01 原任务载荷兼容；真实与模拟执行器及失败回调互不接管。创建事务提交后才投递 Redis，领用事务提交后才调用供应商；令牌阻止旧消息和迟到失败回调改写新尝试。
+- 复用 A03 统一调用和费用日志，按可选参数启用专用严格结构化 Agent，A03 默认128输出 Token、30秒行为不变。B02 为单步骤、最多4096输出 Token、45秒请求超时，队列任务最多尝试一次、超时60秒；不进行 SDK 隐式重试或供应商切换。沿用 OpenAI 官方 Responses 地址和关闭响应存储的配置。
+- 契约版本为 `b02-setting-v1`：世界观（时代、背景、规则）、人物卡（姓名、角色、目标、性格、语言习惯、能力、限制）、基调（文风、视角、节奏）、核心矛盾、保留的创意细节和待确认问题。SDK Schema 与本地严格 JSON/字段/类型校验共同生效；拒绝空白字段、缺字段、未知字段、空人物列表、代码围栏、截断和拒答，不自动修补。结果以 `simulation=false` 和 `candidate_status=candidate` 写入阶段输出，保留关联 CostLog ID。
+- 成功后小说暂停在outline，显示“设定已生成，等待大纲阶段”，不会接着运行后续模拟阶段，也不生成正文。失败按既有额度规则进入error或paused，历史及费用证据保留。详情展示每次设定尝试、中文候选、模型、耗时、费用可信度、调用编号和待确认问题；所有作者与模型文本均转义，不当作 HTML 执行。运行中的日志编号也按实际记录显示。
+- 显式重试入口 `app:retry-setting` 只为失败且额度充足的真实设定重新入队，追加新阶段和费用记录，不清零次数、不覆盖旧尝试。pending/unknown 调用或未知结果必须额外使用 `--confirm-unknown`，成功设定和运行中任务拒绝重试。普通状态机resume不能绕过此边界。真实验收只调用一次，没有执行付费重试。
+- 自动化验证：B02 专项28项、279个断言；最终完整回归152项、1475个断言全部通过，包含现有隔离 PostgreSQL 专项。覆盖冻结参数、结构化请求协议、提交后调用、重复及重叠消费、旧任务隔离、结构失败、401/429/503/408、连接失败、拒答/截断、计费留证、初始/最终落库失败、显式重试和额度保护、回滚保护及后台转义。Pint、26个新增或修改 PHP 文件语法及差异检查通过。
+- 开发库迁移前归档：`storage/app/private/backups/b02-before-real-20261103-184756.dump`，61,736字节，SHA-256 `565d1367f580fc036f6fc1834d027592e329f4596f62d2f8475b4a44e6192f98`。归档目录可读，本次没有执行实际恢复。只执行 B02 待办增量迁移；已实际核对新字段中文备注及旧书默认模式。
+- 浏览器唯一提交 `[B02验收] 灯塔来信 20261103-184756`，小说ID6。消费前pending、执行0次、阶段和关联费用记录均为0、Redis待处理1条。随后恢复 Herd 独立队列消费者，生成Setting阶段ID24及CostLog ID6；阶段completed，小说paused、当前outline、累计1/5、进度16.67%。实际响应模型 `gpt-4.1-mini-2025-04-14`，输入493、输出774 Token，阶段耗时8210毫秒；请求ID `req_fe34aaa009cb45db8609bd4cb4b17559`。价格配置为空，因此billing_status=unknown，实际及估算金额均为空，未将未知费用冒充零费用。
+- 后台已实际查看并刷新：世界观、3张人物卡、基调、原始创意具体细节、3项阻塞性待确认问题完整且中文可读。该结果仍是未批准候选：例如模型在师父状态未知时使用“生前”措辞，需要作者审阅；结构校验通过不代表语义冲突已全部排除，更不代表作者批准或正式剧情提交。保留原始结果，不手工改写或追加调用。
+- 完整性核查通过：所有旧行的既有字段摘要一致，只新增小说ID6、阶段ID24、费用日志ID6和迁移记录ID13。验收后users=2、settings=8、novels=5、novel_stages=23、chapters=0、cost_logs=6、jobs=0、failed_jobs=0、migrations=13；Redis任务归零。证据保存在 `storage/app/private/b02-evidence/20261103-184756/`，包含before、migration、pending、after、完整测试输出和验收摘要。Herd独立queue与vite保持运行，完整dev栈仍停止。
+
+**操作入口：**
+
+```bash
+# 只读查看本次已保存的阶段，不再调用模型。
+php artisan app:show-novel-stages 6 --stage-id=24 --json --no-interaction
+# 仅对失败设定使用；会产生新的模型请求，成功的ID6不会被重新执行。
+php artisan app:retry-setting <小说ID> --no-interaction
+# 仅在核查未知调用后，显式接受可能重复计费时使用。
+php artisan app:retry-setting <小说ID> --confirm-unknown --no-interaction
+```
+
+**范围边界：** 未执行 B03 大纲、B04 正文、B08 完整恢复台或蓝图批准功能。参考 [OpenAI Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs) 和 [GPT-4.1 Mini](https://developers.openai.com/api/docs/models/gpt-4.1-mini)。
+
 ### B03 Outline 阶段 + 强制推进点
 - **目标**：生成分章大纲，每章必须包含 1～3 条「必须完成的情节推进点」
 - **输入前提**：B02 完成

@@ -17,8 +17,12 @@ final class AiTextGenerationService
     public function __construct(private FakeTextProvider $fake, private OpenAiTextProvider $real, private CostEstimator $estimator) {}
 
     /** 执行一次调用并返回持久化的统一结果；任何失败都不自动重试。 */
-    public function generate(string $prompt, string $mode = 'fake', ?string $model = null, ?int $novelId = null, ?int $novelStageId = null, ?string $promptVersion = null): CostLog
+    public function generate(string $prompt, string $mode = 'fake', ?string $model = null, ?int $novelId = null, ?int $novelStageId = null, ?string $promptVersion = null, ?TextRequestOptions $options = null): CostLog
     {
+        $options ??= TextRequestOptions::probe();
+        if ($options->structuredSetting && $mode !== 'real') {
+            throw new InvalidArgumentException('结构化设定必须走显式真实调用路径');
+        }
         if (! in_array($mode, ['fake', 'real'], true) || trim($prompt) === '') {
             throw new InvalidArgumentException('调用模式必须为 fake 或 real，提示内容不能为空。');
         }
@@ -40,15 +44,15 @@ final class AiTextGenerationService
         $log = CostLog::query()->create([
             'request_uuid' => (string) Str::uuid7(), 'mode' => $mode, 'requested_provider' => $mode === 'real' ? 'openai' : 'fake',
             'requested_model' => $model, 'novel_id' => $novelId, 'novel_stage_id' => $novelStageId,
-            'route_version' => $mode === 'real' ? 'a03-openai-v1' : 'a03-fake-v1', 'prompt_version' => $promptVersion,
-            'prompt_hash' => hash('sha256', $prompt), 'request_parameters' => ['max_output_tokens' => 128, 'timeout_seconds' => 30, 'attempt_limit' => 1],
+            'route_version' => $mode === 'real' ? ($options->structuredSetting ? 'b02-openai-setting-v1' : 'a03-openai-v1') : 'a03-fake-v1', 'prompt_version' => $promptVersion,
+            'prompt_hash' => hash('sha256', $prompt), 'request_parameters' => $options->toArray(),
             'status' => 'pending', 'billing_status' => $mode === 'fake' ? 'simulated' : 'unknown', 'started_at' => now(),
         ]);
         $started = hrtime(true);
         // 在外部调用前冻结整个价格集合，运行中配置变化不影响本次计价。
         $prices = config('ai.costs.prices', []);
         try {
-            $result = ($mode === 'fake' ? $this->fake : $this->real)->generate($prompt, $model);
+            $result = ($mode === 'fake' ? $this->fake : $this->real)->generate($prompt, $model, $options);
             $log->fill($this->resultAttributes($result));
             $this->validateUsage($result);
             $price = $result->model !== null && is_array($prices[$result->model] ?? null) ? $prices[$result->model] : null;

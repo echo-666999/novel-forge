@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Enums\GenerationMode;
 use App\Enums\NovelStatus;
 use App\Models\Novel;
 use App\Services\Pipeline\FakeStageExecutor;
@@ -34,7 +35,7 @@ class RunNovelPipelineJob implements ShouldQueue
     public function handle(): void
     {
         $novel = Novel::query()->find($this->novelId);
-        if ($novel === null) {
+        if ($novel === null || $novel->generation_mode !== GenerationMode::Simulation) {
             return;
         }
         // 显式构造模拟执行器，不解析可被后续真实供应商替换的全局执行契约。
@@ -45,7 +46,7 @@ class RunNovelPipelineJob implements ShouldQueue
     /** 任务未能启动时仅标记未领用小说，不回收 running 尝试或改写阶段历史。 */
     public function failed(?Throwable $exception): void
     {
-        Novel::query()->whereKey($this->novelId)->where('status', NovelStatus::Pending->value)
+        Novel::query()->whereKey($this->novelId)->where('generation_mode', GenerationMode::Simulation->value)->where('status', NovelStatus::Pending->value)
             ->where('execution_count', 0)->whereDoesntHave('stages')->update(['status' => NovelStatus::Error]);
         Log::warning('小说模拟启动任务未完成', ['novel_id' => $this->novelId, 'error_category' => $exception === null ? 'unknown' : class_basename($exception)]);
     }

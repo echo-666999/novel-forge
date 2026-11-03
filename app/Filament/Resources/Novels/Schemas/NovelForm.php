@@ -2,6 +2,8 @@
 
 namespace App\Filament\Resources\Novels\Schemas;
 
+use App\Enums\GenerationMode;
+use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Schemas\Components\Section;
@@ -16,9 +18,12 @@ class NovelForm
         return $schema
             ->components([
                 Section::make('创作信息')
-                    ->description('当前启动模拟流程，不生成小说正文，也不产生模型费用。')
+                    ->description('默认模拟不产生模型费用。显式选择真实设定将调用模型，成功后暂停等待大纲阶段；本阶段不生成正文。')
                     ->columns(2)->columnSpanFull()
                     ->schema([
+                        Select::make('generation_mode')->label('生成模式')->required()->native()
+                            ->options(collect(GenerationMode::cases())->mapWithKeys(fn (GenerationMode $mode): array => [$mode->value => $mode->label()])->all())
+                            ->default(GenerationMode::Simulation->value)->columnSpanFull(),
                         TextInput::make('title')->label('书名')->required()->maxLength(255)->regex('/(*UCP)\S/u')
                             ->validationMessages(['required' => '请输入书名。', 'max' => '书名不得超过255个字符。', 'regex' => '书名不能只包含空白。']),
                         TextInput::make('genre')->label('题材')->maxLength(255)->placeholder('例如：玄幻、都市、悬疑'),

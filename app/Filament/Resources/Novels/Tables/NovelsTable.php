@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Novels\Tables;
 
+use App\Enums\GenerationMode;
 use App\Enums\NovelStatus;
 use App\Enums\Stage;
 use App\Filament\Resources\Novels\NovelResource;
@@ -22,10 +23,11 @@ class NovelsTable
             ->emptyStateHeading('还没有小说')->emptyStateDescription('点击“创建小说”，保存你的第一条创意。')
             ->columns([
                 TextColumn::make('title')->label('书名')->searchable()->limit(35),
+                TextColumn::make('generation_mode')->label('生成模式')->formatStateUsing(fn (GenerationMode $state): string => $state->label()),
                 TextColumn::make('genre')->label('题材')->placeholder('未填写'),
                 TextColumn::make('target_chapters')->label('目标章数')->suffix('章'),
                 TextColumn::make('status')->label('状态')->badge()
-                    ->formatStateUsing(fn (NovelStatus $state): string => NovelResource::statusLabel($state))
+                    ->formatStateUsing(fn (NovelStatus $state, Novel $record): string => NovelResource::statusLabel($state, $record))
                     ->color(fn (NovelStatus $state): string => NovelResource::statusColor($state)),
                 TextColumn::make('current_stage')->label('当前阶段')->placeholder('尚未开始')
                     ->formatStateUsing(fn (?Stage $state): ?string => $state?->label()),

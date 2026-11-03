@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Novels\Pages;
 
+use App\Enums\GenerationMode;
 use App\Filament\Resources\Novels\NovelResource;
 use App\Services\Pipeline\CreateNovelService;
 use Filament\Actions\Action;
@@ -41,7 +42,7 @@ class CreateNovel extends CreateRecord
             return Notification::make()->warning()->title('小说已保存，启动投递未确认')->body('请查看列表中的运行状态，不必重复创建。');
         }
 
-        return Notification::make()->success()->title('小说已创建，已提交启动请求')->body('当前运行模拟流程，不生成正文或产生模型费用。');
+        return Notification::make()->success()->title('小说已创建，已提交启动请求')->body($this->record->generation_mode === GenerationMode::SettingReal ? '真实设定已入队，将产生模型调用费用；完成后暂停等待大纲阶段。' : '当前运行模拟流程，不生成正文或产生模型费用。');
     }
 
     /** 创建后返回带状态轮询的列表。 */

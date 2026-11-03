@@ -2,18 +2,22 @@
 
 namespace App\Services\Pipeline;
 
+use App\Enums\GenerationMode;
 use App\Enums\NovelStatus;
 use App\Jobs\RunNovelPipelineJob;
+use App\Jobs\RunSettingJob;
 use App\Models\Novel;
+use App\Services\Ai\TextRequestOptions;
 use App\Settings\GeneralSettings;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;
 use LogicException;
 use Throwable;
 
-/** 创建小说并异步投递模拟流程，运行状态不接受客户端赋值。 */
+/** 创建小说并按显式模式异步投递流程，运行状态不接受客户端赋值。 */
 final class CreateNovelService
 {
     /** 校验业务字段，先提交小说，再投递 Redis；投递失败仍保留原始创意。
@@ -25,6 +29,7 @@ final class CreateNovelService
             throw new LogicException('请在数据库事务之外创建并启动小说');
         }
         $data = Validator::make($input, [
+            'generation_mode' => ['sometimes', 'required', 'in:simulation,setting_real'],
             'title' => ['required', 'string', 'max:255', 'regex:/(*UCP)\S/u'],
             'genre' => ['nullable', 'string', 'max:255'],
             'premise_raw' => ['required', 'string', 'regex:/(*UCP)\S/u'],
@@ -36,19 +41,33 @@ final class CreateNovelService
             'required' => '请填写:attribute。', 'string' => ':attribute必须为文本。',
             'max' => ':attribute超出允许范围。', 'min' => ':attribute必须大于0。',
             'integer' => ':attribute必须为整数。', 'regex' => ':attribute不能只包含空白。',
-            'array' => '篇幅策略格式不正确。', 'gte' => '每章字数上限不得小于下限。',
+            'in' => '生成模式不合法。', 'array' => '篇幅策略格式不正确。', 'gte' => '每章字数上限不得小于下限。',
         ], [
-            'title' => '书名', 'genre' => '题材', 'premise_raw' => '原始创意', 'target_chapters' => '目标章数',
+            'generation_mode' => '生成模式', 'title' => '书名', 'genre' => '题材', 'premise_raw' => '原始创意', 'target_chapters' => '目标章数',
             'chapter_length_policy.min_characters' => '每章字数下限', 'chapter_length_policy.max_characters' => '每章字数上限',
         ])->validate();
+        $mode = GenerationMode::from($data['generation_mode'] ?? 'simulation');
         $settings = app(GeneralSettings::class);
         $limit = $settings->max_execution_count;
         $fineOutline = $settings->enable_fine_outline;
         if ($limit < 1 || $limit > 2147483647) {
             throw new LogicException('通用设置中的执行次数上限不合法');
         }
+        // 真实调用参数只能由服务端冻结，不接受表单伪造的配置快照。
+        $config = $mode === GenerationMode::SettingReal ? [
+            'invocation_id' => (string) Str::uuid7(),
+            'model' => trim($settings->default_model),
+            'enable_fine_outline' => $fineOutline,
+            ...TextRequestOptions::setting($settings->temperature)->toArray(),
+            'prompt_version' => 'b02-setting-prompt-v1',
+        ] : null;
+        if ($config !== null && ($config['model'] === '' || strlen($config['model']) > 128)) {
+            throw new LogicException('默认模型标识不合法');
+        }
         // 只写入白名单字段；创意原文不摘要、不改写，篇幅数值统一保存为整数。
         $novel = DB::transaction(fn (): Novel => Novel::query()->create([
+            'generation_mode' => $mode,
+            'generation_config' => $config,
             'title' => trim($data['title']),
             'genre' => filled($data['genre'] ?? null) ? trim($data['genre']) : null,
             'premise_raw' => $data['premise_raw'],
@@ -62,7 +81,7 @@ final class CreateNovelService
 
         try {
             // 显式分发而非依赖 PendingDispatch 析构，确保投递异常在本处捕获。
-            Bus::dispatch(new RunNovelPipelineJob($novel->id, $fineOutline));
+            Bus::dispatch($mode === GenerationMode::SettingReal ? new RunSettingJob($novel->id, $config['invocation_id']) : new RunNovelPipelineJob($novel->id, $fineOutline));
 
             return new NovelCreationResult($novel->refresh(), true);
         } catch (Throwable $exception) {

@@ -6,7 +6,7 @@ namespace App\Services\Ai;
 final class FakeTextProvider implements TextProvider
 {
     /** 固定 JSON 是验收夹具，不代表模型实际生成的小说内容。 */
-    public function generate(string $prompt, string $model): TextGenerationResult
+    public function generate(string $prompt, string $model, ?TextRequestOptions $options = null): TextGenerationResult
     {
         $data = ['ok' => true, 'message' => 'A03 Fake Provider'];
 

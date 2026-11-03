@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\GenerationMode;
 use App\Enums\NovelStatus;
 use App\Enums\Stage;
 use Database\Factories\NovelFactory;
@@ -11,7 +12,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /** 小说及其运行计数骨架，正式剧情由后续提交体系维护。 */
-#[Fillable(['title', 'genre', 'premise_raw', 'target_chapters', 'chapter_length_policy', 'status', 'current_stage', 'execution_count', 'max_execution_count', 'progress', 'chapters_done', 'chapters_total', 'state_version'])]
+#[Fillable(['title', 'genre', 'premise_raw', 'target_chapters', 'chapter_length_policy', 'status', 'current_stage', 'execution_count', 'max_execution_count', 'progress', 'chapters_done', 'chapters_total', 'state_version', 'generation_mode', 'generation_config'])]
 class Novel extends Model
 {
     /** 使用隔离测试工厂创建关联数据。
@@ -23,6 +24,7 @@ class Novel extends Model
      * @var array<string, mixed>
      */
     protected $attributes = [
+        'generation_mode' => 'simulation',
         'status' => 'pending',
         'execution_count' => 0,
         'max_execution_count' => 5,
@@ -38,6 +40,8 @@ class Novel extends Model
     protected function casts(): array
     {
         return [
+            'generation_mode' => GenerationMode::class,
+            'generation_config' => 'array',
             'status' => NovelStatus::class,
             'current_stage' => Stage::class,
             'chapter_length_policy' => 'array',

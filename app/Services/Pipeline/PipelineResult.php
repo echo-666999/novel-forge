@@ -2,6 +2,7 @@
 
 namespace App\Services\Pipeline;
 
+use App\Enums\GenerationMode;
 use App\Enums\NovelStatus;
 use App\Enums\Stage;
 use App\Models\Novel;
@@ -18,12 +19,13 @@ final readonly class PipelineResult
         public int $maxExecutionCount,
         public string $progress,
         public string $reason,
+        public bool $simulation,
     ) {}
 
     /** 从刚读取的持久化状态创建返回快照。 */
     public static function fromNovel(Novel $novel, string $reason): self
     {
-        return new self($novel->id, $novel->status, $novel->current_stage, $novel->execution_count, $novel->max_execution_count, $novel->progress, $reason);
+        return new self($novel->id, $novel->status, $novel->current_stage, $novel->execution_count, $novel->max_execution_count, $novel->progress, $reason, $novel->generation_mode === GenerationMode::Simulation);
     }
 
     /** 输出明确带有模拟标识的命令行结果。
@@ -31,6 +33,6 @@ final readonly class PipelineResult
      */
     public function toArray(): array
     {
-        return ['simulation' => true, 'novel_id' => $this->novelId, 'status' => $this->status->value, 'current_stage' => $this->currentStage?->value, 'execution_count' => $this->executionCount, 'max_execution_count' => $this->maxExecutionCount, 'progress' => $this->progress, 'reason' => $this->reason];
+        return ['simulation' => $this->simulation, 'novel_id' => $this->novelId, 'status' => $this->status->value, 'current_stage' => $this->currentStage?->value, 'execution_count' => $this->executionCount, 'max_execution_count' => $this->maxExecutionCount, 'progress' => $this->progress, 'reason' => $this->reason];
     }
 }

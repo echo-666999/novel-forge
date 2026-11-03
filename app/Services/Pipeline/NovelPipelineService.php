@@ -2,6 +2,7 @@
 
 namespace App\Services\Pipeline;
 
+use App\Enums\GenerationMode;
 use App\Enums\NovelStatus;
 use App\Enums\Stage;
 use App\Enums\StageStatus;
@@ -12,19 +13,19 @@ use InvalidArgumentException;
 use LogicException;
 use Throwable;
 
-/** A05 同步模拟流水线；领用与结算短事务之间不持有数据库锁。 */
+/** 固定阶段流水线，模拟与真实设定模式明确分离；领用与结算短事务之间不持有数据库锁。 */
 final class NovelPipelineService
 {
     /** 注册表只负责固定阶段的执行器解析。 */
     public function __construct(private StageExecutorRegistry $executors) {}
 
     /** 启动或继续可运行状态；细纲参数只在第一次实际领用阶段时生效。 */
-    public function run(Novel $novel, ?bool $enableFineOutline = null): PipelineResult
+    public function run(Novel $novel, ?bool $enableFineOutline = null, ?string $invocationId = null): PipelineResult
     {
         $this->assertOutsideTransaction($novel);
         // 固定阶段无环，单次调用最多领用六次；失败与暂停立即返回。
         foreach (Stage::cases() as $unused) {
-            $claim = $novel->getConnection()->transaction(fn (): array|PipelineResult => $this->claim($novel, $enableFineOutline));
+            $claim = $novel->getConnection()->transaction(fn (): array|PipelineResult => $this->claim($novel, $enableFineOutline, $invocationId));
             if ($claim instanceof PipelineResult) {
                 return $claim;
             }
@@ -35,7 +36,7 @@ final class NovelPipelineService
                 $result = $this->executors->forStage($stage->stage)->execute($snapshot, $stage);
             } catch (Throwable $exception) {
                 // 不保存异常消息或堆栈，避免故障执行器把认证信息带入记录。
-                $result = StageResult::failed('模拟阶段执行异常：'.class_basename($exception));
+                $result = StageResult::failed('阶段执行异常：'.class_basename($exception));
             }
             $durationMs = (int) ((hrtime(true) - $started) / 1_000_000);
             $settled = $novel->getConnection()->transaction(fn (): PipelineResult => $this->settle($novel, $stage->id, $result, $durationMs));
@@ -51,6 +52,9 @@ final class NovelPipelineService
     public function resume(Novel $novel): PipelineResult
     {
         $this->assertOutsideTransaction($novel);
+        if ($novel->generation_mode === GenerationMode::SettingReal) {
+            throw new InvalidArgumentException('真实设定请使用 app:retry-setting 显式重试');
+        }
         $stopped = $novel->getConnection()->transaction(function () use ($novel): ?PipelineResult {
             $locked = $this->lockedNovel($novel);
             if ($locked->status === NovelStatus::Completed) {
@@ -79,9 +83,16 @@ final class NovelPipelineService
     /** 原子领用下一阶段：只有成功取得额度后才创建 running 尝试。
      * @return array{Novel, NovelStage}|PipelineResult
      */
-    private function claim(Novel $reference, ?bool $fineOutline): array|PipelineResult
+    private function claim(Novel $reference, ?bool $fineOutline, ?string $invocationId): array|PipelineResult
     {
         $novel = $this->lockedNovel($reference);
+        $real = $novel->generation_mode === GenerationMode::SettingReal;
+        if ($real !== $this->executors->isRealSetting()) {
+            throw new LogicException('小说模式与执行器不匹配，拒绝接管');
+        }
+        if ($real && ($invocationId === null || data_get($novel->generation_config, 'invocation_id') !== $invocationId)) {
+            return PipelineResult::fromNovel($novel, 'stale_job');
+        }
         if ($novel->status === NovelStatus::Completed) {
             return PipelineResult::fromNovel($novel, 'already_completed');
         }
@@ -98,6 +109,12 @@ final class NovelPipelineService
             throw new LogicException('阶段成功历史不是固定顺序的连续前缀，拒绝推进');
         }
         $next = $plan[count($values)];
+        // B02 成功后只停留在大纲边界，不把后续模拟结果拼进真实设定链。
+        if ($real && $next !== Stage::Setting) {
+            $novel->update(['status' => NovelStatus::Paused, 'current_stage' => $next]);
+
+            return PipelineResult::fromNovel($novel, 'awaiting_outline');
+        }
         if ($novel->current_stage !== null && $novel->current_stage !== $next) {
             throw new LogicException('当前阶段与已完成历史不一致，拒绝跳跃执行');
         }
@@ -111,8 +128,9 @@ final class NovelPipelineService
         $stage = $novel->stages()->create([
             'stage' => $next, 'status' => StageStatus::Running, 'execution_count' => $ordinal,
             'input' => [
-                'simulation' => true,
-                'pipeline' => ['version' => 'a05-v1', 'enable_fine_outline' => $frozen],
+                'simulation' => ! $real,
+                'pipeline' => ['version' => $real ? 'b02-setting-v1' : 'a05-v1', 'enable_fine_outline' => $frozen],
+                ...($real ? ['generation_config' => $novel->generation_config, 'invocation_id' => $invocationId] : []),
                 // 仅保存本次实际可见的业务输入，避免把全局配置或凭据混入快照。
                 'novel' => $novel->only(['id', 'title', 'genre', 'premise_raw', 'target_chapters', 'chapter_length_policy']),
                 'execution' => ['execution_count' => $novel->execution_count + 1, 'max_execution_count' => $novel->max_execution_count, 'attempt_no' => $ordinal],
@@ -142,7 +160,7 @@ final class NovelPipelineService
         }
         $stage->update([
             'status' => $result->succeeded ? StageStatus::Completed : StageStatus::Failed,
-            'output' => ['simulation' => true, 'stage' => $stage->stage->value, 'data' => $result->output],
+            'output' => ['simulation' => $novel->generation_mode === GenerationMode::Simulation, 'stage' => $stage->stage->value, 'data' => $result->output],
             'error_message' => $result->error !== null ? mb_substr($result->error, 0, 2000) : null,
             'cost' => $result->cost,
             'duration_ms' => $durationMs,
@@ -158,6 +176,12 @@ final class NovelPipelineService
                 return PipelineResult::fromNovel($novel, 'completed');
             }
             $novel->current_stage = $plan[$index + 1];
+            if ($novel->generation_mode === GenerationMode::SettingReal) {
+                $novel->status = NovelStatus::Paused;
+                $novel->save();
+
+                return PipelineResult::fromNovel($novel, 'awaiting_outline');
+            }
         }
         if ($novel->execution_count >= $novel->max_execution_count) {
             $novel->status = NovelStatus::Paused;
@@ -171,22 +195,26 @@ final class NovelPipelineService
         return PipelineResult::fromNovel($novel, $reason);
     }
 
-    /** 从首条尝试读取冻结开关；只允许本服务产生的模拟历史。
+    /** 从首条尝试读取冻结开关；按模式校验版本，不混用真实和模拟历史。
      * @return array{list<Stage>, bool}
      */
     private function plan(Novel $novel, ?bool $requested): array
     {
         if ($novel->chapters_done !== 0 || $novel->state_version !== 0 || $novel->chapters()->exists()) {
-            throw new InvalidArgumentException('A05 仅支持无章节、无正式状态的模拟小说');
+            throw new InvalidArgumentException('当前流水线仅支持无章节、无正式状态的小说');
         }
+        $real = $novel->generation_mode === GenerationMode::SettingReal;
         $first = $novel->stages()->orderBy('id')->first();
         if ($first !== null) {
             $frozen = data_get($first->input, 'pipeline.enable_fine_outline');
-            if (data_get($first->input, 'simulation') !== true || data_get($first->input, 'pipeline.version') !== 'a05-v1' || ! is_bool($frozen)) {
-                throw new LogicException('既有阶段缺少 A05 模拟快照，拒绝接管');
+            if (data_get($first->input, 'simulation') !== ! $real || data_get($first->input, 'pipeline.version') !== ($real ? 'b02-setting-v1' : 'a05-v1') || ! is_bool($frozen)) {
+                throw new LogicException('既有阶段快照与生成模式不一致，拒绝接管');
             }
         } else {
-            $frozen = $requested ?? app(GeneralSettings::class)->enable_fine_outline;
+            $frozen = $real ? data_get($novel->generation_config, 'enable_fine_outline') : ($requested ?? app(GeneralSettings::class)->enable_fine_outline);
+            if (! is_bool($frozen)) {
+                throw new LogicException('缺少冻结的细纲配置');
+            }
         }
         $plan = array_values(array_filter(Stage::cases(), static fn (Stage $stage): bool => $frozen || $stage !== Stage::FineOutline));
 
