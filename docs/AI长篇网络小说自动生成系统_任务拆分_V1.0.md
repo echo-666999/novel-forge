@@ -173,6 +173,35 @@ vendor/bin/phpunit tests/Feature/A03AiGenerationTest.php tests/Feature/A03Postgr
   3. 人为调低上限，确认会暂停
 - **建议工时**：1～1.5 天
 
+#### A05 实施与验收记录（2026年11月3日）
+
+**状态：已完成。固定假数据阶段流转、执行次数硬上限、显式恢复、并发重复领用保护、完整回归及开发库命令验收均通过。A06 尚未执行。**
+
+- 新增 `App\Services\Pipeline\NovelPipelineService`、阶段执行契约、结果快照、固定注册表和纯假数据执行器。阶段仅来自既有 Stage 枚举：setting → outline → fine_outline（可选）→ content → polish → export。注册表不提供运行时扩展入口，执行器不创建任务树、不自行推进或重试。
+- `run(Novel, ?bool $enableFineOutline = null)` 启动或继续可运行状态；`resume(Novel)` 仅显式恢复 paused/error。每次阶段尝试新建 NovelStage，Novel.execution_count 累计加1，记录的 execution_count 为该阶段尝试序号；失败历史不覆盖，普通run不自动恢复。阶段异常只保存安全类别，不保存异常消息或堆栈。
+- 用户确认保留现有默认上限5，完整六阶段验收显式指定6。每次领用前检查额度，达到上限且仍有工作时暂停；最后一次允许的尝试恰好完成export时优先标记completed。失败未触顶为error，触顶为paused，保留当前待执行或失败阶段。提升小说上限后显式resume，不清零计数，不重跑已完成阶段。
+- 首条尝试冻结细纲开关及 a05-v1 模拟版本，后续从快照读取；关闭细纲不产生对应记录、不耗次数。相邻阶段通过已有input/output字段传递上次成功结果。模拟进度按已完成的启用阶段比例计算，chapters_done、chapters_total和state_version不改变；完成不代表正式剧情提交。
+- 领用短事务锁定小说并原子保存running尝试和计数；执行器在事务外运行；结算再加锁核对当前阶段、活动尝试及状态。并发调用返回busy，不重复领用；迟到结果不能覆盖已结束尝试。外层事务、非模拟旧阶段及已有章节/正式状态的小说被拒绝接管。进程中断后遗留running记录的自动租约回收、看门狗等不属于A05，未宣称已实现。
+- 新增命令 `app:verify-novel-pipeline`，只创建带 `[A05验收]` 前缀的新合成小说，不接管或删除既有小说。支持 `--max-execution-count`、`--disable-fine-outline`、`--json`，默认使用通用设置中的5次上限；完成退出0，额度暂停退出2，其他失败退出1。输出与阶段快照明确标记simulation，假正文/润色/导出阶段只产生模拟元信息，不写章节、正式产物或导出文件，不调用AI SDK、真实模型或外部HTTP。
+- 复用现有模型和表，未新增或修改migration，未改变默认次数、通用设置、第三方依赖或成本记录。新增类、接口、方法及关键逻辑均有中文注释；本次没有新增表/字段备注项。
+- A05专用库 `novel_forge_app_a05_test` 已由DBX已有管理员连接创建，所有者novel_forge_app，用途备注 `novel-forge A05 isolated tests`。迁移或清理前核对身份，不复用A02/A03/A04及开发库。PostgreSQL双连接测试确认执行器运行时领用已提交、对等连接看见running并返回busy；跨连接恢复后已有完成记录内容不变。
+- 验证：A05行为测试13项、153个断言；PostgreSQL测试3项、46个断言；全套74项测试、755个断言通过，无失败或incomplete。覆盖六阶段、关闭细纲、上限1/5、最终阶段恰好触顶、失败/异常、显式恢复与计数连续、细纲冻结、已完成幂等、重复领用、迟到结果、旧数据保护及CLI退出码。Pint、10个本轮PHP文件语法和差异检查通过。
+- 开发库命令验收前备份 `storage/app/private/backups/a05-before-smoke-20261103-140235.dump`，59,367字节，SHA-256 `4fbdb01e18d16384de810f9dca0dfd311502a5f3a14c34aa1bce8bb0cf688e69`，归档目录可读，不代表本次做了实际恢复。证据目录为 `storage/app/private/a05-evidence/20261103-140235/`，包含before.json、complete.json、paused.json及after.json。
+- 实际完整验收：小说ID2，额度6、累计6，六阶段记录ID2～7全部completed，当前阶段export、进度100.00，命令退出0。实际低额度验收：小说ID3，额度5、累计5，阶段记录ID8～12完成至polish，未创建export记录，当前待执行export、进度83.33、reason=execution_limit，状态paused，退出2是预期暂停而非命令故障。两条合成小说和11条阶段记录保留供复核。
+- 完整性核查通过：users、settings、cost_logs、既有novels/novel_stages/chapters逐行摘要均未改变；只新增上述两条合成小说及11条模拟阶段记录，没有新增章节或模型费用记录。未重置已完成任务或删除验收证据。
+
+**命令行复核：** 在项目根目录运行，每次都会新增一条有标识的合成小说；实际验收已通过，不需要为重复确认再次执行。
+
+```bash
+# 六阶段完成，预期退出0。
+php artisan app:verify-novel-pipeline --max-execution-count=6 --json --no-interaction
+# 保留默认上限5时在导出前暂停，预期退出2。
+php artisan app:verify-novel-pipeline --max-execution-count=5 --json --no-interaction
+# 关闭细纲后五阶段可完成，预期退出0。
+php artisan app:verify-novel-pipeline --disable-fine-outline --json --no-interaction
+vendor/bin/phpunit tests/Feature/A05PipelineTest.php tests/Feature/A05PostgresTest.php
+```
+
 ### A06 阶段执行记录与可观测性基础
 - **目标**：每个阶段完整保存 input / output / cost / duration
 - **输入前提**：A05 完成
