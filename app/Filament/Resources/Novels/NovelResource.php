@@ -7,6 +7,7 @@ use App\Enums\NovelStatus;
 use App\Enums\Stage;
 use App\Filament\Resources\Novels\Pages\CreateNovel;
 use App\Filament\Resources\Novels\Pages\ListNovels;
+use App\Filament\Resources\Novels\Pages\ViewChapterContent;
 use App\Filament\Resources\Novels\Pages\ViewNovel;
 use App\Filament\Resources\Novels\Pages\ViewOutlinePlan;
 use App\Filament\Resources\Novels\Schemas\NovelForm;
@@ -59,6 +60,10 @@ class NovelResource extends Resource
     public static function statusLabel(NovelStatus $status, ?Novel $record = null): string
     {
         if ($record?->generation_mode === GenerationMode::SettingReal) {
+            if ($record->chapters()->exists()) {
+                return $record->chapters()->whereNotNull('progression_result')->where('progression_result->verdict', 'pass')->exists()
+                    ? '首章候选已完成，等待后续评审' : ($status === NovelStatus::Paused ? '首章已暂停，请查看原因' : $status->label());
+            }
             if ($status === NovelStatus::Paused && in_array($record->current_stage, [Stage::FineOutline, Stage::Content], true)) {
                 return '大纲已生成，等待后续阶段';
             }
@@ -94,6 +99,7 @@ class NovelResource extends Resource
             'create' => CreateNovel::route('/create'),
             'view' => ViewNovel::route('/{record}'),
             'outline' => ViewOutlinePlan::route('/{record}/outline'),
+            'content' => ViewChapterContent::route('/{record}/content'),
         ];
     }
 }

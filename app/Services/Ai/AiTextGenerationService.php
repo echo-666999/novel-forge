@@ -4,7 +4,9 @@ namespace App\Services\Ai;
 
 use App\Models\CostLog;
 use App\Models\NovelStage;
+use App\Services\Pipeline\PlanningJson;
 use App\Settings\GeneralSettings;
+use Illuminate\JsonSchema\JsonSchemaTypeFactory;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
@@ -40,12 +42,22 @@ final class AiTextGenerationService
         if ($model === '' || strlen($model) > 128) {
             throw new InvalidArgumentException('模型标识不能为空且不能超过128字节。');
         }
+        $parameters = $options->toArray();
+        if ($options->chapterStep !== null || $options->submissionPurpose !== null) {
+            // 同一不可变选项构造实际Agent和调用前审计；写入失败时绝不发送HTTP。
+            $agent = $options->submissionPurpose !== null ? new SubmissionAgent($options) : new ChapterGenerationAgent($options);
+            $schema = (new JsonSchemaTypeFactory)->object($agent->schema(new JsonSchemaTypeFactory))->withoutAdditionalProperties()->toArray();
+            $parameters['prompt_audit'] = ['system_prompt' => $agent->instructions(), 'user_prompt' => $prompt,
+                'response_schema' => $schema, 'parameters' => $options->toArray(),
+                'system_hash' => hash('sha256', $agent->instructions()), 'user_hash' => hash('sha256', $prompt),
+                'schema_hash' => PlanningJson::hash($schema)];
+        }
         // 必须在调用前写入数据库；写入失败直接停止，避免产生没有本地记录的费用。
         $log = CostLog::query()->create([
             'request_uuid' => (string) Str::uuid7(), 'mode' => $mode, 'requested_provider' => $mode === 'real' ? 'openai' : 'fake',
             'requested_model' => $model, 'novel_id' => $novelId, 'novel_stage_id' => $novelStageId,
-            'route_version' => $mode === 'real' ? ($options->outlineRange !== null ? 'b03-openai-outline-v1' : ($options->structuredSetting ? 'b02-openai-setting-v1' : 'a03-openai-v1')) : 'a03-fake-v1', 'prompt_version' => $promptVersion,
-            'prompt_hash' => hash('sha256', $prompt), 'request_parameters' => $options->toArray(),
+            'route_version' => $mode === 'real' ? ($options->submissionPurpose !== null ? 'submission-openai-'.$options->submissionPurpose.'-v1' : ($options->chapterStep !== null ? 'b04-openai-'.$options->chapterStep.'-'.Str::afterLast($options->chapterVersion(), '-') : ($options->outlineRange !== null ? 'b03-openai-outline-v1' : ($options->structuredSetting ? 'b02-openai-setting-v1' : 'a03-openai-v1')))) : 'a03-fake-v1', 'prompt_version' => $promptVersion,
+            'prompt_hash' => hash('sha256', $prompt), 'request_parameters' => $parameters,
             'status' => 'pending', 'billing_status' => $mode === 'fake' ? 'simulated' : 'unknown', 'started_at' => now(),
         ]);
         $started = hrtime(true);

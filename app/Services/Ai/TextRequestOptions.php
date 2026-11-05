@@ -2,15 +2,49 @@
 
 namespace App\Services\Ai;
 
+use App\Services\Pipeline\ContentExecutionContract;
 use InvalidArgumentException;
 
 /** 受限请求参数，不允许调用方绕过单次请求和阶段超时边界。 */
 final readonly class TextRequestOptions
 {
-    /** 仅通过固定用途工厂创建，参数随后同时用于请求与日志。
+    /** 参数仅由用途工厂生成；正文仅接受当前统一协议。
      * @param  array{start: int, end: int, total: int}|null  $outlineRange
+     * @param  array<string, mixed>|null  $executionContext
      */
-    private function __construct(public int $maxOutputTokens, public int $timeoutSeconds, public ?float $temperature, public bool $structuredSetting, public ?array $outlineRange = null) {}
+    private function __construct(public int $maxOutputTokens, public int $timeoutSeconds, public ?float $temperature, public bool $structuredSetting, public ?array $outlineRange = null, public ?string $chapterStep = null, public ?array $executionContext = null, public ?string $submissionPurpose = null, public ?array $submissionContext = null) {}
+
+    /** 独立提交准备用途，不与B04步骤或额度混用。 */
+    public static function submission(string $purpose, array $context): self
+    {
+        if (! in_array($purpose, ['review', 'extract'], true) || ($context['anchors'] ?? []) === []) {
+            throw new InvalidArgumentException('提交准备用途或正文目录无效');
+        }
+        ksort($context['anchors'], SORT_STRING);
+
+        return new self($purpose === 'review' ? 4096 : 8192, 180, 0.0, false, submissionPurpose: $purpose, submissionContext: $context);
+    }
+
+    /** 新旧协议选项隔离；统一执行器显式冻结版本并稳定JSONB目录顺序。 */
+    public static function executionChapter(string $step, float $temperature, array $context, int $bodyTokens = 8192): self
+    {
+        self::setting($temperature);
+        if (! in_array($step, ['fine', 'draft', 'revise', 'check'], true) || $bodyTokens < 1 || $bodyTokens > 8192) {
+            throw new InvalidArgumentException('统一正文步骤无效');
+        }
+        foreach (['anchors', 'rules', 'findings'] as $field) {
+            ksort($context[$field], SORT_STRING);
+        }
+        $context['version'] = ContentExecutionContract::VERSION;
+
+        return new self(in_array($step, ['fine', 'check'], true) ? 4096 : $bodyTokens, 180, $step === 'check' ? 0.0 : $temperature, false, null, $step, $context);
+    }
+
+    /** 正文请求的版本固定，不再根据已退役的策略字段推测版本。 */
+    public function chapterVersion(): string
+    {
+        return ContentExecutionContract::VERSION;
+    }
 
     /** 保持 A03 短文本连通验证的原有行为。 */
     public static function probe(): self
@@ -42,7 +76,7 @@ final readonly class TextRequestOptions
     /** 区分结构化文本与原有短文本，不改变 B02 的布尔兼容属性。 */
     public function isStructured(): bool
     {
-        return $this->structuredSetting || $this->outlineRange !== null;
+        return $this->structuredSetting || $this->outlineRange !== null || $this->chapterStep !== null || $this->submissionPurpose !== null;
     }
 
     /** 保存实际非敏感参数，默认请求保持原有三字段结构。
@@ -51,6 +85,15 @@ final readonly class TextRequestOptions
     public function toArray(): array
     {
         $parameters = ['max_output_tokens' => $this->maxOutputTokens, 'timeout_seconds' => $this->timeoutSeconds, 'attempt_limit' => 1];
+
+        if ($this->submissionPurpose !== null) {
+            return [...$parameters, 'temperature' => 0.0, 'schema_version' => 'chapter-submission-v1', 'purpose' => $this->submissionPurpose,
+                'submission_run_id' => $this->submissionContext['run_id'], 'version_id' => $this->submissionContext['version_id'], 'body_hash' => $this->submissionContext['body_hash'], 'strict' => true];
+        }
+
+        if ($this->chapterStep !== null) {
+            return [...$parameters, 'temperature' => $this->temperature, 'schema_version' => $this->chapterVersion(), 'strict' => true, 'step' => $this->chapterStep];
+        }
 
         if ($this->outlineRange !== null) {
             return [...$parameters, 'temperature' => $this->temperature, 'schema_version' => 'b03-outline-v1', 'strict' => true, 'range' => $this->outlineRange];

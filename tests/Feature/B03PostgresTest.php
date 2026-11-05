@@ -153,8 +153,18 @@ class B03PostgresTest extends TestCase
         $beforeNovel = $stage->novel->fresh()->getRawOriginal();
         $beforeStage = $stage->fresh()->getRawOriginal();
         $migration = require database_path('migrations/2026_11_03_190822_create_b03_planning_tables.php');
+        // B04 新增对章计划的限制删除外键，回滚旧迁移前先按依赖逆序撤销空子表。
+        $contentMigration = require database_path('migrations/2026_11_03_214251_create_b04_content_tables.php');
+        $recoveryMigration = require database_path('migrations/2026_11_04_011317_add_b04_length_recovery_to_chapter_generation_runs.php');
+        $submissionMigration = require database_path('migrations/2026_11_05_220323_create_chapter_submission_tables.php');
+        $submissionMigration->down();
+        $recoveryMigration->down();
+        $contentMigration->down();
         $migration->down();
         $migration->up();
+        $contentMigration->up();
+        $recoveryMigration->up();
+        $submissionMigration->up();
         $this->assertSame($beforeNovel, Novel::findOrFail($stage->novel_id)->getRawOriginal());
         $this->assertSame($beforeStage, $stage->fresh()->getRawOriginal());
     }

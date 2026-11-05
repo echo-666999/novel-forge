@@ -33,6 +33,8 @@ final class OpenAiTextProvider implements TextProvider
         try {
             $this->manager->textProvider('openai')->useTextGateway(new SingleAttemptOpenAiGateway($this->events));
             $agent = match (true) {
+                $options->submissionPurpose !== null => new SubmissionAgent($options),
+                $options->chapterStep !== null => new ChapterGenerationAgent($options),
                 $options->outlineRange !== null => new OutlineGenerationAgent($options),
                 $options->structuredSetting => new SettingGenerationAgent($options),
                 default => new TextGenerationAgent,

@@ -73,6 +73,16 @@ return [
             'after_commit' => false,
         ],
 
+        // B04持续验收长文专用，180秒HTTP < 210秒Job < 240秒重新可见。
+        'redis_content_acceptance' => [
+            'driver' => 'redis',
+            'connection' => env('REDIS_QUEUE_CONNECTION', 'default'),
+            'queue' => 'content-acceptance',
+            'retry_after' => 240,
+            'block_for' => null,
+            'after_commit' => false,
+        ],
+
         'deferred' => [
             'driver' => 'deferred',
         ],

@@ -9,6 +9,7 @@ use App\Filament\Resources\Novels\NovelResource;
 use App\Filament\Resources\Novels\Schemas\SettingConfirmationForm;
 use App\Models\Novel;
 use App\Services\Pipeline\ConfirmSettingService;
+use App\Services\Pipeline\ContentGenerationService;
 use App\Services\Pipeline\OutlineGenerationService;
 use App\Settings\GeneralSettings;
 use Filament\Actions\Action;
@@ -27,12 +28,41 @@ class ViewNovel extends ViewRecord
 {
     protected static string $resource = NovelResource::class;
 
+    /** 请求预算由已冻结的细纲开关和当前修订设置共同决定。 */
+    private function contentRequestCap(): int
+    {
+        $plan = $this->getRecord()->outlinePlans()->where('status', 'completed')->latest('id')->first();
+
+        return (data_get($plan?->config, 'enable_fine_outline', true) ? 3 : 2) + 2 * min(1, app(GeneralSettings::class)->max_retries_per_chapter);
+    }
+
     /** 动作只调用应用服务，禁止直接编辑运行字段或已有产物。
      * @return array<Action>
      */
     protected function getHeaderActions(): array
     {
         return [
+            Action::make('generateFirstChapter')->label('生成第1章')->modalHeading('生成首章候选并独立检查推进')
+                ->visible(fn (): bool => $this->getRecord()->outlinePlans()->where('status', 'completed')->exists() && ! $this->getRecord()->chapters()->exists())
+                ->modalDescription(fn (): string => '仅生成首章候选，不代表正式稿。模型'.app(GeneralSettings::class)->default_model.'，启动时冻结；本小说剩余执行额度'.max(0, $this->getRecord()->max_execution_count - $this->getRecord()->execution_count).'次。启用细纲时依次调用细纲、正文、独立推进检查；细纲和检查各4096输出Token、正文默认8192。请求总上限以下方数值为准，默认开启细纲最多5次、关闭最多4次，最多修订一次；全局设置为0时不修订。技术失败或额度不足立即停止。通用设置保持不变，金额未知不代表免费。')
+                ->schema([
+                    TextInput::make('tokens')->label('本次正文输出Token上限')->integer()->minValue(1)->maxValue(8192)->default(8192)->required(),
+                    TextInput::make('request_limit')->label('本次请求总上限（含细纲、检查及修订）')->integer()->minValue(1)->maxValue(2147483647)->maxValue(fn (): int => $this->contentRequestCap())->default(fn (): int => $this->contentRequestCap())->required(),
+                    TextInput::make('execution_limit')->label('确认本小说执行总上限')->integer()->minValue(1)->maxValue(2147483647)->default(fn (): int => max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + $this->contentRequestCap()))->required(),
+                    Textarea::make('reason')->label('本次覆盖通用额度的原因')->default('首章2500至3500字，本次正文使用8192输出Token，不修改通用设置')->required(),
+                    Checkbox::make('accept_request')->label('我确认按上述请求上限使用真实模型并产生费用；当前首章候选尚未获得正式稿批准。')->accepted(),
+                ])->action(function (array $data): void {
+                    try {
+                        app(ContentGenerationService::class)->start($this->getRecord(), Filament::auth()->user(), (int) $data['tokens'], (int) $data['request_limit'], $data['reason'], (int) $data['execution_limit']);
+                    } catch (InvalidArgumentException $exception) {
+                        Notification::make()->danger()->title('首章操作未执行')->body($exception->getMessage())->send();
+
+                        return;
+                    }
+                    $this->redirect(NovelResource::getUrl('content', ['record' => $this->getRecord()]));
+                }),
+            Action::make('viewContent')->label('查看首章候选')->url(fn (): string => NovelResource::getUrl('content', ['record' => $this->getRecord()]))
+                ->visible(fn (): bool => $this->getRecord()->chapters()->exists()),
             Action::make('refreshStatus')->label('刷新状态')->action(fn () => $this->getRecord()->refresh()),
             Action::make('confirmSetting')->label('确认设定')->modalHeading('修订并确认设定版本')->modalSubmitActionLabel('保存确认版本')
                 ->visible(fn (): bool => $this->canConfirmSetting())

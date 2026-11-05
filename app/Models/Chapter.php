@@ -10,7 +10,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /** 稳定章节节点骨架，正文和正式基线将在独立版本表中保存。 */
-#[Fillable(['novel_id', 'number', 'title', 'objective', 'status'])]
+#[Fillable(['novel_id', 'number', 'title', 'objective', 'status', 'current_candidate_version_id', 'progression_result', 'formal_version_id', 'canonical_commit_id', 'committed_at'])]
 class Chapter extends Model
 {
     /** 使用隔离测试工厂创建关联数据。
@@ -31,6 +31,10 @@ class Chapter extends Model
     protected function casts(): array
     {
         return [
+            'progression_result' => 'array',
+            'formal_version_id' => 'integer',
+            'canonical_commit_id' => 'integer',
+            'committed_at' => 'immutable_datetime',
             'number' => 'integer',
             'status' => ChapterStatus::class,
             'created_at' => 'immutable_datetime',
