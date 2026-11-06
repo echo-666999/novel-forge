@@ -26,8 +26,14 @@ final class ChapterGenerationAgent implements Agent, HasStructuredOutput
         }
     }
 
-    /** 生成和检查使用分离的固定中文指令。 */
+    /** 由同一冻结选项拼接模板，程序契约保持独立且不可由后台覆盖。 */
     public function instructions(): string
+    {
+        return $this->contractInstructions().$this->options->templateInstructions;
+    }
+
+    /** 生成和检查使用分离的固定中文指令。 */
+    private function contractInstructions(): string
     {
         $instructions = ContentExecutionContract::instructions($this->options->chapterStep);
         $number = $this->options->executionContext['chapter_number'] ?? 1;

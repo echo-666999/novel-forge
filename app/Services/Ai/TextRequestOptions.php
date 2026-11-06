@@ -13,7 +13,22 @@ final readonly class TextRequestOptions
      * @param  array{start: int, end: int, total: int}|null  $outlineRange
      * @param  array<string, mixed>|null  $executionContext
      */
-    private function __construct(public int $maxOutputTokens, public int $timeoutSeconds, public ?float $temperature, public bool $structuredSetting, public ?array $outlineRange = null, public ?string $chapterStep = null, public ?array $executionContext = null, public ?string $submissionPurpose = null, public ?array $submissionContext = null, public bool $settingDecision = false) {}
+    private function __construct(public int $maxOutputTokens, public int $timeoutSeconds, public ?float $temperature, public bool $structuredSetting, public ?array $outlineRange = null, public ?string $chapterStep = null, public ?array $executionContext = null, public ?string $submissionPurpose = null, public ?array $submissionContext = null, public bool $settingDecision = false, public string $templateInstructions = '', public ?array $templateSnapshot = null) {}
+
+    /** 复制不可变选项并附加根运行冻结模板；正文和审计引用使用同一份快照。 */
+    public function withTemplates(array $snapshot, array $variables): self
+    {
+        $scope = match (true) {
+            $this->settingDecision => 'decision',
+            $this->submissionPurpose !== null => $this->submissionPurpose,
+            $this->chapterStep !== null => $this->chapterStep,
+            $this->outlineRange !== null => 'outline',
+            default => 'setting',
+        };
+        $instructions = app(PromptTemplateManager::class)->instructions($snapshot, $scope, $variables);
+
+        return new self(...[...get_object_vars($this), 'templateInstructions' => $instructions, 'templateSnapshot' => $snapshot]);
+    }
 
     /** 自动授权下的设定决策仍经过独立结构化请求与计费审计。 */
     public static function decision(): self

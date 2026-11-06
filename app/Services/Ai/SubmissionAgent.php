@@ -20,8 +20,14 @@ final class SubmissionAgent implements Agent, HasStructuredOutput
 
     use Promptable;
 
-    /** 两个用途指令分离。 */
+    /** 由同一冻结选项拼接模板，程序契约保持独立且不可由后台覆盖。 */
     public function instructions(): string
+    {
+        return $this->contractInstructions().$this->options->templateInstructions;
+    }
+
+    /** 两个用途指令分离。 */
+    private function contractInstructions(): string
     {
         return SubmissionContract::instructions($this->options->submissionPurpose);
     }

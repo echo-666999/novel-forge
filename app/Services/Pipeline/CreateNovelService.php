@@ -7,6 +7,7 @@ use App\Enums\NovelStatus;
 use App\Jobs\RunNovelPipelineJob;
 use App\Jobs\RunSettingJob;
 use App\Models\Novel;
+use App\Services\Ai\PromptTemplateManager;
 use App\Services\Ai\TextRequestOptions;
 use App\Settings\GeneralSettings;
 use Illuminate\Support\Facades\Bus;
@@ -60,6 +61,9 @@ final class CreateNovelService
             'enable_fine_outline' => $fineOutline,
             ...TextRequestOptions::setting($settings->temperature)->toArray(),
             'prompt_version' => 'b02-setting-prompt-v1',
+            // 模板正文、版本与变量在小说根运行创建时冻结，恢复和后续章节沿用此快照。
+            'prompt_templates' => app(PromptTemplateManager::class)->snapshot(),
+            'prompt_variables' => ['title' => trim($data['title']), 'genre' => $data['genre'] ?? ''],
         ] : null;
         if ($config !== null && ($config['model'] === '' || strlen($config['model']) > 128)) {
             throw new LogicException('默认模型标识不合法');

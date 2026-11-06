@@ -4,6 +4,7 @@ namespace App\Services\Ai;
 
 use App\Models\ContextManifest;
 use App\Models\CostLog;
+use App\Models\Novel;
 use App\Models\NovelStage;
 use App\Services\Pipeline\ContextBuilder;
 use App\Services\Pipeline\PlanningJson;
@@ -44,11 +45,27 @@ final class AiTextGenerationService
         if ($model === '' || strlen($model) > 128) {
             throw new InvalidArgumentException('模型标识不能为空且不能超过128字节。');
         }
+        // 仅读取小说根运行的冻结模板；历史运行没有此字段时继续使用原程序指令。
+        if ($novelId !== null && $options->isStructured()) {
+            $config = Novel::findOrFail($novelId)->generation_config ?? [];
+            if (isset($config['prompt_templates'])) {
+                $options = $options->withTemplates($config['prompt_templates'], $config['prompt_variables']);
+            }
+        }
         // 费用审计记录最终模型参数，避免将已移除的温度误记为实际发送。
         $parameters = SingleAttemptOpenAiGateway::modelParameters($options->toArray(), $model);
-        if ($options->settingDecision || $options->chapterStep !== null || $options->submissionPurpose !== null) {
+        if ($options->templateSnapshot !== null) {
+            $parameters['prompt_templates'] = $options->templateSnapshot;
+        }
+        if ($options->settingDecision || $options->chapterStep !== null || $options->submissionPurpose !== null || $options->templateSnapshot !== null) {
             // 同一不可变选项构造实际Agent和调用前审计；写入失败时绝不发送HTTP。
-            $agent = $options->settingDecision ? new SettingDecisionAgent($options) : ($options->submissionPurpose !== null ? new SubmissionAgent($options) : new ChapterGenerationAgent($options));
+            $agent = match (true) {
+                $options->settingDecision => new SettingDecisionAgent($options),
+                $options->submissionPurpose !== null => new SubmissionAgent($options),
+                $options->chapterStep !== null => new ChapterGenerationAgent($options),
+                $options->outlineRange !== null => new OutlineGenerationAgent($options),
+                default => new SettingGenerationAgent($options),
+            };
             $schema = (new JsonSchemaTypeFactory)->object($agent->schema(new JsonSchemaTypeFactory))->withoutAdditionalProperties()->toArray();
             // C04先组装并持久化清单，阻塞时不建立成本流水、不发送供应商请求。
             $context = $options->submissionContext ?? $options->executionContext;
