@@ -14,6 +14,7 @@ use App\Models\Novel;
 use App\Models\User;
 use App\Services\Pipeline\CanonicalChapterContext;
 use App\Services\Pipeline\FirstChapterService;
+use App\Services\Pipeline\ForeshadowLedger;
 use App\Services\Pipeline\LegacyContentSources;
 use App\Services\Pipeline\OutlineGenerationService;
 use App\Services\Pipeline\PlanningJson;
@@ -25,6 +26,7 @@ use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Str;
 use Livewire\Livewire;
 use Tests\TestCase;
 
@@ -32,6 +34,9 @@ use Tests\TestCase;
 class C01SequenceTest extends TestCase
 {
     use DatabaseMigrations;
+
+    /** 专项验证供应商实际收到的到期伏笔，默认不改变其他场景。 */
+    private bool $assertForeshadows = false;
 
     /** 在第五章模拟独立评审拒绝，验证提交边界。 */
     private bool $rejectFifthReview = false;
@@ -82,6 +87,11 @@ class C01SequenceTest extends TestCase
                 }
                 $data = B03OutlineTest::batch();
             } elseif (isset($log->request_parameters['purpose'])) {
+                if ($this->assertForeshadows) {
+                    $payload = json_decode(explode('冻结提交输入：', $request['input'][1]['content'][0]['text'], 2)[1], true, flags: JSON_THROW_ON_ERROR);
+                    $this->assertCount(3, $payload['foreshadow_context']['items']);
+                    $this->assertSame([true, true, true], array_column($payload['foreshadow_context']['items'], 'must_address'));
+                }
                 if ($log->request_parameters['purpose'] === 'review') {
                     $submission = ChapterSubmissionRun::findOrFail($log->request_parameters['submission_run_id']);
                     $data = ['review' => ['verdict' => $this->rejectFifthReview && $submission->chapter->number === 5 ? 'needs_revision' : 'pass', 'summary' => '隔离评审通过', 'evidence_ids' => ['p1'], 'findings' => []]];
@@ -100,6 +110,10 @@ class C01SequenceTest extends TestCase
                 $this->assertSame(B02SettingTest::input()['premise_raw'], $payload['author_idea']);
                 // 检查供应商实际收到的输入，不能仅凭数据库有摘要就宣称已注入。
                 $number = $payload['chapter_number'];
+                if ($this->assertForeshadows) {
+                    $this->assertCount(3, $payload['foreshadow_context']['items']);
+                    $this->assertSame([true, true, true], array_column($payload['foreshadow_context']['items'], 'must_address'));
+                }
                 if ($number > 1) {
                     $this->assertCount($number - 1, $payload['prior_context']['chapters']);
                     $this->assertSame($number - 1, $payload['prior_context']['prior_state_version']);
@@ -146,8 +160,13 @@ class C01SequenceTest extends TestCase
     /** 十章顺序提交，每次后文只冻结此前正式事件；重复消息不重复请求。 */
     public function test_ten_chapters_commit_in_order_with_frozen_prior_context(): void
     {
+        $this->assertForeshadows = true;
         $service = app(FirstChapterService::class);
         $run = $service->start([...B02SettingTest::input(), 'chapter_length_policy' => ['min_characters' => 20, 'max_characters' => 300]], User::factory()->create(), true, false, chapterLimit: 10);
+        // 在生成首章前登记三条计划，验证所有十章的真实请求路径持续携带未完成义务。
+        foreach (range(1, 3) as $index) {
+            app(ForeshadowLedger::class)->plan(Novel::findOrFail($run->novel_id), User::firstOrFail(), '隔离伏笔'.$index, '后续回收线索', 1, 5, (string) Str::uuid7());
+        }
         for ($i = 0; $i < 100 && $run->status === 'pending'; $i++) {
             $run = $service->advance($run->id);
         }

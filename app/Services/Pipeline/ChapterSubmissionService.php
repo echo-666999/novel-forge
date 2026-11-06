@@ -243,6 +243,10 @@ final class ChapterSubmissionService
             if ($purpose === 'extract' && isset($run->config['repair_feedback'])) {
                 $payload['rejected_extraction'] = $run->config['repair_feedback'];
             }
+            // 评审与提取使用同一份章前伏笔输入，旧快照不补写新字段。
+            if (array_key_exists('foreshadow_context', $run->snapshot['content_sources'])) {
+                $payload['foreshadow_context'] = $run->snapshot['content_sources']['foreshadow_context'];
+            }
             $log = app(AiTextGenerationService::class)->generate('冻结提交输入：'.PlanningJson::encode($payload), 'real', $run->config['model'], $run->novel_id, null,
                 'submission-'.$purpose.'-'.SubmissionContract::VERSION, TextRequestOptions::submission($purpose, $context));
             if (preg_match('/^'.preg_quote($run->config['model'], '/').'(-\d{4}-\d{2}-\d{2})?$/D', $log->model ?? '') !== 1) {

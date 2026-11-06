@@ -191,6 +191,11 @@ final class ContentExecutionService
                 'maximum_change' => $policy['max_characters'] - $version->character_count, 'target_change' => intdiv($policy['min_characters'] + $policy['max_characters'], 2) - $version->character_count];
         }
 
+        // 只读取冻结快照，恢复和重试不能混入后续账本变更。
+        if (array_key_exists('foreshadow_context', $run->snapshot)) {
+            $payload['foreshadow_context'] = $run->snapshot['foreshadow_context'];
+        }
+
         return ['payload' => $payload, 'context' => $context];
     }
 

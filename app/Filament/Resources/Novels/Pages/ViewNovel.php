@@ -44,6 +44,8 @@ class ViewNovel extends ViewRecord
     {
         $actions = [
             // 状态回放仅查询正式历史，自动编排小说也保留入口。
+            // 自动运行小说同样允许查看和维护伏笔账本。
+            Action::make('viewForeshadows')->label('伏笔账本')->url(fn (): string => NovelResource::getUrl('foreshadows', ['record' => $this->getRecord()])),
             Action::make('viewState')->label('故事状态回放')->url(fn (): string => NovelResource::getUrl('state', ['record' => $this->getRecord()])),
             Action::make('viewCosts')->label('调用成本明细')->url(fn (): string => NovelResource::getUrl('costs', ['record' => $this->getRecord()])),
             Action::make('viewRun')->label('运行详情与恢复')->url(fn (): string => NovelResource::getUrl('run', ['record' => $this->getRecord()])),
@@ -115,7 +117,7 @@ class ViewNovel extends ViewRecord
         ];
         // 自动小说保留只读产物入口，所有推进与恢复均经独占编排器。
         if (FirstChapterRun::where('novel_id', $this->getRecord()->id)->exists()) {
-            return array_values(array_filter($actions, fn (Action $action): bool => in_array($action->getName(), ['viewState', 'viewCosts', 'viewRun', 'viewContent', 'refreshStatus', 'viewOutline'], true)));
+            return array_values(array_filter($actions, fn (Action $action): bool => in_array($action->getName(), ['viewForeshadows', 'viewState', 'viewCosts', 'viewRun', 'viewContent', 'refreshStatus', 'viewOutline'], true)));
         }
 
         return $actions;

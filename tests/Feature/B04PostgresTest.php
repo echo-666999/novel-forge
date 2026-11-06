@@ -148,6 +148,9 @@ class B04PostgresTest extends TestCase
         $submissionMigration = require database_path('migrations/2026_11_05_220323_create_chapter_submission_tables.php');
         // 后继谱系依赖提交表，按迁移逆序撤销并在恢复时重建。
         $lineageMigration = require database_path('migrations/2026_11_06_023001_add_successor_lineage_to_chapter_submission_runs.php');
+        // 伏笔证据依赖正式提交，隔离迁移测试先撤销空账本表。
+        $foreshadowMigration = require database_path('migrations/2026_11_06_164613_create_foreshadow_ledger_tables.php');
+        $foreshadowMigration->down();
         $lineageMigration->down();
         $submissionMigration->down();
         $recoveryMigration->down();
@@ -156,6 +159,7 @@ class B04PostgresTest extends TestCase
         $recoveryMigration->up();
         $submissionMigration->up();
         $lineageMigration->up();
+        $foreshadowMigration->up();
         $this->assertSame($before, Novel::findOrFail($stage->novel_id)->getRawOriginal());
         $this->assertSame($stageBefore, $stage->fresh()->getRawOriginal());
     }

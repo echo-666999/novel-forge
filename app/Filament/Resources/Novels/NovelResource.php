@@ -102,6 +102,8 @@ class NovelResource extends Resource
             'create' => CreateNovel::route('/create'),
             'view' => ViewNovel::route('/{record}'),
             'run' => Pages\ViewNovelRun::route('/{record}/run'),
+            // 伏笔计划与证据使用独立维护页。
+            'foreshadows' => Pages\ViewForeshadows::route('/{record}/foreshadows'),
             'state' => Pages\ViewStoryState::route('/{record}/state'),
             'costs' => Pages\ViewNovelCosts::route('/{record}/costs'),
             'outline' => ViewOutlinePlan::route('/{record}/outline'),

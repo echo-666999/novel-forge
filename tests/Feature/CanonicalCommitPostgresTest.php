@@ -7,6 +7,7 @@ use App\Models\ChapterEventExtraction;
 use App\Models\ChapterReview;
 use App\Models\ChapterSubmissionRun;
 use App\Models\ChapterSubmissionValidation;
+use App\Models\ForeshadowEvidence;
 use App\Models\Novel;
 use App\Models\NovelStage;
 use App\Models\StoryEntity;
@@ -82,7 +83,7 @@ class CanonicalCommitPostgresTest extends TestCase
     /** 每张新表及新增字段都有中文备注；JSONB冻结输入可往返。 */
     public function test_chinese_comments_and_jsonb_roundtrip(): void
     {
-        foreach (['chapter_submission_runs', 'chapter_reviews', 'chapter_event_extractions', 'chapter_submission_validations', 'canonical_commits', 'story_entities', 'story_events', 'story_state_projections', 'story_outbox_events'] as $table) {
+        foreach (['foreshadows', 'foreshadow_evidence', 'chapter_submission_runs', 'chapter_reviews', 'chapter_event_extractions', 'chapter_submission_validations', 'canonical_commits', 'story_entities', 'story_events', 'story_state_projections', 'story_outbox_events'] as $table) {
             $name = DB::getTablePrefix().$table;
             $this->assertMatchesRegularExpression('/\p{Han}/u', DB::selectOne('select obj_description(to_regclass(?)) as comment', [$name])->comment);
             foreach (DB::select('select attname,col_description(attrelid,attnum) as comment from pg_attribute where attrelid=to_regclass(?) and attnum>0 and not attisdropped', [$name]) as $column) {
@@ -182,10 +183,14 @@ class CanonicalCommitPostgresTest extends TestCase
         $beforeStage = $stage->getRawOriginal();
         $migration = require database_path('migrations/2026_11_05_220323_create_chapter_submission_tables.php');
         $lineage = require database_path('migrations/2026_11_06_023001_add_successor_lineage_to_chapter_submission_runs.php');
+        // 伏笔证据依赖正式提交，隔离迁移测试先撤销空账本表。
+        $foreshadowMigration = require database_path('migrations/2026_11_06_164613_create_foreshadow_ledger_tables.php');
+        $foreshadowMigration->down();
         $lineage->down();
         $migration->down();
         $migration->up();
         $lineage->up();
+        $foreshadowMigration->up();
         $this->assertSame($beforeNovel, Novel::findOrFail($stage->novel_id)->getRawOriginal());
         $this->assertSame($beforeStage, $stage->fresh()->getRawOriginal());
         ChapterSubmissionRun::factory()->create();
@@ -210,6 +215,18 @@ class CanonicalCommitPostgresTest extends TestCase
         ChapterSubmissionRun::factory()->create($attributes);
         $this->rejects(fn () => ChapterSubmissionRun::factory()->create([...$attributes, 'attempt' => 3]), '23505');
         $this->expectExceptionMessage('已有后继准备历史，拒绝回滚');
+        $migration->down();
+    }
+
+    /** 伏笔证据复合外键、转换约束与保留历史的回滚保护必须在真实数据库生效。 */
+    public function test_foreshadow_constraints_and_history_protection(): void
+    {
+        $entry = ForeshadowEvidence::factory()->create();
+        $this->rejects(fn () => DB::table('foreshadow_evidence')->where('id', $entry->id)->update(['novel_id' => Novel::factory()->create()->id]), '23503');
+        $this->rejects(fn () => DB::table('foreshadow_evidence')->where('id', $entry->id)->update(['to_status' => 'resolved']), '23514');
+        $this->rejects(fn () => DB::table('foreshadows')->where('id', $entry->foreshadow_id)->update(['target_chapter' => 0]), '23514');
+        $migration = require database_path('migrations/2026_11_06_164613_create_foreshadow_ledger_tables.php');
+        $this->expectExceptionMessage('伏笔账本已有历史，拒绝回滚');
         $migration->down();
     }
 
