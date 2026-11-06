@@ -51,6 +51,10 @@ class B04ContentTest extends TestCase
     /** 冻结历史夹具或纯契约回归，不通过旧业务路径生成运行。 */
     public static function clearFixtures(): void
     {
+        // 派生检索块先于小说清理，正式来源约束保持开启。
+        if (Schema::hasTable('search_documents')) {
+            DB::table('search_documents')->delete();
+        }
         // 清单仅在已核验隔离库内随夹具清理。
         if (Schema::hasTable('context_manifests')) {
             DB::table('context_manifests')->delete();

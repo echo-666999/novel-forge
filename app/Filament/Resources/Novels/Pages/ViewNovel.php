@@ -46,6 +46,8 @@ class ViewNovel extends ViewRecord
             // 状态回放仅查询正式历史，自动编排小说也保留入口。
             // 自动运行小说同样允许查看和维护伏笔账本。
             // 上下文清单同样向自动生成小说开放只读查看。
+            // 作者检索只查正式来源，外部嵌入由实验室显式启用。
+            Action::make('searchLab')->label('中文检索实验室')->url(fn (): string => NovelResource::getUrl('search', ['record' => $this->getRecord()])),
             Action::make('viewContexts')->label('上下文检查器')->url(fn (): string => NovelResource::getUrl('contexts', ['record' => $this->getRecord()])),
             Action::make('viewForeshadows')->label('伏笔账本')->url(fn (): string => NovelResource::getUrl('foreshadows', ['record' => $this->getRecord()])),
             Action::make('viewState')->label('故事状态回放')->url(fn (): string => NovelResource::getUrl('state', ['record' => $this->getRecord()])),
@@ -117,9 +119,9 @@ class ViewNovel extends ViewRecord
                     $this->getRecord()->refresh();
                 }),
         ];
-        // 自动小说保留只读产物入口，所有推进与恢复均经独占编排器。
+        // 自动小说同样保留检索实验室及只读产物入口，推进与恢复仍经独占编排器。
         if (FirstChapterRun::where('novel_id', $this->getRecord()->id)->exists()) {
-            return array_values(array_filter($actions, fn (Action $action): bool => in_array($action->getName(), ['viewContexts', 'viewForeshadows', 'viewState', 'viewCosts', 'viewRun', 'viewContent', 'refreshStatus', 'viewOutline'], true)));
+            return array_values(array_filter($actions, fn (Action $action): bool => in_array($action->getName(), ['searchLab', 'viewContexts', 'viewForeshadows', 'viewState', 'viewCosts', 'viewRun', 'viewContent', 'refreshStatus', 'viewOutline'], true)));
         }
 
         return $actions;
