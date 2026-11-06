@@ -11,6 +11,7 @@ use App\Models\FirstChapterRun;
 use App\Models\Novel;
 use App\Services\Pipeline\ConfirmSettingService;
 use App\Services\Pipeline\ContentGenerationService;
+use App\Services\Pipeline\FormalChapterExport;
 use App\Services\Pipeline\OutlineGenerationService;
 use App\Settings\GeneralSettings;
 use Filament\Actions\Action;
@@ -23,6 +24,7 @@ use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ViewRecord;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /** 小说只读详情与明确规划动作；确认设定和发送付费请求相互独立。 */
 class ViewNovel extends ViewRecord
@@ -43,6 +45,26 @@ class ViewNovel extends ViewRecord
     protected function getHeaderActions(): array
     {
         $actions = [
+            // 正式导出对手动和自动生成小说均开放，只导出从第一章开始的连续正式版本。
+            Action::make('exportFormal')->label('导出正式章节')->visible(fn (): bool => $this->getRecord()->chapters_done > 0)
+                ->modalHeading('导出 TXT / Markdown')->modalDescription('从第1章导出至指定章，包含目录。仅使用正式提交版本，缺章或来源损坏时拒绝导出。不调用AI。')
+                ->schema([
+                    Select::make('format')->label('文件格式')->options(['txt' => 'TXT（UTF-8）', 'md' => 'Markdown（UTF-8）'])->default('txt')->required()->native(),
+                    TextInput::make('end_chapter')->label('截至正式章号')->integer()->minValue(1)->maxValue(fn (): int => $this->getRecord()->chapters_done)->default(fn (): int => min(10, $this->getRecord()->chapters_done))->required(),
+                ])->action(function (array $data): ?StreamedResponse {
+                    try {
+                        $export = app(FormalChapterExport::class)->build($this->getRecord()->id, (int) $data['end_chapter'], $data['format']);
+                    } catch (InvalidArgumentException $exception) {
+                        Notification::make()->danger()->title('导出未执行')->body($exception->getMessage())->send();
+
+                        return null;
+                    }
+
+                    // 闭包仅输出已冻结字节，不在响应流中重新读取数据库。
+                    return response()->streamDownload(function () use ($export): void {
+                        echo $export['content'];
+                    }, $export['filename'], ['Content-Type' => $export['mime'], 'Cache-Control' => 'private, no-store']);
+                }),
             // 状态回放仅查询正式历史，自动编排小说也保留入口。
             // 自动运行小说同样允许查看和维护伏笔账本。
             // 上下文清单同样向自动生成小说开放只读查看。
@@ -121,7 +143,7 @@ class ViewNovel extends ViewRecord
         ];
         // 自动小说同样保留检索实验室及只读产物入口，推进与恢复仍经独占编排器。
         if (FirstChapterRun::where('novel_id', $this->getRecord()->id)->exists()) {
-            return array_values(array_filter($actions, fn (Action $action): bool => in_array($action->getName(), ['searchLab', 'viewContexts', 'viewForeshadows', 'viewState', 'viewCosts', 'viewRun', 'viewContent', 'refreshStatus', 'viewOutline'], true)));
+            return array_values(array_filter($actions, fn (Action $action): bool => in_array($action->getName(), ['exportFormal', 'searchLab', 'viewContexts', 'viewForeshadows', 'viewState', 'viewCosts', 'viewRun', 'viewContent', 'refreshStatus', 'viewOutline'], true)));
         }
 
         return $actions;

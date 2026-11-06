@@ -81,20 +81,36 @@ final class ContentGenerationService
         return $run->refresh();
     }
 
-    /** 旧产物只能通过此入口转为新协议；新授权独立记录，旧授权绝不自动续用。 */
-    public function recover(int $parentId, User $author, string $reason, ?int $requestLimit = null, ?int $executionLimit = null, bool $confirmUnknown = false, bool $rewrite = false, ?string $model = null): ChapterGenerationRun
+    /** 旧产物只能通过此入口转为新协议；工作台问题冻结在新运行，旧授权绝不自动续用。
+     * @param  list<string>|null  $issues  作者明确指定的问题，空值沿用原恢复入口。
+     */
+    public function recover(int $parentId, User $author, string $reason, ?int $requestLimit = null, ?int $executionLimit = null, bool $confirmUnknown = false, bool $rewrite = false, ?string $model = null, ?array $issues = null, ?int $expectedVersionId = null): ChapterGenerationRun
     {
         $this->outsideTransaction();
         ContentSchema::text($reason);
         $reference = ChapterGenerationRun::findOrFail($parentId);
-        [$run, $created] = DB::transaction(function () use ($reference, $author, $reason, $requestLimit, $executionLimit, $confirmUnknown, $rewrite, $model): array {
+        [$run, $created] = DB::transaction(function () use ($reference, $author, $reason, $requestLimit, $executionLimit, $confirmUnknown, $rewrite, $model, $issues, $expectedVersionId): array {
             $novel = Novel::lockForUpdate()->findOrFail($reference->chapter->novel_id);
             $parent = ChapterGenerationRun::lockForUpdate()->findOrFail($reference->id);
+            // 工作台只能提交绑定版本的问题清单；旧恢复入口不能绕过工作台轮次门禁。
+            if ($issues === null && isset($parent->config['workbench'])) {
+                throw new InvalidArgumentException('工作台修订必须从指定问题入口继续，达到上限转人工');
+            }
             if ($existing = ChapterGenerationRun::where('parent_run_id', $parent->id)->first()) {
+                if ($issues !== null && ($existing->config['author_id'] !== $author->id
+                    || data_get($existing->config, 'workbench.version_id') !== $expectedVersionId
+                    || data_get($existing->config, 'workbench.issues') !== $issues)) {
+                    throw new InvalidArgumentException('修订请求已变化，请刷新当前版本');
+                }
+
                 return [$existing, false];
             }
-            if (! in_array($parent->status, ['paused', 'error', 'completed'], true) || $parent->stop_reason === 'b04_accepted' || $novel->status !== NovelStatus::Paused) {
+            if (! in_array($parent->status, ['paused', 'error', 'completed'], true) || ($parent->stop_reason === 'b04_accepted' && $issues === null) || $novel->status !== NovelStatus::Paused) {
                 throw new InvalidArgumentException('当前运行不能恢复或验收已经完成');
+            }
+            $workbench = $issues === null ? null : app(RevisionWorkbench::class)->freeze($parent, $author, $expectedVersionId ?? 0, $issues);
+            if ($workbench !== null && $rewrite) {
+                throw new InvalidArgumentException('工作台仅允许定点修订，不能整章重写');
             }
             $this->assertIdle($novel, $confirmUnknown);
             $this->assertFrozenSources($parent);
@@ -128,6 +144,12 @@ final class ContentGenerationService
             $failedStage = $novel->stages()->where('input->run_id', $parent->id)->where('status', 'failed')->latest('id')->first();
             $config['recovery_validation_error'] = data_get($failedStage?->output, 'data.validation_error');
             $config['recovery_findings'] = app(ContentExecutionService::class)->findings($parent, $source);
+            if ($workbench !== null) {
+                $config['workbench'] = $workbench;
+                foreach ($issues as $index => $issue) {
+                    $config['recovery_findings']['author-issue-'.($index + 1)] = ['type' => 'author_issue', 'reason' => $issue, 'source_body_hash' => $source->body_hash];
+                }
+            }
             $run = ChapterGenerationRun::create(['chapter_id' => $parent->chapter_id, 'outline_chapter_id' => $parent->outline_chapter_id,
                 'parent_run_id' => $parent->id, 'source_version_id' => $source?->id, 'snapshot' => $snapshot, 'config' => $config,
                 'input_hash' => PlanningJson::hash([$snapshot, $config]), 'plan_data' => $plan, 'fine_stage_id' => $parent->fine_stage_id,
