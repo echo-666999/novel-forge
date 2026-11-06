@@ -100,7 +100,7 @@ final class FirstChapterService
     private function recoverKnownFailure(FirstChapterRun $run): FirstChapterRun
     {
         if ($run->status !== 'failed' || ($run->policy['automatic_recovery'] ?? null) !== 'distinct_failure_once'
-            || CostLog::where('novel_id', $run->novel_id)->whereIn('status', ['unknown', 'pending'])->exists()) {
+            || CostLog::where('novel_id', $run->novel_id)->where(fn ($query) => $query->where('status', 'pending')->orWhere(fn ($unknown) => $unknown->where('status', 'unknown')->whereNotIn('id', $run->acknowledgedUnknownLogIds())))->exists()) {
             return $run;
         }
         $recoverable = in_array($run->error, ['CONTENT_STOPPED:invalid_schema', 'CONTENT_STOPPED:provider_failed', 'CONTENT_STOPPED:retry_limit',
@@ -312,7 +312,7 @@ final class FirstChapterService
         if ($run->status !== 'recovering') {
             throw new InvalidArgumentException('只能恢复已停止的自动流程');
         }
-        if (! $confirmUnknown && CostLog::where('novel_id', $run->novel_id)->whereIn('status', ['pending', 'unknown'])->exists()) {
+        if (! $confirmUnknown && CostLog::where('novel_id', $run->novel_id)->where(fn ($query) => $query->where('status', 'pending')->orWhere(fn ($unknown) => $unknown->where('status', 'unknown')->whereNotIn('id', $run->acknowledgedUnknownLogIds())))->exists()) {
             throw new InvalidArgumentException('存在未知响应，必须明确确认保留费用风险后再恢复');
         }
         $novel = Novel::findOrFail($run->novel_id);
@@ -340,7 +340,7 @@ final class FirstChapterService
                 app(ChapterSubmissionService::class)->prepare($submission->version_id, $author, $number - 1, '恢复自动首章提交准备', $recoveryLimit, false, $submission->id, $model ?? $submission->config['model']);
             }
         }
-        $run->update(['status' => 'pending', 'error' => null, 'history' => [...$run->history, ['action' => 'retry', 'operator_id' => $author->id, 'confirm_unknown' => $confirmUnknown, 'rewrite' => $rewrite, 'model' => $model, 'at' => now()->toIso8601String()]]]);
+        $run->update(['status' => 'pending', 'error' => null, 'history' => [...$run->history, ['action' => 'retry', 'operator_id' => $author->id, 'confirm_unknown' => $confirmUnknown, 'confirmed_unknown_log_ids' => $confirmUnknown ? CostLog::where('novel_id', $novel->id)->where('status', 'unknown')->pluck('id')->all() : [], 'rewrite' => $rewrite, 'model' => $model, 'at' => now()->toIso8601String()]]]);
 
         return $run;
     }

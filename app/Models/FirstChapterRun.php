@@ -47,6 +47,17 @@ class FirstChapterRun extends Model
         }
     }
 
+    /** 仅返回操作者已明确承担费用风险的历史请求，后续未知请求不能自动继承确认。
+     * @return list<int>
+     */
+    public function acknowledgedUnknownLogIds(): array
+    {
+        return collect($this->history)->filter(fn (array $entry): bool => ($entry['action'] ?? null) === 'retry'
+            && ($entry['confirm_unknown'] ?? false) === true && ($entry['operator_id'] ?? null) === $this->author_id)
+            ->flatMap(fn (array $entry): array => $entry['confirmed_unknown_log_ids'] ?? [])
+            ->filter(fn ($id): bool => is_int($id) && $id > 0)->unique()->values()->all();
+    }
+
     /** 每章使用独立且可重放的提交键，首章保持旧键兼容。 */
     public function chapterCommitKey(int $number): string
     {

@@ -46,7 +46,9 @@ final class OutlineGenerationService
             if ($model === '' || strlen($model) > 128) {
                 $this->reject('默认模型标识不合法。');
             }
-            $config = TextRequestOptions::outline($settings->temperature, 1, min(10, $novel->target_chapters), $novel->target_chapters)->toArray();
+            // 自动编排任务有210秒执行窗口；普通大纲队列仍保持60秒请求边界。
+            $timeout = FirstChapterRun::where('novel_id', $novel->id)->exists() ? 180 : 60;
+            $config = TextRequestOptions::outline($settings->temperature, 1, min(10, $novel->target_chapters), $novel->target_chapters, $timeout)->toArray();
             unset($config['range']);
             $token = (string) Str::uuid7();
             $plan = NovelOutlinePlan::query()->create([
@@ -92,7 +94,7 @@ final class OutlineGenerationService
                 $this->reject('提高执行上限必须填写原因。');
             }
             $plan->update(['status' => 'pending', 'stop_reason' => null, 'invocation_id' => (string) Str::uuid7(),
-                'control_history' => [...$plan->control_history, $this->control('continue', $authorId, $oldLimit, $newLimit, $reason ?? '显式继续现有大纲')]]);
+                'control_history' => [...$plan->control_history, [...$this->control('continue', $authorId, $oldLimit, $newLimit, $reason ?? '显式继续现有大纲'), 'timeout_seconds' => FirstChapterRun::where('novel_id', $novel->id)->exists() ? 180 : 60]]]);
             $novel->update(['status' => NovelStatus::Pending, 'pause_requested' => false, 'max_execution_count' => $newLimit]);
 
             return $plan;
@@ -165,11 +167,17 @@ final class OutlineGenerationService
             }
         }
         $previousChapters = $plan->chapters()->where('chapter_number', '>=', max(1, $start - 10))->orderBy('chapter_number')->get()->map(fn (NovelOutlineChapter $chapter): array => $chapter->only(['chapter_number', 'title', 'summary', 'objective', 'conflict', 'hook', 'progression_points']))->all();
+        // 旧计划配置不覆盖；显式恢复的等待时间单独冻结在新尝试与操作记录中。
+        $attemptConfig = $plan->config;
+        $latestControl = collect($plan->control_history)->last();
+        if (isset($latestControl['timeout_seconds'])) {
+            $attemptConfig['timeout_seconds'] = $latestControl['timeout_seconds'];
+        }
         $stage = $novel->stages()->create([
             'stage' => Stage::Outline, 'status' => StageStatus::Running,
             'execution_count' => (int) $novel->stages()->where('stage', Stage::Outline->value)->max('execution_count') + 1,
             'input' => [...$plan->snapshot, 'simulation' => false, 'pipeline' => ['version' => OutlineSchema::VERSION],
-                'outline_plan_id' => $plan->id, 'invocation_id' => $token, 'generation_config' => $plan->config,
+                'outline_plan_id' => $plan->id, 'invocation_id' => $token, 'generation_config' => $attemptConfig,
                 'range' => ['start' => $start, 'end' => $end, 'total' => $plan->target_chapters],
                 'roadmap' => $plan->roadmap, 'handoff' => $plan->handoff, 'previous_chapters' => $previousChapters,
                 'previous_stage_id' => $previous?->id ?? $plan->confirmation->source_stage_id,

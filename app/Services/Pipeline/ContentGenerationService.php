@@ -246,9 +246,11 @@ final class ContentGenerationService
     /** 有活动请求时禁止创建新运行；未知结果必须单独确认风险。 */
     private function assertIdle(Novel $novel, bool $confirmUnknown): void
     {
+        // 已显式确认的旧未知费用仍保留，只解除这些请求对后续章节的重复阻塞。
+        $acknowledged = FirstChapterRun::where('novel_id', $novel->id)->first()?->acknowledgedUnknownLogIds() ?? [];
         if ($novel->stages()->where('status', 'running')->exists() || ChapterGenerationRun::whereHas('chapter', fn ($q) => $q->where('novel_id', $novel->id))->whereIn('status', ['pending', 'running'])->exists()
             || CostLog::where('novel_id', $novel->id)->where('status', 'pending')->exists()
-            || (! $confirmUnknown && CostLog::where('novel_id', $novel->id)->where('status', 'unknown')->exists())) {
+            || (! $confirmUnknown && CostLog::where('novel_id', $novel->id)->where('status', 'unknown')->whereNotIn('id', $acknowledged)->exists())) {
             throw new InvalidArgumentException('存在活动步骤或尚未确认的未知调用');
         }
     }

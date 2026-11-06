@@ -70,14 +70,14 @@ final readonly class TextRequestOptions
     }
 
     /** 冻结大纲单批范围和调用边界，不允许任意扩展 Schema 或批次大小。 */
-    public static function outline(float $temperature, int $start, int $end, int $total): self
+    public static function outline(float $temperature, int $start, int $end, int $total, int $timeoutSeconds = 60): self
     {
         self::setting($temperature);
-        if ($start < 1 || $end < $start || $end > $total || $end - $start >= 10) {
+        if (! in_array($timeoutSeconds, [60, 180], true) || $start < 1 || $end < $start || $end > $total || $end - $start >= 10) {
             throw new InvalidArgumentException('大纲批次范围不合法');
         }
 
-        return new self(8192, 60, $temperature, false, ['start' => $start, 'end' => $end, 'total' => $total]);
+        return new self(8192, $timeoutSeconds, $temperature, false, ['start' => $start, 'end' => $end, 'total' => $total]);
     }
 
     /** 区分结构化文本与原有短文本，不改变 B02 的布尔兼容属性。 */

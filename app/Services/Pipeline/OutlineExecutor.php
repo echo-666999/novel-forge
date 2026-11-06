@@ -33,7 +33,7 @@ final class OutlineExecutor implements StageExecutorInterface
             }
             $config = $stage->input['generation_config'];
             $range = $stage->input['range'];
-            $options = TextRequestOptions::outline($config['temperature'], $range['start'], $range['end'], $range['total']);
+            $options = TextRequestOptions::outline($config['temperature'], $range['start'], $range['end'], $range['total'], $config['timeout_seconds'] ?? 60);
             if (($config['max_output_tokens'] ?? null) !== $options->maxOutputTokens || ($config['timeout_seconds'] ?? null) !== $options->timeoutSeconds || ($config['schema_version'] ?? null) !== OutlineSchema::VERSION || ($config['prompt_version'] ?? null) !== 'b03-outline-prompt-v1') {
                 throw new InvalidArgumentException('冻结的请求配置与当前大纲版本不一致');
             }

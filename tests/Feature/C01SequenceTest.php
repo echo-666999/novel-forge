@@ -15,9 +15,11 @@ use App\Models\User;
 use App\Services\Pipeline\CanonicalChapterContext;
 use App\Services\Pipeline\FirstChapterService;
 use App\Services\Pipeline\LegacyContentSources;
+use App\Services\Pipeline\OutlineGenerationService;
 use App\Services\Pipeline\PlanningJson;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -35,6 +37,12 @@ class C01SequenceTest extends TestCase
 
     /** 第九章首次提取制造硬校验失败，验证恢复保持既有总额度。 */
     private bool $rejectNinthExtraction = false;
+
+    /** 模拟旧60秒规划请求失败，验证新尝试等待时间独立冻结。 */
+    private bool $rejectFirstOutline = false;
+
+    /** 仅首次规划模拟结果未知，后续请求使用正常隔离响应。 */
+    private bool $unknownFirstOutline = false;
 
     /** 仅迁移项目业务表。 */
     protected function migrateFreshUsing(): array
@@ -62,6 +70,15 @@ class C01SequenceTest extends TestCase
             } elseif ($version === 'b10-setting-decision-v1') {
                 $data = ['setting' => [...B02SettingTest::setting(), 'open_questions' => []], 'answers' => ['来信不能改变已经发生的过去。']];
             } elseif ($version === 'b03-outline-v1') {
+                if ($this->unknownFirstOutline) {
+                    $this->unknownFirstOutline = false;
+                    throw new ConnectionException('隔离规划结果未知');
+                }
+                if ($this->rejectFirstOutline) {
+                    $this->rejectFirstOutline = false;
+
+                    return Http::response(['error' => ['message' => '隔离规划失败']], 400);
+                }
                 $data = B03OutlineTest::batch();
             } elseif (isset($log->request_parameters['purpose'])) {
                 if ($log->request_parameters['purpose'] === 'review') {
@@ -231,5 +248,54 @@ class C01SequenceTest extends TestCase
         $this->assertSame(1, ChapterSubmissionRun::where('status', 'failed')->count());
         $this->assertSame(55, $service->requestCount($run));
         $this->assertTrue(collect($run->history)->contains('action', 'automatic_recovery'));
+    }
+
+    /** 恢复旧规划不覆盖60秒历史，新尝试冻结180秒且继续通过正常门禁。 */
+    public function test_outline_recovery_freezes_longer_timeout_without_overwriting_old_plan(): void
+    {
+        $service = app(FirstChapterService::class);
+        $author = User::factory()->create();
+        $run = $service->start([...B02SettingTest::input(), 'chapter_length_policy' => ['min_characters' => 20, 'max_characters' => 300]], $author, true, false, chapterLimit: 10);
+        $run = $service->advance($run->id);
+        $run = $service->advance($run->id);
+        $plan = app(OutlineGenerationService::class)->start(Novel::findOrFail($run->novel_id), $run->artifacts['confirmation_id'], $author, 'gpt-6.1-terra');
+        $config = [...$plan->config, 'timeout_seconds' => 60];
+        // 仅在内存测试库模拟升级前已冻结的计划，生产历史禁止这样改写。
+        DB::table('novel_outline_plans')->where('id', $plan->id)->update(['config' => json_encode($config)]);
+        $this->rejectFirstOutline = true;
+        $run = $service->advance($run->id);
+        $this->assertSame('pending', $run->status, $run->error ?? '');
+        $this->assertSame($config, $plan->refresh()->config);
+        $this->assertSame(60, CostLog::latest('id')->firstOrFail()->request_parameters['timeout_seconds']);
+        $run = $service->advance($run->id);
+        $this->assertSame('content', $run->step, $run->error ?? '');
+        $this->assertSame(180, CostLog::latest('id')->firstOrFail()->request_parameters['timeout_seconds']);
+        $this->assertSame($config, $plan->refresh()->config);
+    }
+
+    /** 确认旧未知费用后可以跨阶段执行，原记录仍未知且新增未知请求仍需再次确认。 */
+    public function test_confirmed_unknown_request_does_not_block_later_chapters_or_approve_future_unknowns(): void
+    {
+        $service = app(FirstChapterService::class);
+        $author = User::factory()->create();
+        $run = $service->start([...B02SettingTest::input(), 'chapter_length_policy' => ['min_characters' => 20, 'max_characters' => 300]], $author, true, false, chapterLimit: 10);
+        $this->unknownFirstOutline = true;
+        for ($i = 0; $i < 10 && $run->status === 'pending'; $i++) {
+            $run = $service->advance($run->id);
+        }
+        $this->assertSame('failed', $run->status);
+        $unknownId = CostLog::where('status', 'unknown')->sole()->id;
+        $run = $service->retry($run->id, $author, true);
+        $this->assertSame([$unknownId], $run->acknowledgedUnknownLogIds());
+        for ($i = 0; $i < 100 && $run->status === 'pending'; $i++) {
+            $run = $service->advance($run->id);
+        }
+        $this->assertSame('completed', $run->status, $run->error ?? '');
+        $this->assertSame('unknown', CostLog::findOrFail($unknownId)->status);
+        $this->assertSame(10, CanonicalCommit::count());
+        CostLog::factory()->create(['novel_id' => $run->novel_id, 'mode' => 'real', 'status' => 'unknown']);
+        $run->update(['status' => 'failed']);
+        $this->expectException(\InvalidArgumentException::class);
+        $service->retry($run->id, $author);
     }
 }
