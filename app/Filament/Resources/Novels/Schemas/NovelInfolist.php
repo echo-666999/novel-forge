@@ -9,6 +9,7 @@ use App\Filament\Resources\Novels\NovelResource;
 use App\Models\CostLog;
 use App\Models\Novel;
 use App\Models\NovelStage;
+use App\Services\Ai\NovelCostSummary;
 use Filament\Infolists\Components\RepeatableEntry;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Schemas\Components\Component;
@@ -31,6 +32,9 @@ class NovelInfolist
                         TextEntry::make('genre')->label('题材')->placeholder('未填写'),
                         TextEntry::make('premise_raw')->label('原始创意')->columnSpanFull(),
                     ]),
+                Section::make('累计调用费用')->description('费用仅供查看，不参与停止判断；金额未知不等于免费。')->columnSpanFull()->schema([
+                    TextEntry::make('cost_summary')->label('小说全部调用')->state(fn (Novel $record): string => app(NovelCostSummary::class)->describe(app(NovelCostSummary::class)->forNovel($record->id))),
+                ]),
                 Section::make('篇幅计划')->columns(3)->columnSpanFull()->schema([
                     TextEntry::make('target_chapters')->label('目标章数')->suffix('章'),
                     TextEntry::make('chapter_length_policy.min_characters')->label('每章字数下限')->suffix('字')->placeholder('未设置'),

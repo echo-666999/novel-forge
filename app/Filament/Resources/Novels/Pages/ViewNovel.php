@@ -42,6 +42,7 @@ class ViewNovel extends ViewRecord
     protected function getHeaderActions(): array
     {
         return [
+            Action::make('viewCosts')->label('调用成本明细')->url(fn (): string => NovelResource::getUrl('costs', ['record' => $this->getRecord()])),
             Action::make('viewRun')->label('运行详情与恢复')->url(fn (): string => NovelResource::getUrl('run', ['record' => $this->getRecord()])),
             Action::make('generateFirstChapter')->label('生成第1章')->modalHeading('生成首章候选并独立检查推进')
                 ->visible(fn (): bool => $this->getRecord()->outlinePlans()->where('status', 'completed')->exists() && ! $this->getRecord()->chapters()->exists())
