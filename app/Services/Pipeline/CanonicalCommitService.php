@@ -10,6 +10,7 @@ use App\Models\ChapterReview;
 use App\Models\ChapterSubmissionRun;
 use App\Models\ChapterSubmissionValidation;
 use App\Models\ChapterVersion;
+use App\Models\FirstChapterRun;
 use App\Models\Novel;
 use App\Models\StoryEntity;
 use App\Models\StoryEvent;
@@ -26,7 +27,7 @@ final class CanonicalCommitService
     /** 作者按冻结提取编号批准实体；重复相同请求返回原回执，不触发模型。
      * @param  list<string>  $approvedEntityKeys  明确批准的提议编号
      */
-    public function commit(int $versionId, int $reviewId, int $extractionId, int $validationId, int $expectedState, string $idempotencyKey, User $operator, string $reason, array $approvedEntityKeys = [], bool $acknowledged = false): CanonicalCommit
+    public function commit(int $versionId, int $reviewId, int $extractionId, int $validationId, int $expectedState, string $idempotencyKey, User $operator, string $reason, array $approvedEntityKeys = [], bool $acknowledged = false, ?int $automationId = null): CanonicalCommit
     {
         ContentSchema::text($reason);
         if (! Str::isUuid($idempotencyKey) || ! $acknowledged || $expectedState < 0) {
@@ -38,10 +39,22 @@ final class CanonicalCommitService
         }
         sort($approvedEntityKeys, SORT_STRING);
         $requestHash = PlanningJson::hash([$versionId, $reviewId, $extractionId, $validationId, $expectedState, $operator->id, $reason, $approvedEntityKeys]);
+        // 自动授权纳入幂等身份，既有人工提交的请求摘要保持兼容。
+        if ($automationId !== null) {
+            $requestHash = PlanningJson::hash([$requestHash, $automationId]);
+        }
         $version = ChapterVersion::findOrFail($versionId);
 
-        return DB::transaction(function () use ($version, $reviewId, $extractionId, $validationId, $expectedState, $idempotencyKey, $operator, $reason, $approvedEntityKeys, $requestHash): CanonicalCommit {
+        return DB::transaction(function () use ($version, $reviewId, $extractionId, $validationId, $expectedState, $idempotencyKey, $operator, $reason, $approvedEntityKeys, $requestHash, $automationId): CanonicalCommit {
             $novel = Novel::lockForUpdate()->findOrFail($version->chapter->novel_id);
+            $delegation = null;
+            if ($automationId !== null) {
+                $delegation = FirstChapterRun::findOrFail($automationId);
+                $delegation->assertDelegation($novel->id, $operator->id);
+                if ($version->chapter->number !== 1 || $expectedState !== 0 || $idempotencyKey !== $delegation->commit_key) {
+                    throw new InvalidArgumentException('AUTOMATION_SCOPE_MISMATCH');
+                }
+            }
             $existing = CanonicalCommit::where('novel_id', $novel->id)->where('idempotency_key', $idempotencyKey)->first();
             if ($existing !== null) {
                 if ($existing->request_hash !== $requestHash) {
@@ -82,11 +95,11 @@ final class CanonicalCommitService
             $nextState = $expectedState + 1;
             $receipt = ['novel_id' => $novel->id, 'chapter_id' => $chapter->id, 'version_id' => $version->id, 'body_hash' => $version->body_hash,
                 'previous_state_version' => $expectedState, 'state_version' => $nextState, 'chapters_done' => $novel->chapters_done + 1,
-                'author_story_approval' => true, 'event_count' => count($extraction->result['events'])];
+                'author_story_approval' => $automationId === null, 'approval_mode' => $automationId === null ? 'manual' : 'delegated_policy', 'automation_id' => $automationId, 'event_count' => count($extraction->result['events'])];
             $commit = CanonicalCommit::create(['submission_run_id' => $run->id, 'novel_id' => $novel->id, 'chapter_id' => $chapter->id, 'version_id' => $version->id,
                 'validation_id' => $verified->id, 'previous_state_version' => $expectedState, 'state_version' => $nextState,
                 'idempotency_key' => $idempotencyKey, 'request_hash' => $requestHash, 'committed_by' => $operator->id, 'reason' => $reason,
-                'approvals' => ['author_story_approval' => true, 'approved_entity_keys' => $approvedEntityKeys, 'proposals_hash' => PlanningJson::hash($extraction->result['proposed_entities']),
+                'approvals' => ['author_story_approval' => $automationId === null, 'approval_mode' => $automationId === null ? 'manual' : 'delegated_policy', 'automation_id' => $automationId, 'policy_hash' => $delegation?->policy_hash, 'approved_entity_keys' => $approvedEntityKeys, 'proposals_hash' => PlanningJson::hash($extraction->result['proposed_entities']),
                     'definitions' => $extraction->result['proposed_entities']], 'result' => $receipt, 'created_at' => now()]);
             $mapping = [];
             foreach ($run->snapshot['entity_catalog'] as $key => $entity) {

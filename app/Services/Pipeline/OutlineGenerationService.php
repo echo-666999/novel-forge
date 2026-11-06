@@ -8,6 +8,7 @@ use App\Enums\Stage;
 use App\Enums\StageStatus;
 use App\Jobs\RunOutlineBatchJob;
 use App\Models\CostLog;
+use App\Models\FirstChapterRun;
 use App\Models\Novel;
 use App\Models\NovelOutlineChapter;
 use App\Models\NovelOutlinePlan;
@@ -27,10 +28,10 @@ use Throwable;
 final class OutlineGenerationService
 {
     /** 明确付费启动，输入只能引用同一本小说的有效确认版本。 */
-    public function start(Novel $reference, int $confirmationId, User $author): NovelOutlinePlan
+    public function start(Novel $reference, int $confirmationId, User $author, ?string $modelOverride = null): NovelOutlinePlan
     {
         $this->outsideTransaction();
-        $plan = DB::transaction(function () use ($reference, $confirmationId, $author): NovelOutlinePlan {
+        $plan = DB::transaction(function () use ($reference, $confirmationId, $author, $modelOverride): NovelOutlinePlan {
             $novel = Novel::query()->lockForUpdate()->findOrFail($reference->id);
             $confirmation = NovelSettingConfirmation::query()->where('novel_id', $novel->id)->findOrFail($confirmationId);
             $this->validConfirmation($novel, $confirmation);
@@ -41,7 +42,7 @@ final class OutlineGenerationService
                 $this->reject('剩余执行额度不足，不能发送大纲请求。');
             }
             $settings = app(GeneralSettings::class);
-            $model = trim($settings->default_model);
+            $model = trim($modelOverride ?? $settings->default_model);
             if ($model === '' || strlen($model) > 128) {
                 $this->reject('默认模型标识不合法。');
             }
@@ -263,6 +264,11 @@ final class OutlineGenerationService
     /** 显式投递并捕获回执不确定性，只能标记尚未被消费者领用的同令牌计划。 */
     private function dispatch(int $planId, string $token): void
     {
+        // 自动首章由独立持久化编排器推进，禁止同时派发旧步骤任务。
+        if (FirstChapterRun::where('novel_id', NovelOutlinePlan::findOrFail($planId)->novel_id)->exists()) {
+            return;
+        }
+
         try {
             Bus::dispatch(new RunOutlineBatchJob($planId, $token));
         } catch (Throwable $exception) {

@@ -22,14 +22,14 @@ use InvalidArgumentException;
 final class ContentGenerationService
 {
     /** 创建前冻结参数；仅本次明确确认才允许增加小说总额度。 */
-    public function start(Novel $reference, User $author, int $maxOutputTokens = 8192, ?int $requestLimit = null, string $reason = '首章有限生成与检查', ?int $executionLimit = null): ChapterGenerationRun
+    public function start(Novel $reference, User $author, int $maxOutputTokens = 8192, ?int $requestLimit = null, string $reason = '首章有限生成与检查', ?int $executionLimit = null, ?string $modelOverride = null): ChapterGenerationRun
     {
         $this->outsideTransaction();
         ContentSchema::text($reason);
         if ($maxOutputTokens < 1 || $maxOutputTokens > 8192) {
             throw new InvalidArgumentException('正文Token上限无效');
         }
-        $run = DB::transaction(function () use ($reference, $author, $maxOutputTokens, $requestLimit, $reason, $executionLimit): ChapterGenerationRun {
+        $run = DB::transaction(function () use ($reference, $author, $maxOutputTokens, $requestLimit, $reason, $executionLimit, $modelOverride): ChapterGenerationRun {
             $novel = Novel::lockForUpdate()->findOrFail($reference->id);
             $plan = $novel->outlinePlans()->where('status', 'completed')->latest('id')->firstOrFail();
             $fine = $plan->config['enable_fine_outline'];
@@ -39,7 +39,7 @@ final class ContentGenerationService
             }
             $this->assertIdle($novel, false);
             $settings = app(GeneralSettings::class);
-            $config = $this->configuration($settings->default_model, $settings->temperature, $fine, $maxOutputTokens, $settings->max_retries_per_chapter, $author->id, $reason);
+            $config = $this->configuration($modelOverride ?? $settings->default_model, $settings->temperature, $fine, $maxOutputTokens, $settings->max_retries_per_chapter, $author->id, $reason);
             $base = $fine ? 3 : 2;
             $limit = $this->limit($requestLimit, $base, $config['max_retries']);
             $snapshot = ['novel' => $novel->only(['id', 'title', 'genre', 'premise_raw', 'target_chapters', 'chapter_length_policy']),
@@ -108,6 +108,9 @@ final class ContentGenerationService
                 'source_lineage' => $source === null ? [] : $this->recoveryLineage($parent, $source), 'plan_hash' => PlanningJson::hash($plan), 'fine_stage_id' => $parent->fine_stage_id];
             $config['request_cap'] = $limit;
             $config['initial_step'] = $step;
+            // 冻结前轮响应契约错误，后继请求才能针对真实失败修复，旧响应不改写。
+            $failedStage = $novel->stages()->where('input->run_id', $parent->id)->where('status', 'failed')->latest('id')->first();
+            $config['recovery_validation_error'] = data_get($failedStage?->output, 'data.validation_error');
             $config['recovery_findings'] = app(ContentExecutionService::class)->findings($parent, $source);
             $run = ChapterGenerationRun::create(['chapter_id' => $parent->chapter_id, 'outline_chapter_id' => $parent->outline_chapter_id,
                 'parent_run_id' => $parent->id, 'source_version_id' => $source?->id, 'snapshot' => $snapshot, 'config' => $config,

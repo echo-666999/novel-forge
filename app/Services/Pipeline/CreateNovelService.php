@@ -23,7 +23,7 @@ final class CreateNovelService
     /** 校验业务字段，先提交小说，再投递 Redis；投递失败仍保留原始创意。
      * @param  array<string, mixed>  $input
      */
-    public function createAndStart(array $input): NovelCreationResult
+    public function createAndStart(array $input, bool $dispatch = true, ?string $modelOverride = null): NovelCreationResult
     {
         if (DB::connection()->transactionLevel() !== 0) {
             throw new LogicException('请在数据库事务之外创建并启动小说');
@@ -56,7 +56,7 @@ final class CreateNovelService
         // 真实调用参数只能由服务端冻结，不接受表单伪造的配置快照。
         $config = $mode === GenerationMode::SettingReal ? [
             'invocation_id' => (string) Str::uuid7(),
-            'model' => trim($settings->default_model),
+            'model' => trim($modelOverride ?? $settings->default_model),
             'enable_fine_outline' => $fineOutline,
             ...TextRequestOptions::setting($settings->temperature)->toArray(),
             'prompt_version' => 'b02-setting-prompt-v1',
@@ -78,6 +78,11 @@ final class CreateNovelService
             ],
             'max_execution_count' => $limit,
         ]));
+
+        // 自动首章由独立编排器接管，避免旧队列重复领取。
+        if (! $dispatch) {
+            return new NovelCreationResult($novel, true);
+        }
 
         try {
             // 显式分发而非依赖 PendingDispatch 析构，确保投递异常在本处捕获。

@@ -12,6 +12,7 @@ use App\Models\ChapterSubmissionRun;
 use App\Models\ChapterSubmissionValidation;
 use App\Models\ChapterVersion;
 use App\Models\CostLog;
+use App\Models\FirstChapterRun;
 use App\Models\NovelStage;
 use App\Services\Pipeline\CanonicalCommitService;
 use App\Services\Pipeline\ChapterSubmissionService;
@@ -73,7 +74,7 @@ class ViewChapterContent extends Page implements HasTable
     public function stopLabel(): string
     {
         return match ($this->run()?->stop_reason) {
-            'b04_accepted' => 'B04正文、独立检查及全文核对已通过；候选仍待后续评审及正式提交',
+            'b04_accepted' => FirstChapterRun::where('novel_id', $this->getRecord()->id)->exists() ? '自动授权下的推进检查已通过；不代表人工全文阅读，正式状态以提交回执为准' : 'B04正文、独立检查及全文核对已通过；候选仍待后续评审及正式提交',
             'awaiting_review' => '推进检查通过，等待后续评审；尚未正式提交',
             'execution_limit' => '请求或小说执行额度耗尽，已停止；继续须显式调整额度并填写原因',
             'user_paused' => '作者已暂停，可在原额度内继续未执行步骤',
@@ -336,6 +337,15 @@ class ViewChapterContent extends Page implements HasTable
      */
     protected function getHeaderActions(): array
     {
+        // 自动授权小说统一从恢复台推进，避免手动与自动任务并发接管同一候选。
+        if (FirstChapterRun::where('novel_id', $this->getRecord()->id)->exists()) {
+            return [Action::make('automationRun')->label('自动首章进度 / 恢复')->url(fn (): string => NovelResource::getUrl('run', ['record' => $this->getRecord()])),
+                Action::make('refresh')->label('刷新状态')->action(function (): void {
+                    $this->resolvedRun = null;
+                    $this->getRecord()->refresh();
+                }), Action::make('back')->label('返回小说')->url(fn (): string => NovelResource::getUrl('view', ['record' => $this->getRecord()]))];
+        }
+
         return [Action::make('prepareSubmission')->label('准备正式提交')->visible(fn (): bool => $this->run()?->stop_reason === 'b04_accepted' && $this->submission() === null)
             ->modalHeading('授权一次评审及一次事件提取')->modalDescription('当前正文保持冻结；最多两次模型请求。任何失败立即停止，不自动续写或重试。新实体另待作者批准。')
             ->schema([TextInput::make('execution_limit')->label('小说累计执行上限')->integer()->minValue(1)->maxValue(2147483647)->required()

@@ -11,6 +11,7 @@ use App\Models\ChapterGenerationRun;
 use App\Models\ChapterProgressionCheck;
 use App\Models\ChapterVersion;
 use App\Models\CostLog;
+use App\Models\FirstChapterRun;
 use App\Models\Novel;
 use App\Models\NovelStage;
 use App\Models\User;
@@ -151,11 +152,23 @@ final class ContentExecutionService
         $step = $run->next_step;
         $fine = $run->config['enable_fine_outline'];
         $budget = $step === 'fine' ? null : ContentExecutionContract::budget($run->snapshot['novel']['chapter_length_policy'], $run->plan_data, $fine);
+        // 自动首章要求每个生成段落完整结束，避免定长解码在句中截断。
+        if ($budget !== null && FirstChapterRun::where('novel_id', $run->chapter->novel_id)->exists()) {
+            $budget['complete_paragraphs'] = true;
+        }
         $context = ['anchors' => $version === null ? [] : ContentSchema::anchors($version->body), 'rules' => ContentQualityContract::rules($run->snapshot),
             'findings' => $this->findings($run, $version), 'budget' => $budget];
-        $payload = ['author_decisions' => $run->snapshot['decisions'], 'confirmed_setting' => $run->snapshot['confirmed_setting'], 'candidate_roadmap' => $run->snapshot['roadmap'],
+        // 原始创意保留具体时间、视角和限制；失败反馈只用于修复响应，不成为故事事实。
+        $payload = ['writing_requirements' => ['原始创意中的时间、人物称谓及具体限制不得被规划摘要覆盖。', '以可观察的具体行动、对白、阻力及结果推进，每段须有新信息；不反复宣告调查方向明确或决心坚定。', '不得输出故事将在后续展开、待续等写作说明。每段必须以完整句子的结束标点收束，不允许为满足字数而在句中截断或把半句拆到下一段。'], 'author_idea' => $run->snapshot['novel']['premise_raw'], 'previous_response_failure' => $run->config['recovery_validation_error'] ?? null, 'author_decisions' => $run->snapshot['decisions'], 'confirmed_setting' => $run->snapshot['confirmed_setting'], 'candidate_roadmap' => $run->snapshot['roadmap'],
             'rule_catalog' => $context['rules'], 'chapter_plan' => $run->plan_data ?? $run->snapshot['source_chapter'], 'word_policy' => $run->snapshot['novel']['chapter_length_policy'],
             'progression_points' => $run->snapshot['source_chapter']['progression_points'], 'findings' => $context['findings'], 'count_rule' => ContentSchema::COUNT_VERSION];
+        if ($step === 'check') {
+            // 复核同一证据不等于重演行动；疑问必须保留为张力，不能伪装成已确认缺陷。
+            $payload['evaluation_guidance'] = ['逐项以当前evidence_catalog阅读全文判断，不复述前轮findings作为本轮事实。',
+                '对同一编号、姓名或物品的必要复核、交接与引用可以重复出现；只有没有新增动作、证据或结果而重新演示已经完成的事件，才报告重复行动。',
+                'continuity_issues必须是已确认的具体错误，说明哪两处动作或时序不相容，或哪些完整语句只是无效复述。需要区分、可能重复、建议压缩不属于已确认错误；未决疑点放入story_tensions。',
+                'finding_reviews与continuity_issues不得自相矛盾；认为旧问题benign或resolved时，不把相同证据与相同理由重新列为缺陷。实际存在的新问题仍必须明确报告并引用当前段落。'];
+        }
         if ($budget !== null) {
             $payload['budget'] = $budget;
             $payload['slot_plan'] = [];
@@ -355,7 +368,7 @@ final class ContentExecutionService
     }
 
     /** 只记录全文结果；不通过不会投递模型请求或提高任何额度。 */
-    public function recordReading(int $id, User $author, bool $accepted, array $notes): ChapterGenerationRun
+    public function recordReading(int $id, User $author, bool $accepted, array $notes, ?int $automationId = null): ChapterGenerationRun
     {
         if ($notes === []) {
             throw new InvalidArgumentException('全文核对必须填写结论');
@@ -364,7 +377,7 @@ final class ContentExecutionService
             ContentSchema::text($note);
         }
 
-        return DB::transaction(function () use ($id, $author, $accepted, $notes): ChapterGenerationRun {
+        return DB::transaction(function () use ($id, $author, $accepted, $notes, $automationId): ChapterGenerationRun {
             $reference = ChapterGenerationRun::findOrFail($id);
             $novel = Novel::lockForUpdate()->findOrFail($reference->chapter->novel_id);
             $run = ChapterGenerationRun::lockForUpdate()->findOrFail($id);
@@ -375,10 +388,14 @@ final class ContentExecutionService
                 || $result === null || $result['verdict'] !== 'pass') {
                 throw new InvalidArgumentException('没有可核对的当前候选或操作人不符');
             }
+            // 委托验收必须绑定同一小说和操作者，审计明确区分人工阅读。
+            if ($automationId !== null) {
+                FirstChapterRun::findOrFail($automationId)->assertDelegation($novel->id, $author->id);
+            }
             $run->update(['status' => $accepted ? 'completed' : 'paused', 'stop_reason' => $accepted ? 'b04_accepted' : 'reading_failed',
                 'control_history' => [...$run->control_history, ['action' => $accepted ? 'acceptance_complete' : 'full_read_failed', 'operator_id' => $author->id,
                     'version_id' => $result['version_id'], 'body_hash' => $result['body_hash'], 'check_id' => $result['check_id'], 'notes' => $notes,
-                    'author_story_approval' => false, 'at' => now()->toIso8601String()]]]);
+                    'author_story_approval' => false, 'acceptance_mode' => $automationId === null ? 'manual_reading' : 'delegated_policy', 'automation_id' => $automationId, 'at' => now()->toIso8601String()]]]);
 
             return $run;
         });
@@ -387,6 +404,11 @@ final class ContentExecutionService
     /** 派发失败尚未发送HTTP，不能把零调用误标为未知付费。 */
     public function dispatch(ChapterGenerationRun $run): void
     {
+        // 自动首章由独立持久化编排器推进，禁止同时派发旧步骤任务。
+        if (FirstChapterRun::where('novel_id', $run->chapter->novel_id)->exists()) {
+            return;
+        }
+
         try {
             Bus::dispatch(new RunChapterStepJob($run->id, $run->invocation_id, true));
         } catch (Throwable) {

@@ -30,7 +30,7 @@ use Throwable;
 final class ChapterSubmissionService
 {
     /** 每轮明确授权最多两次请求；只有显式指定失败前驱才建立不可变后继。 */
-    public function prepare(int $versionId, User $operator, int $expectedState, string $reason, ?int $executionLimit = null, bool $dispatch = true, ?int $retryOf = null): ChapterSubmissionRun
+    public function prepare(int $versionId, User $operator, int $expectedState, string $reason, ?int $executionLimit = null, bool $dispatch = true, ?int $retryOf = null, ?string $modelOverride = null): ChapterSubmissionRun
     {
         if (DB::transactionLevel() !== 0) {
             throw new InvalidArgumentException('OUTER_TRANSACTION');
@@ -40,7 +40,7 @@ final class ChapterSubmissionService
             throw new InvalidArgumentException('STATE_INVALID');
         }
         $version = ChapterVersion::findOrFail($versionId);
-        [$run, $created] = DB::transaction(function () use ($version, $operator, $expectedState, $reason, $executionLimit, $retryOf): array {
+        [$run, $created] = DB::transaction(function () use ($version, $operator, $expectedState, $reason, $executionLimit, $retryOf, $modelOverride): array {
             $novel = Novel::lockForUpdate()->findOrFail($version->chapter->novel_id);
             $predecessor = null;
             if ($retryOf !== null) {
@@ -87,14 +87,16 @@ final class ChapterSubmissionService
                 throw new InvalidArgumentException('RETRY_SOURCE_STALE');
             }
             $settings = app(GeneralSettings::class);
-            if (trim($settings->default_model) === '' || strlen($settings->default_model) > 128) {
+            // 显式单次模型选择冻结到运行，不改全局设置及前驱记录。
+            $model = trim($modelOverride ?? $settings->default_model);
+            if ($model === '' || strlen($model) > 128) {
                 throw new InvalidArgumentException('MODEL_INVALID');
             }
             $limit = $executionLimit ?? $novel->max_execution_count;
             if ($limit < $novel->max_execution_count || $limit < $novel->execution_count + 2 || $limit > 2147483647) {
                 throw new InvalidArgumentException('EXECUTION_LIMIT_CONFIRMATION_REQUIRED');
             }
-            $config = ['version' => SubmissionContract::VERSION, 'model' => $settings->default_model, 'temperature' => 0, 'request_limit' => 2,
+            $config = ['version' => SubmissionContract::VERSION, 'model' => $model, 'temperature' => 0, 'request_limit' => 2,
                 'operator_id' => $operator->id, 'reason' => $reason, 'protocol' => ['review' => hash('sha256', SubmissionContract::instructions('review')), 'extract' => hash('sha256', SubmissionContract::instructions('extract'))]];
             if ($predecessor !== null) {
                 $config['predecessor'] = ['id' => $predecessor->id, 'input_hash' => $predecessor->input_hash, 'stop_reason' => $predecessor->stop_reason];

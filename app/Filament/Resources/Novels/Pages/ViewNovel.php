@@ -7,6 +7,7 @@ use App\Enums\Stage;
 use App\Enums\StageStatus;
 use App\Filament\Resources\Novels\NovelResource;
 use App\Filament\Resources\Novels\Schemas\SettingConfirmationForm;
+use App\Models\FirstChapterRun;
 use App\Models\Novel;
 use App\Services\Pipeline\ConfirmSettingService;
 use App\Services\Pipeline\ContentGenerationService;
@@ -41,7 +42,7 @@ class ViewNovel extends ViewRecord
      */
     protected function getHeaderActions(): array
     {
-        return [
+        $actions = [
             Action::make('viewCosts')->label('调用成本明细')->url(fn (): string => NovelResource::getUrl('costs', ['record' => $this->getRecord()])),
             Action::make('viewRun')->label('运行详情与恢复')->url(fn (): string => NovelResource::getUrl('run', ['record' => $this->getRecord()])),
             Action::make('generateFirstChapter')->label('生成第1章')->modalHeading('生成首章候选并独立检查推进')
@@ -110,6 +111,12 @@ class ViewNovel extends ViewRecord
                     $this->getRecord()->refresh();
                 }),
         ];
+        // 自动小说保留只读产物入口，所有推进与恢复均经独占编排器。
+        if (FirstChapterRun::where('novel_id', $this->getRecord()->id)->exists()) {
+            return array_values(array_filter($actions, fn (Action $action): bool => in_array($action->getName(), ['viewCosts', 'viewRun', 'viewContent', 'refreshStatus', 'viewOutline'], true)));
+        }
+
+        return $actions;
     }
 
     /** 仅成功的真实设定且尚未建立大纲时显示确认入口。 */

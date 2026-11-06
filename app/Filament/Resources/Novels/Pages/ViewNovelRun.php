@@ -8,7 +8,9 @@ use App\Enums\Stage;
 use App\Filament\Resources\Novels\NovelResource;
 use App\Models\ChapterGenerationRun;
 use App\Models\ChapterSubmissionRun;
+use App\Models\FirstChapterRun;
 use App\Models\NovelStage;
+use App\Services\Pipeline\FirstChapterService;
 use App\Services\Pipeline\PlanningJson;
 use App\Services\Pipeline\RetrySettingService;
 use App\Services\Pipeline\RunControlService;
@@ -61,6 +63,12 @@ class ViewNovelRun extends Page implements HasTable
                 TextEntry::make('count')->label('执行次数 / 上限')->state(fn (): string => $this->getRecord()->execution_count.' / '.$this->getRecord()->max_execution_count),
                 TextEntry::make('formal')->label('正式章数 / 故事版本')->state(fn (): string => $this->getRecord()->chapters_done.' / '.$this->getRecord()->state_version),
             ]),
+            Section::make('自动首章授权与进度')->visible(fn (): bool => $this->automation() !== null)->schema([
+                TextEntry::make('automation_state')->label('当前断点')->state(fn (): string => ($this->automation()?->step ?? '').' / '.($this->automation()?->status ?? '')),
+                TextEntry::make('automation_requests')->label('真实 AI 请求次数（含失败及未知）')->state(fn (): int => $this->automation() ? app(FirstChapterService::class)->requestCount($this->automation()) : 0),
+                TextEntry::make('automation_error')->label('停止原因')->state(fn (): ?string => $this->automation()?->error)->placeholder('无'),
+                TextEntry::make('automation_evidence')->label('自动授权与完整断点证据（非人工阅读）')->state(fn (): string => PlanningJson::encode($this->automation()?->only(['id', 'author_id', 'policy', 'policy_hash', 'artifacts', 'history']) ?? [])),
+            ]),
             Section::make('阶段流水线')->description('显示每阶段最后一次尝试；下方保留全部历史。真实模式的润色和导出尚未接入，不表示已执行。')->schema([
                 RepeatableEntry::make('stages')->label('阶段状态')->hiddenLabel()->state(fn (): array => $this->stageSummary())->columns(3)->schema([
                     TextEntry::make('name')->label('阶段'), TextEntry::make('status')->label('状态'), TextEntry::make('attempts')->label('尝试总数'),
@@ -80,6 +88,12 @@ class ViewNovelRun extends Page implements HasTable
                 ]),
             ]),
         ]);
+    }
+
+    /** 当前小说独占的自动授权，不查询其他小说记录。 */
+    private function automation(): ?FirstChapterRun
+    {
+        return FirstChapterRun::where('novel_id', $this->getRecord()->id)->first();
     }
 
     /** 历史分页展示，详情弹窗完整读取该小说的输入输出，默认转义所有文本。 */
@@ -107,6 +121,14 @@ class ViewNovelRun extends Page implements HasTable
     protected function getHeaderActions(): array
     {
         return [
+            Action::make('retryAutomaticFirstChapter')->label('恢复自动首章')->visible(fn (): bool => ($this->automation()?->status === 'failed' || ($this->automation()?->status === 'running' && $this->automation()?->lease_expires_at?->isPast())))
+                ->modalDescription('保留已有产物与费用，从失败断点恢复；后续会自动运行并提交第一章。')
+                ->schema([Checkbox::make('confirm_unknown')->label('已核查未知响应，接受可能重复计费')->default(false), Checkbox::make('rewrite')->label('正文恢复时授权整章重写为新版本，保留旧正文')->default(false), TextInput::make('model')->label('本次正文或提交恢复模型（可选）')->maxLength(128)])
+                ->action(fn (array $data) => $this->control(function () use ($data): void {
+                    $service = app(FirstChapterService::class);
+                    $run = $service->retry($this->automation()->id, Filament::auth()->user(), (bool) ($data['confirm_unknown'] ?? false), (bool) ($data['rewrite'] ?? false), filled($data['model'] ?? null) ? $data['model'] : null);
+                    $service->dispatch($run);
+                })),
             Action::make('pauseRun')->label('暂停运行')->visible(fn (): bool => in_array($this->getRecord()->status, [NovelStatus::Pending, NovelStatus::Running], true))
                 ->modalDescription('当前已发送的调用会正常保存结果；暂停只阻止下一步，不取消供应商计费。')
                 ->schema([Textarea::make('reason')->label('暂停原因')->required()])
@@ -114,7 +136,7 @@ class ViewNovelRun extends Page implements HasTable
             Action::make('resumeRun')->label('重跑 / 继续模拟')->visible(fn (): bool => $this->getRecord()->generation_mode === GenerationMode::Simulation && in_array($this->getRecord()->status, [NovelStatus::Paused, NovelStatus::Error], true))
                 ->schema([TextInput::make('limit')->label('执行总上限')->integer()->minValue(1)->maxValue(2147483647)->default(fn (): int => $this->getRecord()->max_execution_count)->required(), Textarea::make('reason')->label('恢复原因')->required()])
                 ->action(fn (array $data) => $this->control(fn () => app(RunControlService::class)->resumeSimulation($this->getRecord()->id, Filament::auth()->user(), (int) $data['limit'], $data['reason']))),
-            Action::make('retrySetting')->label('重跑设定')->visible(fn (): bool => $this->getRecord()->generation_mode === GenerationMode::SettingReal && in_array($this->getRecord()->status, [NovelStatus::Paused, NovelStatus::Error], true) && ! $this->getRecord()->stages()->whereIn('status', ['running', 'completed'])->exists())
+            Action::make('retrySetting')->label('重跑设定')->visible(fn (): bool => $this->automation() === null && $this->getRecord()->generation_mode === GenerationMode::SettingReal && in_array($this->getRecord()->status, [NovelStatus::Paused, NovelStatus::Error], true) && ! $this->getRecord()->stages()->whereIn('status', ['running', 'completed'])->exists())
                 ->modalDescription('按原冻结参数创建新尝试，保留旧结果和费用；将调用真实模型。执行上限不自动增加。')
                 ->schema([Checkbox::make('accept_request')->label('确认发送真实请求并产生费用')->accepted(), Checkbox::make('confirm_unknown')->label('已核查未知请求，接受可能重复计费')->default(false)])
                 ->action(fn (array $data) => $this->control(function () use ($data): void {

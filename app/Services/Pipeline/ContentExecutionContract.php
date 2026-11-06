@@ -72,7 +72,11 @@ final class ContentExecutionContract
         }
         $fields = [];
         foreach ($context['budget']['slots'] as $slot) {
-            $fields[$slot] = $schema->string()->pattern('^[^\\s#*_`~>]{'.$context['budget']['min'].','.$context['budget']['max'].'}$')->required();
+            // 自动流程把完整段尾加入供应商约束；历史手动运行保持原协议。
+            $pattern = ($context['budget']['complete_paragraphs'] ?? false)
+                ? '^[^\\s#*_`~>]{'.($context['budget']['min'] - 1).','.($context['budget']['max'] - 1).'}[。！？…；：”’」』）】]$'
+                : '^[^\\s#*_`~>]{'.$context['budget']['min'].','.$context['budget']['max'].'}$';
+            $fields[$slot] = $schema->string()->pattern($pattern)->required();
         }
 
         return ['title' => $schema->string()->required(), 'paragraphs' => $schema->object($fields)->withoutAdditionalProperties()->required()];
@@ -93,9 +97,18 @@ final class ContentExecutionContract
             if ($count < $budget['min'] || $count > $budget['max'] || preg_match('/[\s#*_`~>]/u', $text) === 1) {
                 throw new InvalidArgumentException('正文单段预算或格式无效');
             }
+            if (($budget['complete_paragraphs'] ?? false) && ! self::hasCompleteEnding($text)) {
+                throw new InvalidArgumentException('自动首章正文段落未完整结束');
+            }
             $paragraphs[] = $text;
         }
 
         return ContentSchema::body(['title' => $data['title'], 'body' => implode("\n", $paragraphs)]);
+    }
+
+    /** 本地复验段尾，修订也必须通过，不能仅依赖模型自报通过。 */
+    public static function hasCompleteEnding(string $paragraph): bool
+    {
+        return preg_match('/[。！？…；：][”’」』）】]*$/u', trim($paragraph)) === 1;
     }
 }

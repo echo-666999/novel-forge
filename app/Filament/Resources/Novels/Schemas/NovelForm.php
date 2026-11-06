@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\Novels\Schemas;
 
 use App\Enums\GenerationMode;
+use Filament\Forms\Components\Checkbox;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
@@ -18,12 +19,15 @@ class NovelForm
         return $schema
             ->components([
                 Section::make('创作信息')
-                    ->description('默认模拟不产生模型费用。显式选择真实设定将调用模型，成功后暂停等待大纲阶段；本阶段不生成正文。')
+                    ->description('默认模拟不产生模型费用。显式选择真实设定将调用模型，成功后暂停等待大纲阶段；也可勾选自动首章，授权后将连续生成并提交第一章。')
                     ->columns(2)->columnSpanFull()
                     ->schema([
                         Select::make('generation_mode')->label('生成模式')->required()->native()
                             ->options(collect(GenerationMode::cases())->mapWithKeys(fn (GenerationMode $mode): array => [$mode->value => $mode->label()])->all())
                             ->default(GenerationMode::Simulation->value)->columnSpanFull(),
+                        TextInput::make('automatic_model')->label('自动首章模型（可选）')->maxLength(128)->helperText('留空使用通用设置；仅勾选自动首章时生效，不修改全局模型。')->columnSpanFull(),
+                        Checkbox::make('automatic_first_chapter')->label('授权自动生成并正式提交第一章')
+                            ->helperText('仅对本次新建小说生效：自动决定设定问题、采纳通过校验的新实体并提交首章。明确失败可自动恢复，同一错误重复或响应未知会暂停。将产生模型费用；不代表人工全文阅读。')->default(false)->columnSpanFull(),
                         TextInput::make('title')->label('书名')->required()->maxLength(255)->regex('/(*UCP)\S/u')
                             ->validationMessages(['required' => '请输入书名。', 'max' => '书名不得超过255个字符。', 'regex' => '书名不能只包含空白。']),
                         TextInput::make('genre')->label('题材')->maxLength(255)->placeholder('例如：玄幻、都市、悬疑'),

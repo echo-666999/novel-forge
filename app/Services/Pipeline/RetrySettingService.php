@@ -20,7 +20,7 @@ use Throwable;
 final class RetrySettingService
 {
     /** 原子检查资格后重新入队，不在命令 HTTP 或锁事务中调用模型。 */
-    public function retry(int $novelId, bool $confirmUnknown = false): NovelCreationResult
+    public function retry(int $novelId, bool $confirmUnknown = false, bool $dispatch = true): NovelCreationResult
     {
         if (DB::transactionLevel() !== 0) {
             throw new InvalidArgumentException('请在事务之外重试设定');
@@ -53,6 +53,10 @@ final class RetrySettingService
 
             return $novel;
         });
+        // 自动首章由独立编排器继续，不另发旧任务。
+        if (! $dispatch) {
+            return new NovelCreationResult($novel, true);
+        }
         try {
             Bus::dispatch(new RunSettingJob($novel->id, $token));
 

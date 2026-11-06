@@ -43,9 +43,9 @@ final class AiTextGenerationService
             throw new InvalidArgumentException('模型标识不能为空且不能超过128字节。');
         }
         $parameters = $options->toArray();
-        if ($options->chapterStep !== null || $options->submissionPurpose !== null) {
+        if ($options->settingDecision || $options->chapterStep !== null || $options->submissionPurpose !== null) {
             // 同一不可变选项构造实际Agent和调用前审计；写入失败时绝不发送HTTP。
-            $agent = $options->submissionPurpose !== null ? new SubmissionAgent($options) : new ChapterGenerationAgent($options);
+            $agent = $options->settingDecision ? new SettingDecisionAgent($options) : ($options->submissionPurpose !== null ? new SubmissionAgent($options) : new ChapterGenerationAgent($options));
             $schema = (new JsonSchemaTypeFactory)->object($agent->schema(new JsonSchemaTypeFactory))->withoutAdditionalProperties()->toArray();
             $parameters['prompt_audit'] = ['system_prompt' => $agent->instructions(), 'user_prompt' => $prompt,
                 'response_schema' => $schema, 'parameters' => $options->toArray(),

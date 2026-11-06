@@ -56,7 +56,8 @@ final class SubmissionContract
 
             return ['review' => $schema->anyOf($branches)->required()];
         }
-        $categories = array_column(FactCategory::cases(), 'value');
+        // 供应商枚举直接排除本地禁止的作者隐藏真相，旧响应仍由验证器完整复验。
+        $categories = array_values(array_diff(array_column(FactCategory::cases(), 'value'), ['author_hidden_truth']));
 
         $branches = [];
         // 事件类别决定允许的变化属性，回忆和预测只记录事件，不能写当前状态。
@@ -65,15 +66,17 @@ final class SubmissionContract
             [['acquisition', 'transfer'], ['item_owner'], ['present']],
             [['life_change'], ['life_status'], ['present']],
             // B05只投影客观状态；主观变化保留证据事件，完整角色记忆交给后续专门契约。
-            [['observation', 'statement', 'belief_change'], [], ['present']],
+            [['observation', 'belief_change'], [], ['present']],
+            [['statement'], [], ['present']],
             [['action'], [], ['present']],
-            [self::EVENT_TYPES, [], ['memory', 'prediction']],
+            [array_values(array_diff(self::EVENT_TYPES, ['statement'])), [], ['memory', 'prediction']],
+            [['statement'], [], ['memory', 'prediction']],
         ];
         foreach ($groups as [$types, $properties, $scopes]) {
             $branches[] = $schema->object([
                 'key' => $schema->string()->required(), 'event_type' => $schema->string()->enum($types)->required(), 'narrative_order' => $schema->integer()->min(1)->required(),
                 'actor_ref' => self::referenceSchema($schema, $anchors, $catalog)->required(), 'target_refs' => $schema->array()->max(10)->items(self::referenceSchema($schema, $anchors, $catalog))->required(),
-                'time_scope' => $schema->string()->enum($scopes)->required(), 'fact_category' => $schema->string()->enum($categories)->required(),
+                'time_scope' => $schema->string()->enum($scopes)->required(), 'fact_category' => $schema->string()->enum($types === ['statement'] ? array_values(array_diff($categories, ['objective_confirmed'])) : $categories)->required(),
                 'summary' => $schema->string()->required(), 'evidence_ids' => $evidence(),
                 'state_changes' => ($properties === [] ? $schema->array()->max(0)->items($schema->string())
                     : $schema->array()->max(10)->items(self::patchSchema($schema, $anchors, $catalog, $properties)))->required(),

@@ -13,7 +13,13 @@ final readonly class TextRequestOptions
      * @param  array{start: int, end: int, total: int}|null  $outlineRange
      * @param  array<string, mixed>|null  $executionContext
      */
-    private function __construct(public int $maxOutputTokens, public int $timeoutSeconds, public ?float $temperature, public bool $structuredSetting, public ?array $outlineRange = null, public ?string $chapterStep = null, public ?array $executionContext = null, public ?string $submissionPurpose = null, public ?array $submissionContext = null) {}
+    private function __construct(public int $maxOutputTokens, public int $timeoutSeconds, public ?float $temperature, public bool $structuredSetting, public ?array $outlineRange = null, public ?string $chapterStep = null, public ?array $executionContext = null, public ?string $submissionPurpose = null, public ?array $submissionContext = null, public bool $settingDecision = false) {}
+
+    /** 自动授权下的设定决策仍经过独立结构化请求与计费审计。 */
+    public static function decision(): self
+    {
+        return new self(8192, 180, 0.0, true, settingDecision: true);
+    }
 
     /** 独立提交准备用途，不与B04步骤或额度混用。 */
     public static function submission(string $purpose, array $context): self
@@ -86,6 +92,10 @@ final readonly class TextRequestOptions
     public function toArray(): array
     {
         $parameters = ['max_output_tokens' => $this->maxOutputTokens, 'timeout_seconds' => $this->timeoutSeconds, 'attempt_limit' => 1];
+
+        if ($this->settingDecision) {
+            return [...$parameters, 'temperature' => 0.0, 'schema_version' => 'b10-setting-decision-v1', 'strict' => true];
+        }
 
         if ($this->submissionPurpose !== null) {
             return [...$parameters, 'temperature' => 0.0, 'schema_version' => SubmissionContract::VERSION, 'purpose' => $this->submissionPurpose,
