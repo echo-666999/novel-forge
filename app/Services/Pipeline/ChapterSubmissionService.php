@@ -29,8 +29,8 @@ use Throwable;
 /** 有限提交准备：评审和提取各一次，不续写、不替代作者批准。 */
 final class ChapterSubmissionService
 {
-    /** 明确授权最多两次请求；同正文及状态重复准备返回原运行。 */
-    public function prepare(int $versionId, User $operator, int $expectedState, string $reason, ?int $executionLimit = null, bool $dispatch = true): ChapterSubmissionRun
+    /** 每轮明确授权最多两次请求；只有显式指定失败前驱才建立不可变后继。 */
+    public function prepare(int $versionId, User $operator, int $expectedState, string $reason, ?int $executionLimit = null, bool $dispatch = true, ?int $retryOf = null): ChapterSubmissionRun
     {
         if (DB::transactionLevel() !== 0) {
             throw new InvalidArgumentException('OUTER_TRANSACTION');
@@ -40,9 +40,22 @@ final class ChapterSubmissionService
             throw new InvalidArgumentException('STATE_INVALID');
         }
         $version = ChapterVersion::findOrFail($versionId);
-        [$run, $created] = DB::transaction(function () use ($version, $operator, $expectedState, $reason, $executionLimit): array {
+        [$run, $created] = DB::transaction(function () use ($version, $operator, $expectedState, $reason, $executionLimit, $retryOf): array {
             $novel = Novel::lockForUpdate()->findOrFail($version->chapter->novel_id);
-            if ($existing = ChapterSubmissionRun::where('version_id', $version->id)->where('expected_state_version', $expectedState)->first()) {
+            $predecessor = null;
+            if ($retryOf !== null) {
+                $predecessor = ChapterSubmissionRun::lockForUpdate()->findOrFail($retryOf);
+                if ($predecessor->version_id !== $version->id || $predecessor->expected_state_version !== $expectedState
+                    || $predecessor->config['operator_id'] !== $operator->id || $predecessor->status !== 'failed') {
+                    throw new InvalidArgumentException('RETRY_SOURCE_INVALID');
+                }
+                if ($executionLimit === null) {
+                    throw new InvalidArgumentException('EXECUTION_LIMIT_CONFIRMATION_REQUIRED');
+                }
+            }
+            $existingQuery = ChapterSubmissionRun::where('version_id', $version->id)->where('expected_state_version', $expectedState);
+            $existing = $retryOf === null ? $existingQuery->where('attempt', 1)->first() : $existingQuery->where('predecessor_id', $retryOf)->first();
+            if ($existing !== null) {
                 if ($existing->config['operator_id'] !== $operator->id) {
                     throw new InvalidArgumentException('AUTHOR_MISMATCH');
                 }
@@ -68,6 +81,11 @@ final class ChapterSubmissionService
                 }
             }
             $snapshot = $this->source($version, $expectedState);
+            // 后继只替换请求契约，不能借重试切换正文、实体目录或前序故事状态。
+            if ($predecessor !== null && (PlanningJson::hash([$predecessor->snapshot, $predecessor->config]) !== $predecessor->input_hash
+                || PlanningJson::hash($snapshot) !== PlanningJson::hash($predecessor->snapshot))) {
+                throw new InvalidArgumentException('RETRY_SOURCE_STALE');
+            }
             $settings = app(GeneralSettings::class);
             if (trim($settings->default_model) === '' || strlen($settings->default_model) > 128) {
                 throw new InvalidArgumentException('MODEL_INVALID');
@@ -78,7 +96,12 @@ final class ChapterSubmissionService
             }
             $config = ['version' => SubmissionContract::VERSION, 'model' => $settings->default_model, 'temperature' => 0, 'request_limit' => 2,
                 'operator_id' => $operator->id, 'reason' => $reason, 'protocol' => ['review' => hash('sha256', SubmissionContract::instructions('review')), 'extract' => hash('sha256', SubmissionContract::instructions('extract'))]];
+            if ($predecessor !== null) {
+                $config['predecessor'] = ['id' => $predecessor->id, 'input_hash' => $predecessor->input_hash, 'stop_reason' => $predecessor->stop_reason];
+                $config['repair_feedback'] = $this->repairFeedback($predecessor);
+            }
             $run = ChapterSubmissionRun::create(['novel_id' => $novel->id, 'chapter_id' => $version->chapter_id, 'version_id' => $version->id, 'body_hash' => $version->body_hash,
+                'attempt' => ($predecessor?->attempt ?? 0) + 1, 'predecessor_id' => $retryOf,
                 'expected_state_version' => $expectedState, 'snapshot' => $snapshot, 'config' => $config, 'input_hash' => PlanningJson::hash([$snapshot, $config]),
                 'status' => 'pending', 'step' => 'review', 'invocation_id' => (string) Str::uuid7(), 'requests_used' => 0, 'request_limit' => 2,
                 'control_history' => [['action' => 'authorize_preparation', 'operator_id' => $operator->id, 'reason' => $reason, 'request_limit' => 2,
@@ -210,18 +233,21 @@ final class ChapterSubmissionService
         $error = null;
         try {
             $anchors = ContentSchema::anchors($version->body);
-            $context = ['anchors' => $anchors, 'run_id' => $run->id, 'version_id' => $version->id, 'body_hash' => $version->body_hash];
+            $context = ['anchors' => $anchors, 'entity_catalog' => $run->snapshot['entity_catalog'], 'run_id' => $run->id, 'version_id' => $version->id, 'body_hash' => $version->body_hash];
             $payload = ['version_id' => $version->id, 'body_hash' => $version->body_hash, 'evidence_catalog' => $anchors, 'word_policy' => $run->snapshot['content_sources']['novel']['chapter_length_policy'],
                 'confirmed_setting' => $run->snapshot['content_sources']['confirmed_setting'], 'author_decisions' => $run->snapshot['content_sources']['decisions'],
                 'chapter_plan' => $run->snapshot['body_plan'], 'rule_catalog' => ContentQualityContract::rules($run->snapshot['content_sources']),
                 'entity_catalog' => $run->snapshot['entity_catalog'], 'prior_state' => $run->snapshot['state'], 'reading_hints' => ContentReadingAudit::inspect($version->body)];
+            if ($purpose === 'extract' && isset($run->config['repair_feedback'])) {
+                $payload['rejected_extraction'] = $run->config['repair_feedback'];
+            }
             $log = app(AiTextGenerationService::class)->generate('冻结提交输入：'.PlanningJson::encode($payload), 'real', $run->config['model'], $run->novel_id, null,
-                'submission-'.$purpose.'-v1', TextRequestOptions::submission($purpose, $context));
+                'submission-'.$purpose.'-'.SubmissionContract::VERSION, TextRequestOptions::submission($purpose, $context));
             if (preg_match('/^'.preg_quote($run->config['model'], '/').'(-\d{4}-\d{2}-\d{2})?$/D', $log->model ?? '') !== 1) {
                 throw new InvalidArgumentException('MODEL_MISMATCH');
             }
             $data = ContentSchema::decode($log->response_text);
-            $result = $purpose === 'review' ? SubmissionContract::review($data, $version->body) : app(SubmissionValidator::class)->normalize($data, $version->body);
+            $result = $purpose === 'review' ? SubmissionContract::review($data, $version->body) : app(SubmissionValidator::class)->normalize($data, $version->body, $run->snapshot['state']);
         } catch (AiGenerationException $exception) {
             $log = $exception->costLogId === null ? null : CostLog::find($exception->costLogId);
             $error = $exception->status === 'unknown' ? 'UNKNOWN_RESPONSE' : 'PROVIDER_FAILED';
@@ -274,6 +300,84 @@ final class ChapterSubmissionService
         }
     }
 
+    /** 保存B05原文阅读回执；拒绝时只终止本运行，原始提取及验证结果保持不变。
+     * @param  list<string>  $findings
+     */
+    public function recordEventReading(int $runId, int $extractionId, string $resultHash, User $operator, bool $accepted, array $findings): ChapterSubmissionRun
+    {
+        ContentSchema::listing($findings);
+        if ($findings === []) {
+            throw new InvalidArgumentException('READING_EVIDENCE_REQUIRED');
+        }
+        foreach ($findings as $finding) {
+            ContentSchema::text($finding);
+        }
+
+        return DB::transaction(function () use ($runId, $extractionId, $resultHash, $operator, $accepted, $findings): ChapterSubmissionRun {
+            $reference = ChapterSubmissionRun::findOrFail($runId);
+            Novel::lockForUpdate()->findOrFail($reference->novel_id);
+            $run = ChapterSubmissionRun::lockForUpdate()->findOrFail($runId);
+            $extraction = ChapterEventExtraction::findOrFail($extractionId);
+            if (! in_array($run->status, ['ready', 'awaiting_approval'], true) || $run->config['operator_id'] !== $operator->id
+                || $extraction->submission_run_id !== $run->id || $extraction->result_hash !== $resultHash
+                || PlanningJson::hash($extraction->result) !== $resultHash) {
+                throw new InvalidArgumentException('EVENT_READING_SOURCE_INVALID');
+            }
+            $this->assertCurrent($run);
+            $receipt = ['action' => 'event_reading', 'extraction_id' => $extractionId, 'result_hash' => $resultHash,
+                'body_hash' => $run->body_hash, 'accepted' => $accepted, 'findings' => $findings, 'operator_id' => $operator->id, 'at' => now()->toIso8601String()];
+            $run->update(['control_history' => [...$run->control_history, $receipt],
+                'status' => $accepted ? $run->status : 'failed', 'stop_reason' => $accepted ? $run->stop_reason : 'EVENT_READING_REJECTED']);
+
+            return $run->refresh();
+        });
+    }
+
+    /** 冻结前驱的真实失败反馈；只提供纠错上下文，不能修改或放行旧产物。
+     * @return array<string, mixed>
+     */
+    private function repairFeedback(ChapterSubmissionRun $predecessor): array
+    {
+        $extraction = ChapterEventExtraction::where('submission_run_id', $predecessor->id)->first();
+        $validation = ChapterSubmissionValidation::where('submission_run_id', $predecessor->id)->latest('id')->first();
+        if ($extraction === null || $validation === null) {
+            // 中间评审失败不丢弃最近一次真实提取的纠错反馈，沿严格递减轮次回溯。
+            if ($predecessor->predecessor_id !== null) {
+                $ancestor = ChapterSubmissionRun::findOrFail($predecessor->predecessor_id);
+                if ($ancestor->attempt >= $predecessor->attempt || PlanningJson::hash($ancestor->snapshot) !== PlanningJson::hash($predecessor->snapshot)) {
+                    throw new InvalidArgumentException('RETRY_SOURCE_INVALID');
+                }
+
+                return $this->repairFeedback($ancestor);
+            }
+
+            return ['stop_reason' => $predecessor->stop_reason];
+        }
+        if ($extraction->result_hash !== PlanningJson::hash($extraction->result) || $validation->extraction_id !== $extraction->id
+            || $extraction->version_id !== $predecessor->version_id || $extraction->body_hash !== $predecessor->body_hash) {
+            throw new InvalidArgumentException('RETRY_ARTIFACT_STALE');
+        }
+        $result = $extraction->result;
+        foreach (['events', 'proposed_entities'] as $field) {
+            foreach ($result[$field] as &$item) {
+                unset($item['evidence']);
+            }
+            unset($item);
+        }
+
+        $reading = array_values(array_filter($predecessor->control_history, fn (array $entry): bool => ($entry['action'] ?? null) === 'event_reading' && ($entry['accepted'] ?? true) === false));
+
+        return ['extraction_id' => $extraction->id, 'result_hash' => $extraction->result_hash, 'validation_id' => $validation->id,
+            'reading_findings' => $reading === [] ? [] : $reading[array_key_last($reading)]['findings'],
+            'uncovered_evidence_ids' => array_values(array_diff(array_keys(ContentSchema::anchors($predecessor->version->body)), array_merge(...array_column($result['events'], 'evidence_ids')))),
+            'validation_hash' => PlanningJson::hash($validation->result), 'rejected_result' => $result,
+            'errors' => $validation->result['errors'], 'stop_reason' => $predecessor->stop_reason,
+            'rules' => ['PATCH_SOURCE_INVALID' => '补丁entity_ref和value_ref必须出现在来源事件actor_ref或target_refs中。新地点必须在该事件target_refs中给完整定义，补丁重复使用相同定义。',
+                'LOCATION_EVENT_REQUIRED' => '位置补丁只能引用location_change事件；静态观察不能产生位置变化补丁。',
+                'PATCH_PRECONDITION_FAILED' => 'before_ref须与按事件顺序重放得到的原位置或原物主完全一致，未知才为空。',
+                'UNKNOWN_ENTITY' => '既有实体使用目录编号，新实体每次引用给完整内联定义，禁止new-N字符串。']];
+    }
+
     /** 同版本评审、提取和验证全部有摘要，不能只换编号借用其他章节产物。 */
     public function validateArtifacts(ChapterSubmissionRun $run, ChapterEventExtraction $extraction, array $approvedKeys): ChapterSubmissionValidation
     {
@@ -293,7 +397,7 @@ final class ChapterSubmissionService
                 throw new InvalidArgumentException('ARTIFACT_REQUEST_INVALID');
             }
             $raw = ContentSchema::decode($log->response_text);
-            $normalized = $purpose === 'review' ? SubmissionContract::review($raw, $run->version->body) : app(SubmissionValidator::class)->normalize($raw, $run->version->body);
+            $normalized = $purpose === 'review' ? SubmissionContract::review($raw, $run->version->body) : app(SubmissionValidator::class)->normalize($raw, $run->version->body, $run->snapshot['state']);
             if (PlanningJson::hash($normalized) !== $artifact->result_hash) {
                 throw new InvalidArgumentException('ARTIFACT_RESPONSE_CHANGED');
             }

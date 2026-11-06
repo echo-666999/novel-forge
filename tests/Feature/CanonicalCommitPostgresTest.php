@@ -27,6 +27,7 @@ class CanonicalCommitPostgresTest extends TestCase
 {
     use DatabaseMigrations;
 
+    /** 仅在专库身份核验成功后允许清理测试数据。 */
     private bool $identityVerified = false;
 
     /** 探测只读系统目录；测试写连接只能指向提交专库。 */
@@ -175,16 +176,40 @@ class CanonicalCommitPostgresTest extends TestCase
     /** 增量迁移前后旧业务行逐字段一致，提交准备历史存在时拒绝回滚。 */
     public function test_incremental_migration_preserves_existing_business_rows(): void
     {
-        $stage = NovelStage::factory()->create();
+        // 前后都读取数据库原始行，避免工厂内存属性缺列及时间格式差异造成误报。
+        $stage = NovelStage::factory()->create()->refresh();
         $beforeNovel = $stage->novel->getRawOriginal();
         $beforeStage = $stage->getRawOriginal();
         $migration = require database_path('migrations/2026_11_05_220323_create_chapter_submission_tables.php');
+        $lineage = require database_path('migrations/2026_11_06_023001_add_successor_lineage_to_chapter_submission_runs.php');
+        $lineage->down();
         $migration->down();
         $migration->up();
+        $lineage->up();
         $this->assertSame($beforeNovel, Novel::findOrFail($stage->novel_id)->getRawOriginal());
         $this->assertSame($beforeStage, $stage->fresh()->getRawOriginal());
         ChapterSubmissionRun::factory()->create();
         $this->expectExceptionMessage('已有提交准备或正式历史，拒绝回滚');
+        $migration->down();
+    }
+
+    /** 后继增量迁移不改旧运行；唯一前驱禁止分叉，已有后继禁止回滚。 */
+    public function test_successor_migration_preserves_history_and_rejects_branching(): void
+    {
+        $migration = require database_path('migrations/2026_11_06_023001_add_successor_lineage_to_chapter_submission_runs.php');
+        $migration->down();
+        $original = ChapterSubmissionRun::factory()->create()->refresh();
+        $before = $original->getRawOriginal();
+        $migration->up();
+        $after = $original->fresh()->getRawOriginal();
+        $this->assertSame($before, array_intersect_key($after, $before));
+        $this->assertSame(1, $after['attempt']);
+        $this->assertNull($after['predecessor_id']);
+        $attributes = ['novel_id' => $original->novel_id, 'chapter_id' => $original->chapter_id, 'version_id' => $original->version_id,
+            'expected_state_version' => $original->expected_state_version, 'attempt' => 2, 'predecessor_id' => $original->id];
+        ChapterSubmissionRun::factory()->create($attributes);
+        $this->rejects(fn () => ChapterSubmissionRun::factory()->create([...$attributes, 'attempt' => 3]), '23505');
+        $this->expectExceptionMessage('已有后继准备历史，拒绝回滚');
         $migration->down();
     }
 

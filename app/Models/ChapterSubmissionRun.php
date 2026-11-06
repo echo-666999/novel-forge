@@ -10,7 +10,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use LogicException;
 
 /** 有限章节提交准备及授权。 */
-#[Fillable(['novel_id', 'chapter_id', 'version_id', 'body_hash', 'expected_state_version', 'snapshot', 'config', 'input_hash', 'status', 'step', 'invocation_id', 'requests_used', 'request_limit', 'stop_reason', 'control_history'])]
+#[Fillable(['novel_id', 'chapter_id', 'version_id', 'body_hash', 'expected_state_version', 'attempt', 'predecessor_id', 'snapshot', 'config', 'input_hash', 'status', 'step', 'invocation_id', 'requests_used', 'request_limit', 'stop_reason', 'control_history'])]
 class ChapterSubmissionRun extends Model
 {
     /** 工厂只用于隔离测试，不触发外部请求。
@@ -22,7 +22,7 @@ class ChapterSubmissionRun extends Model
     protected static function booted(): void
     {
         static::updating(function (self $record): void {
-            if ($record->isDirty(['novel_id', 'chapter_id', 'version_id', 'body_hash', 'expected_state_version', 'snapshot', 'config', 'input_hash', 'request_limit']) || $record->requests_used < $record->getRawOriginal('requests_used')) {
+            if ($record->isDirty(['novel_id', 'chapter_id', 'version_id', 'body_hash', 'expected_state_version', 'attempt', 'predecessor_id', 'snapshot', 'config', 'input_hash', 'request_limit']) || $record->requests_used < $record->getRawOriginal('requests_used')) {
                 throw new LogicException('冻结提交输入及领用请求不可覆盖');
             }
         });
@@ -34,7 +34,7 @@ class ChapterSubmissionRun extends Model
      */
     protected function casts(): array
     {
-        return ['novel_id' => 'integer', 'chapter_id' => 'integer', 'version_id' => 'integer', 'expected_state_version' => 'integer', 'snapshot' => 'array', 'config' => 'array', 'requests_used' => 'integer', 'request_limit' => 'integer', 'control_history' => 'array'];
+        return ['novel_id' => 'integer', 'chapter_id' => 'integer', 'version_id' => 'integer', 'expected_state_version' => 'integer', 'attempt' => 'integer', 'predecessor_id' => 'integer', 'snapshot' => 'array', 'config' => 'array', 'requests_used' => 'integer', 'request_limit' => 'integer', 'control_history' => 'array'];
     }
 
     /** 读取本运行的chapter冻结归属。

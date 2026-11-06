@@ -17,8 +17,14 @@ final class SubmissionValidator
     /** 验证提取结构并绑定真实原文，尚不批准新实体。
      * @return array<string, mixed>
      */
-    public function normalize(array $data, string $body): array
+    public function normalize(array $data, string $body, array $priorState = []): array
     {
+        // 新请求内联定义；历史提取仍按原结构复验，不重写旧响应。
+        if (! array_key_exists('patch', $data)) {
+            $data = (new EventChangeResolver)->expand($data, $priorState);
+        } elseif (! array_key_exists('proposed_entities', $data)) {
+            $data = (new InlineEntityResolver)->expand($data);
+        }
         ContentSchema::keys($data, ['proposed_entities', 'events', 'patch']);
         foreach ($data as $items) {
             ContentSchema::listing($items);
@@ -51,7 +57,7 @@ final class SubmissionValidator
             }
             if (preg_match('/^event-[1-9][0-9]*$/D', $event['key']) !== 1 || ! is_int($event['narrative_order']) || $event['narrative_order'] < 1
                 || ! in_array($event['event_type'], SubmissionContract::EVENT_TYPES, true) || ! in_array($event['time_scope'], ['present', 'memory', 'prediction'], true)
-                || FactCategory::tryFrom($event['fact_category']) === null) {
+                || ! is_string($event['fact_category']) || FactCategory::tryFrom($event['fact_category']) === null) {
                 throw new InvalidArgumentException('EVENT_INVALID');
             }
             ContentSchema::listing($event['target_refs']);
@@ -164,7 +170,7 @@ final class SubmissionValidator
             if (in_array($property, ['belief', 'knowledge'], true)) {
                 if ($patch['value_ref'] !== '' || $patch['before_ref'] !== '' || trim($patch['value_text']) === '' || ! in_array($category, ['character_belief', 'rumor', 'inference'], true)
                     || ! in_array($event['event_type'], ['belief_change', 'statement', 'observation'], true)
-                    || ! str_contains(implode("\n", array_column($event['evidence'], 'quote')), $patch['value_text'])) {
+                    || ! $this->hasContinuousEvidence($event['evidence'], $patch['value_text'])) {
                     $add('FACT_CATEGORY_VIOLATION', $key);
                 }
             } else {
@@ -224,5 +230,28 @@ final class SubmissionValidator
         $required = array_values(array_diff(array_keys($proposed), $approvedKeys));
 
         return ['verdict' => $errors !== [] ? 'blocked' : ($required !== [] ? 'requires_approval' : 'pass'), 'errors' => $errors, 'approval_required' => $required, 'state' => $state];
+    }
+
+    /** 信念与知识必须来自连续原文，按区间复原换行，禁止跳过正文拼接证据。
+     * @param  list<array{paragraph: int, quote: string, start: int, end: int}>  $evidence
+     */
+    private function hasContinuousEvidence(array $evidence, string $text): bool
+    {
+        usort($evidence, fn (array $left, array $right): int => $left['start'] <=> $right['start']);
+        $continuous = '';
+        $previous = null;
+        foreach ($evidence as $item) {
+            // 字符间隔等于段号差时，中间只能是换行；否则重新开始连续区间。
+            $gap = $previous === null ? 0 : $item['start'] - $previous['end'];
+            $continuous = $previous !== null && $gap === $item['paragraph'] - $previous['paragraph']
+                ? $continuous.str_repeat("\n", $gap).$item['quote']
+                : $item['quote'];
+            if (str_contains($continuous, $text)) {
+                return true;
+            }
+            $previous = $item;
+        }
+
+        return false;
     }
 }

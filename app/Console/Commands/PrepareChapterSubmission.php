@@ -14,7 +14,7 @@ use Illuminate\Console\Command;
 use Throwable;
 
 /** 有界提交准备入口，失败不能通过重复命令重置请求预算。 */
-#[Signature('app:prepare-chapter-submission {version} {--expected-state-version=} {--max-requests=2} {--max-execution-count=} {--reason=} {--sync}')]
+#[Signature('app:prepare-chapter-submission {version} {--expected-state-version=} {--max-requests=2} {--max-execution-count=} {--retry-of= : 明确追加授权所接续的失败运行编号} {--reason=} {--sync}')]
 #[Description('冻结正文后进行一次评审及一次事件提取，不执行正式提交')]
 class PrepareChapterSubmission extends Command
 {
@@ -24,7 +24,8 @@ class PrepareChapterSubmission extends Command
         $run = null;
         try {
             if ((string) $this->option('max-requests') !== '2' || ! ctype_digit((string) $this->option('expected-state-version'))
-                || ($this->option('max-execution-count') !== null && ! ctype_digit((string) $this->option('max-execution-count')))) {
+                || ($this->option('max-execution-count') !== null && ! ctype_digit((string) $this->option('max-execution-count')))
+                || ($this->option('retry-of') !== null && (! ctype_digit((string) $this->option('retry-of')) || (int) $this->option('retry-of') < 1))) {
                 throw new \InvalidArgumentException('必须明确预期状态版本，请求上限固定2');
             }
             $version = ChapterVersion::findOrFail((int) $this->argument('version'));
@@ -32,7 +33,8 @@ class PrepareChapterSubmission extends Command
             $confirmation = NovelSettingConfirmation::findOrFail($source->snapshot['confirmation_id']);
             $operator = User::findOrFail($confirmation->confirmed_by);
             $run = $service->prepare($version->id, $operator, (int) $this->option('expected-state-version'), (string) $this->option('reason'),
-                $this->option('max-execution-count') === null ? null : (int) $this->option('max-execution-count'), ! $this->option('sync'));
+                $this->option('max-execution-count') === null ? null : (int) $this->option('max-execution-count'), ! $this->option('sync'),
+                $this->option('retry-of') === null ? null : (int) $this->option('retry-of'));
             if ($this->option('sync')) {
                 for ($i = 0; $i < 2 && $run->refresh()->status === 'pending'; $i++) {
                     $service->execute($run->id, $run->invocation_id, false);

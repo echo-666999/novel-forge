@@ -146,12 +146,16 @@ class B04PostgresTest extends TestCase
         $migration = require database_path('migrations/2026_11_03_214251_create_b04_content_tables.php');
         $recoveryMigration = require database_path('migrations/2026_11_04_011317_add_b04_length_recovery_to_chapter_generation_runs.php');
         $submissionMigration = require database_path('migrations/2026_11_05_220323_create_chapter_submission_tables.php');
+        // 后继谱系依赖提交表，按迁移逆序撤销并在恢复时重建。
+        $lineageMigration = require database_path('migrations/2026_11_06_023001_add_successor_lineage_to_chapter_submission_runs.php');
+        $lineageMigration->down();
         $submissionMigration->down();
         $recoveryMigration->down();
         $migration->down();
         $migration->up();
         $recoveryMigration->up();
         $submissionMigration->up();
+        $lineageMigration->up();
         $this->assertSame($before, Novel::findOrFail($stage->novel_id)->getRawOriginal());
         $this->assertSame($stageBefore, $stage->fresh()->getRawOriginal());
     }

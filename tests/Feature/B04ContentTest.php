@@ -54,6 +54,14 @@ class B04ContentTest extends TestCase
         if (Schema::hasTable('chapter_submission_runs')) {
             DB::table('chapters')->update(['formal_version_id' => null, 'canonical_commit_id' => null, 'committed_at' => null]);
             foreach (['story_outbox_events', 'story_state_projections', 'story_events', 'canonical_commits', 'chapter_submission_validations', 'chapter_event_extractions', 'chapter_reviews', 'chapter_submission_runs', 'story_entities'] as $table) {
+                // 隔离夹具先删除后继再删除前驱，保持真实外键约束开启。
+                if ($table === 'chapter_submission_runs') {
+                    foreach (DB::table($table)->orderByDesc('id')->pluck('id') as $id) {
+                        DB::table($table)->where('id', $id)->delete();
+                    }
+
+                    continue;
+                }
                 DB::table($table)->delete();
             }
         }

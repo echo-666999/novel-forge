@@ -3,6 +3,7 @@
 namespace App\Services\Ai;
 
 use App\Services\Pipeline\ContentExecutionContract;
+use App\Services\Pipeline\SubmissionContract;
 use InvalidArgumentException;
 
 /** 受限请求参数，不允许调用方绕过单次请求和阶段超时边界。 */
@@ -87,7 +88,7 @@ final readonly class TextRequestOptions
         $parameters = ['max_output_tokens' => $this->maxOutputTokens, 'timeout_seconds' => $this->timeoutSeconds, 'attempt_limit' => 1];
 
         if ($this->submissionPurpose !== null) {
-            return [...$parameters, 'temperature' => 0.0, 'schema_version' => 'chapter-submission-v1', 'purpose' => $this->submissionPurpose,
+            return [...$parameters, 'temperature' => 0.0, 'schema_version' => SubmissionContract::VERSION, 'purpose' => $this->submissionPurpose,
                 'submission_run_id' => $this->submissionContext['run_id'], 'version_id' => $this->submissionContext['version_id'], 'body_hash' => $this->submissionContext['body_hash'], 'strict' => true];
         }
 

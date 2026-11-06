@@ -31,7 +31,7 @@ final class SubmissionAgent implements Agent, HasStructuredOutput
      */
     public function schema(JsonSchema $schema): array
     {
-        return SubmissionContract::schema($schema, $this->options->submissionPurpose, $this->options->submissionContext['anchors']);
+        return SubmissionContract::schema($schema, $this->options->submissionPurpose, $this->options->submissionContext['anchors'], $this->options->submissionContext['entity_catalog'] ?? []);
     }
 
     /** 输出容量固定，不能自动扩大。 */

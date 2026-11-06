@@ -43,6 +43,7 @@ class ChapterSubmissionTest extends TestCase
 {
     use DatabaseMigrations;
 
+    /** 当前隔离供应商响应场景，不发送真实模型请求。 */
     private string $scenario = 'pass';
 
     /** 显式限制项目迁移路径，避免加载供应商PostgreSQL扩展迁移。 */
@@ -98,7 +99,7 @@ class ChapterSubmissionTest extends TestCase
             $run = ChapterSubmissionRun::findOrFail($log->request_parameters['submission_run_id']);
             $ref = array_key_first($run->snapshot['entity_catalog']);
             if ($purpose === 'review') {
-                $data = ['verdict' => $mode === 'review_reject' ? 'needs_revision' : 'pass', 'summary' => '隔离基本评审结论', 'evidence_ids' => ['p1'], 'findings' => []];
+                $data = ['review' => ['verdict' => $mode === 'review_reject' ? 'needs_revision' : 'pass', 'summary' => '隔离基本评审结论', 'evidence_ids' => ['p1'], 'findings' => []]];
             } else {
                 $data = self::extraction($ref);
                 if ($mode === 'proposal') {
@@ -108,6 +109,31 @@ class ChapterSubmissionTest extends TestCase
                 if ($mode === 'bad_fact') {
                     $data['events'][0]['event_type'] = 'statement';
                 }
+                // 未定义引用必须保留提取证据并由本地验证阻塞，不能隐式创建实体。
+                if ($mode === 'unknown_entity') {
+                    $data['events'][0]['target_refs'] = ['entity-999999'];
+                }
+                if ($mode === 'invalid_category') {
+                    $data['events'][0]['fact_category'] = [];
+                }
+                // 夹具走与当前供应商相同的内联定义协议，旧结构仅供历史验证测试使用。
+                if ($mode === 'proposal') {
+                    $proposal = $data['proposed_entities'][0];
+                    unset($proposal['key']);
+                    $data['events'][0]['target_refs'] = [$proposal];
+                }
+                unset($data['proposed_entities']);
+                // 当前协议将变化放在来源事件内部，避免独立数组的来源编号错配。
+                foreach ($data['events'] as &$event) {
+                    $event['state_changes'] = [];
+                    foreach ($data['patch'] as $patch) {
+                        if ($patch['source_event_key'] === $event['key']) {
+                            unset($patch['source_event_key'], $patch['before_ref']);
+                            $event['state_changes'][] = $patch;
+                        }
+                    }
+                }
+                unset($event, $data['patch']);
             }
             $response = B02SettingTest::response(PlanningJson::encode($data));
             $response['model'] = $request['model'].'-2025-04-14';
@@ -228,7 +254,129 @@ class ChapterSubmissionTest extends TestCase
     /** 每种失败的费用意图数有独立断言。 */
     public static function stopCases(): array
     {
-        return [['unknown', 1], ['review_reject', 1], ['bad_fact', 2]];
+        return [['unknown', 1], ['review_reject', 1], ['bad_fact', 2], ['unknown_entity', 2], ['invalid_category', 2]];
+    }
+
+    /** 显式后继使用新额度，原失败产物不变；同前驱重复命令不重复请求。 */
+    public function test_explicit_successor_preserves_failed_run_and_can_commit(): void
+    {
+        $this->scenario = 'unknown_entity';
+        [$original, $operator] = self::prepared();
+        $before = $original->getRawOriginal();
+        $extraction = ChapterEventExtraction::sole()->getRawOriginal();
+        $limit = max($original->novel->max_execution_count, $original->novel->execution_count + 2);
+        $this->scenario = 'pass';
+        $options = ['version' => $original->version_id, '--expected-state-version' => '0', '--max-execution-count' => (string) $limit,
+            '--retry-of' => (string) $original->id, '--reason' => '明确批准后继两次', '--sync' => true];
+        $this->artisan('app:prepare-chapter-submission', $options)->assertSuccessful();
+        $successor = ChapterSubmissionRun::where('predecessor_id', $original->id)->sole();
+        $this->assertSame(2, $successor->attempt);
+        $this->assertSame('ready', $successor->status);
+        $this->assertSame($extraction['result_hash'], $successor->config['repair_feedback']['result_hash']);
+        $this->assertContains('UNKNOWN_ENTITY', array_column($successor->config['repair_feedback']['errors'], 'code'));
+        $request = CostLog::where('request_parameters->submission_run_id', $successor->id)->where('request_parameters->purpose', 'extract')->sole();
+        $this->assertStringContainsString('rejected_extraction', $request->request_parameters['prompt_audit']['user_prompt']);
+        $this->assertStringContainsString('UNKNOWN_ENTITY', $request->request_parameters['prompt_audit']['user_prompt']);
+        $this->assertSame($before, $original->fresh()->getRawOriginal());
+        $this->assertSame($extraction, ChapterEventExtraction::findOrFail($extraction['id'])->getRawOriginal());
+        $this->artisan('app:prepare-chapter-submission', $options)->assertSuccessful();
+        $this->assertSame(2, ChapterSubmissionRun::count());
+        self::commit($successor, $operator);
+        $this->assertSame(1, CanonicalCommit::count());
+        Http::assertSentCount(7);
+    }
+
+    /** 自动重试仍被禁止，成功运行不能充当失败前驱。 */
+    public function test_successor_rejects_nonfailed_predecessor(): void
+    {
+        [$run, $operator] = self::prepared();
+        $this->expectExceptionMessage('RETRY_SOURCE_INVALID');
+        app(ChapterSubmissionService::class)->prepare($run->version_id, $operator, 0, '不合法后继', $run->novel->execution_count + 2, false, $run->id);
+    }
+
+    /** 后继授权不能用于换正文，且必须显式给出总调用上限。 */
+    public function test_successor_requires_explicit_limit(): void
+    {
+        $this->scenario = 'unknown_entity';
+        [$run, $operator] = self::prepared();
+        $this->expectExceptionMessage('EXECUTION_LIMIT_CONFIRMATION_REQUIRED');
+        app(ChapterSubmissionService::class)->prepare($run->version_id, $operator, 0, '缺少追加总额', dispatch: false, retryOf: $run->id);
+    }
+
+    /** 中间一轮评审失败时，后续提取仍收到最近的真实提取错误。 */
+    public function test_successor_keeps_extraction_feedback_across_review_failure(): void
+    {
+        $this->scenario = 'unknown_entity';
+        [$original, $operator] = self::prepared();
+        $service = app(ChapterSubmissionService::class);
+        $this->scenario = 'review_reject';
+        $middle = $service->prepare($original->version_id, $operator, 0, '隔离中间评审失败', 20, false, $original->id);
+        $service->execute($middle->id, $middle->invocation_id, false);
+        $this->assertSame('failed', $middle->fresh()->status);
+        $this->scenario = 'pass';
+        $next = $service->prepare($original->version_id, $operator, 0, '隔离追溯提取反馈', 20, false, $middle->id);
+        $this->assertSame(ChapterEventExtraction::sole()->id, $next->config['repair_feedback']['extraction_id']);
+        $this->assertContains('UNKNOWN_ENTITY', array_column($next->config['repair_feedback']['errors'], 'code'));
+        Http::assertSentCount(6);
+    }
+
+    /** 原文核对拒绝后禁止正式提交，后继收到原核对意见且旧提取不变。 */
+    public function test_event_reading_rejection_preserves_artifact_and_reaches_successor(): void
+    {
+        [$run, $operator] = self::prepared();
+        $extraction = ChapterEventExtraction::sole();
+        $before = $extraction->getRawOriginal();
+        $this->artisan('app:review-chapter-events', ['run' => $run->id, '--extraction' => $extraction->id, '--result-hash' => $extraction->result_hash,
+            '--reject' => true, '--finding' => ['事件主体与原文不符']])->assertSuccessful();
+        $this->assertSame('failed', $run->fresh()->status);
+        $this->assertSame($before, $extraction->fresh()->getRawOriginal());
+        $next = app(ChapterSubmissionService::class)->prepare($run->version_id, $operator, 0, '阅读失败后继', 20, false, $run->id);
+        $this->assertSame(['事件主体与原文不符'], $next->config['repair_feedback']['reading_findings']);
+        Http::assertSentCount(5);
+        $this->expectExceptionMessage('SUBMISSION_NOT_READY');
+        self::commit($run, $operator);
+    }
+
+    /** 原文核对回执不能绑定其他摘要，接受阅读本身不创建正式事件。 */
+    public function test_event_reading_receipt_binds_exact_extraction(): void
+    {
+        [$run, $operator] = self::prepared();
+        $extraction = ChapterEventExtraction::sole();
+        $service = app(ChapterSubmissionService::class);
+        $service->recordEventReading($run->id, $extraction->id, $extraction->result_hash, $operator, true, ['逐项原文对应通过']);
+        $this->assertSame('ready', $run->fresh()->status);
+        $this->assertSame(0, CanonicalCommit::count());
+        $this->expectExceptionMessage('EVENT_READING_SOURCE_INVALID');
+        $service->recordEventReading($run->id, $extraction->id, str_repeat('0', 64), $operator, true, ['错误摘要']);
+    }
+
+    /** B05违规案例通过真实准备入口落下提取与阻塞回执，正文及正式状态保持原样。 */
+    public function test_unknown_entity_preserves_extraction_and_blocks_without_formal_events(): void
+    {
+        $this->scenario = 'unknown_entity';
+        [$version, $operator] = self::candidate();
+        $before = $version->getRawOriginal();
+        $service = app(ChapterSubmissionService::class);
+        $run = $service->prepare($version->id, $operator, 0, 'B05未定义实体阻塞验收', dispatch: false);
+        $service->execute($run->id, $run->invocation_id, false);
+        $run->refresh();
+        $service->execute($run->id, $run->invocation_id, false);
+        $this->assertSame('EVENT_VALIDATION_BLOCKED', $run->fresh()->stop_reason);
+        $extraction = ChapterEventExtraction::sole();
+        $validation = ChapterSubmissionValidation::sole();
+        $this->assertSame($version->body_hash, $extraction->body_hash);
+        $this->assertSame($extraction->id, $validation->extraction_id);
+        $this->assertSame('blocked', $validation->verdict);
+        $this->assertContains('UNKNOWN_ENTITY', array_column($validation->result['errors'], 'code'));
+        foreach ($extraction->result['events'][0]['evidence'] as $evidence) {
+            $this->assertSame($evidence['quote'], mb_substr($version->body, $evidence['start'], $evidence['end'] - $evidence['start']));
+        }
+        $this->assertSame($before, $version->fresh()->getRawOriginal());
+        $this->assertSame(1, StoryEntity::count());
+        $this->assertSame(0, StoryEvent::count());
+        $this->assertSame(0, CanonicalCommit::count());
+        $this->assertSame(0, $run->novel->fresh()->state_version);
+        Http::assertSentCount(5);
     }
 
     /** 事务最后一笔失败时，章节、实体、事件、投影、计数和提交必须全部回滚。 */
