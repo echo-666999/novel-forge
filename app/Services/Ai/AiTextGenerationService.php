@@ -2,8 +2,10 @@
 
 namespace App\Services\Ai;
 
+use App\Models\ContextManifest;
 use App\Models\CostLog;
 use App\Models\NovelStage;
+use App\Services\Pipeline\ContextBuilder;
 use App\Services\Pipeline\PlanningJson;
 use App\Settings\GeneralSettings;
 use Illuminate\JsonSchema\JsonSchemaTypeFactory;
@@ -48,6 +50,23 @@ final class AiTextGenerationService
             // 同一不可变选项构造实际Agent和调用前审计；写入失败时绝不发送HTTP。
             $agent = $options->settingDecision ? new SettingDecisionAgent($options) : ($options->submissionPurpose !== null ? new SubmissionAgent($options) : new ChapterGenerationAgent($options));
             $schema = (new JsonSchemaTypeFactory)->object($agent->schema(new JsonSchemaTypeFactory))->withoutAdditionalProperties()->toArray();
+            // C04先组装并持久化清单，阻塞时不建立成本流水、不发送供应商请求。
+            $context = $options->submissionContext ?? $options->executionContext;
+            if (isset($context['context_policy'])) {
+                $marker = $options->submissionPurpose !== null ? '冻结提交输入：' : '冻结输入：';
+                $parts = explode($marker, $prompt, 2);
+                if (count($parts) !== 2 || $novelId === null) {
+                    throw new InvalidArgumentException('上下文组装缺少小说或冻结输入');
+                }
+                $document = app(ContextBuilder::class)->build(json_decode($parts[1], true, flags: JSON_THROW_ON_ERROR), $parts[0].$marker, $agent->instructions(), $schema, $context['context_policy'], $options->maxOutputTokens, $context['context_source']);
+                $manifest = ContextManifest::create(['novel_id' => $novelId, 'chapter_number' => $context['context_source']['chapter_number'], 'purpose' => $options->submissionPurpose ?? $options->chapterStep, 'status' => $document['status'], 'document' => $document, 'document_hash' => PlanningJson::hash($document), 'created_at' => now()]);
+                if ($document['status'] === 'blocked') {
+                    throw new AiGenerationException('上下文容量不足，清单 #'.$manifest->id.' 已保留，尚未发送请求。', 'context_capacity');
+                }
+                $prompt = $document['user_prompt'];
+                $parameters['context_manifest_id'] = $manifest->id;
+                $parameters['context_manifest_hash'] = $manifest->document_hash;
+            }
             $parameters['prompt_audit'] = ['system_prompt' => $agent->instructions(), 'user_prompt' => $prompt,
                 'response_schema' => $schema, 'parameters' => $parameters,
                 'system_hash' => hash('sha256', $agent->instructions()), 'user_hash' => hash('sha256', $prompt),

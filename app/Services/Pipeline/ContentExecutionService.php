@@ -196,6 +196,12 @@ final class ContentExecutionService
             $payload['foreshadow_context'] = $run->snapshot['foreshadow_context'];
         }
 
+        // 统一AI入口按此冻结预算组装并保存实际请求清单。
+        if (isset($run->snapshot['context_policy'])) {
+            $context['context_policy'] = $run->snapshot['context_policy'];
+            $context['context_source'] = ['content_run_id' => $run->id, 'input_hash' => $run->input_hash, 'chapter_number' => $run->chapter->number];
+        }
+
         return ['payload' => $payload, 'context' => $context];
     }
 
@@ -247,7 +253,8 @@ final class ContentExecutionService
                 'execution_count' => (int) $novel->stages()->where('stage', $stageType->value)->max('execution_count') + 1,
                 'input' => ['pipeline' => ['version' => ContentExecutionContract::VERSION], 'run_id' => $run->id, 'step' => $step, 'invocation_id' => $token,
                     'input_hash' => $run->input_hash, 'version_id' => $version?->id, 'body_hash' => $version?->body_hash, 'request_ordinal' => $run->requests_used + 1,
-                    'payload_hash' => PlanningJson::hash($request['payload'])], 'started_at' => now()]);
+                    // C04组装前来源摘要与供应商实际用户提示摘要分别保存。
+                    (isset($request['context']['context_policy']) ? 'source_payload_hash' : 'payload_hash') => PlanningJson::hash($request['payload'])], 'started_at' => now()]);
             $run->update(['status' => 'running', 'requests_used' => $run->requests_used + 1, 'retry_count' => $run->retry_count + ($step === 'revise' ? 1 : 0)]);
             $novel->update(['status' => NovelStatus::Running, 'current_stage' => $stageType, 'execution_count' => $novel->execution_count + 1]);
             $run->chapter->update(['status' => $step === 'check' ? ChapterStatus::Checking : ChapterStatus::Generating]);
@@ -282,7 +289,8 @@ final class ContentExecutionService
             }
         } catch (AiGenerationException $exception) {
             $log = $exception->costLogId === null ? null : CostLog::find($exception->costLogId);
-            $failure = $exception->status === 'unknown' ? 'unknown' : 'provider_failed';
+            $failure = $exception->category === 'context_capacity' ? 'context_capacity' : ($exception->status === 'unknown' ? 'unknown' : 'provider_failed');
+            $error = $exception->category === 'context_capacity' ? $exception->getMessage() : null;
         } catch (Throwable $exception) {
             $failure = $log?->status === 'succeeded' ? 'invalid_schema' : (CostLog::where('novel_stage_id', $stage->id)->exists() ? 'unknown' : 'audit_failed');
             $error = $exception instanceof InvalidArgumentException ? $exception->getMessage() : '本地处理异常，保留证据后显式恢复';

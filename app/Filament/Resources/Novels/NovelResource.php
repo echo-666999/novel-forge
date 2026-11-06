@@ -103,6 +103,8 @@ class NovelResource extends Resource
             'view' => ViewNovel::route('/{record}'),
             'run' => Pages\ViewNovelRun::route('/{record}/run'),
             // 伏笔计划与证据使用独立维护页。
+            // 检查器展示冻结请求及裁剪清单。
+            'contexts' => Pages\ViewContextManifests::route('/{record}/contexts'),
             'foreshadows' => Pages\ViewForeshadows::route('/{record}/foreshadows'),
             'state' => Pages\ViewStoryState::route('/{record}/state'),
             'costs' => Pages\ViewNovelCosts::route('/{record}/costs'),

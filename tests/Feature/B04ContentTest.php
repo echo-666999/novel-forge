@@ -51,6 +51,10 @@ class B04ContentTest extends TestCase
     /** 冻结历史夹具或纯契约回归，不通过旧业务路径生成运行。 */
     public static function clearFixtures(): void
     {
+        // 清单仅在已核验隔离库内随夹具清理。
+        if (Schema::hasTable('context_manifests')) {
+            DB::table('context_manifests')->delete();
+        }
         // 仅清理隔离夹具，先释放伏笔对正式提交的外键。
         if (Schema::hasTable('foreshadow_evidence')) {
             DB::table('foreshadow_evidence')->delete();

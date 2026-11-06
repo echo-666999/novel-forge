@@ -59,6 +59,8 @@ final class ContentGenerationService
                 $snapshot['prior_context'] = app(CanonicalChapterContext::class)->build($novel, $chapterNumber);
             }
             // 新运行单独冻结伏笔上下文，历史运行及正式上下文摘要保持原样。
+            // 仅新运行冻结上下文预算；历史恢复继续沿用原快照。
+            $snapshot['context_policy'] = app(ContextBuilder::class)->policy();
             $snapshot['foreshadow_context'] = app(ForeshadowLedger::class)->context($novel, $chapterNumber);
             $chapter = $novel->chapters()->create(['number' => $chapterNumber, 'title' => $snapshot['source_chapter']['title'], 'objective' => $snapshot['source_chapter']['objective'], 'status' => ChapterStatus::Pending]);
             $config['request_cap'] = $limit;

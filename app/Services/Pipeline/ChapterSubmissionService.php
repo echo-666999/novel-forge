@@ -236,6 +236,11 @@ final class ChapterSubmissionService
         try {
             $anchors = ContentSchema::anchors($version->body);
             $context = ['anchors' => $anchors, 'entity_catalog' => $run->snapshot['entity_catalog'], 'run_id' => $run->id, 'version_id' => $version->id, 'body_hash' => $version->body_hash];
+            // 评审与提取继承正文冻结预算，并保留各自提交来源摘要。
+            if (isset($run->snapshot['content_sources']['context_policy'])) {
+                $context['context_policy'] = $run->snapshot['content_sources']['context_policy'];
+                $context['context_source'] = ['submission_run_id' => $run->id, 'input_hash' => $run->input_hash, 'version_id' => $version->id, 'chapter_number' => $run->chapter->number];
+            }
             $payload = ['prior_context' => $run->snapshot['content_sources']['prior_context'] ?? null, 'version_id' => $version->id, 'body_hash' => $version->body_hash, 'evidence_catalog' => $anchors, 'word_policy' => $run->snapshot['content_sources']['novel']['chapter_length_policy'],
                 'confirmed_setting' => $run->snapshot['content_sources']['confirmed_setting'], 'author_decisions' => $run->snapshot['content_sources']['decisions'],
                 'chapter_plan' => $run->snapshot['body_plan'], 'rule_catalog' => ContentQualityContract::rules($run->snapshot['content_sources']),

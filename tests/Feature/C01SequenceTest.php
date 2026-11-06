@@ -8,6 +8,7 @@ use App\Models\CanonicalCommit;
 use App\Models\Chapter;
 use App\Models\ChapterGenerationRun;
 use App\Models\ChapterSubmissionRun;
+use App\Models\ContextManifest;
 use App\Models\CostLog;
 use App\Models\FirstChapterRun;
 use App\Models\Novel;
@@ -70,6 +71,14 @@ class C01SequenceTest extends TestCase
             $this->assertSame(['effort' => 'low'], $request['reasoning']);
             $this->assertSame(['effort' => 'low'], CostLog::latest('id')->firstOrFail()->request_parameters['reasoning']);
             $log = CostLog::latest('id')->firstOrFail();
+            // C04清单与供应商实际载荷逐字一致，生成和提交准备均走统一入口。
+            if (isset($log->request_parameters['context_manifest_id'])) {
+                $manifest = ContextManifest::findOrFail($log->request_parameters['context_manifest_id']);
+                $this->assertSame($manifest->document['user_prompt'], $request['input'][1]['content'][0]['text']);
+                $this->assertSame($manifest->document_hash, PlanningJson::hash($manifest->document));
+                $this->assertSame($manifest->document['system_prompt'], $request['input'][0]['content']);
+                $this->assertSame(PlanningJson::hash($manifest->document['response_schema']), PlanningJson::hash($request['text']['format']['schema']));
+            }
             $version = $log->request_parameters['schema_version'];
             if ($version === 'b02-setting-v1') {
                 $data = B02SettingTest::setting();

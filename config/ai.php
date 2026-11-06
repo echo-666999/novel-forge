@@ -2,6 +2,8 @@
 
 /** A03 只启用已批准的 OpenAI 文本路由，其他 SDK 配置沿用包内默认值。 */
 return [
+    // C04本地保守运行预算，不声明供应商模型窗口；新运行冻结后不随配置变化。
+    'context' => ['capacity' => 262144],
     'default' => 'openai',
     'providers' => [
         'openai' => [

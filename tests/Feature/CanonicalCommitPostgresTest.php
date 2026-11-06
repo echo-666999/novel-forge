@@ -83,7 +83,7 @@ class CanonicalCommitPostgresTest extends TestCase
     /** 每张新表及新增字段都有中文备注；JSONB冻结输入可往返。 */
     public function test_chinese_comments_and_jsonb_roundtrip(): void
     {
-        foreach (['foreshadows', 'foreshadow_evidence', 'chapter_submission_runs', 'chapter_reviews', 'chapter_event_extractions', 'chapter_submission_validations', 'canonical_commits', 'story_entities', 'story_events', 'story_state_projections', 'story_outbox_events'] as $table) {
+        foreach (['context_manifests', 'foreshadows', 'foreshadow_evidence', 'chapter_submission_runs', 'chapter_reviews', 'chapter_event_extractions', 'chapter_submission_validations', 'canonical_commits', 'story_entities', 'story_events', 'story_state_projections', 'story_outbox_events'] as $table) {
             $name = DB::getTablePrefix().$table;
             $this->assertMatchesRegularExpression('/\p{Han}/u', DB::selectOne('select obj_description(to_regclass(?)) as comment', [$name])->comment);
             foreach (DB::select('select attname,col_description(attrelid,attnum) as comment from pg_attribute where attrelid=to_regclass(?) and attnum>0 and not attisdropped', [$name]) as $column) {
