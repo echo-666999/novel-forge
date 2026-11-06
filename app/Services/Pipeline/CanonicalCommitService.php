@@ -51,7 +51,7 @@ final class CanonicalCommitService
             if ($automationId !== null) {
                 $delegation = FirstChapterRun::findOrFail($automationId);
                 $delegation->assertDelegation($novel->id, $operator->id);
-                if ($version->chapter->number !== 1 || $expectedState !== 0 || $idempotencyKey !== $delegation->commit_key) {
+                if ($version->chapter->number > $delegation->chapter_limit || $expectedState !== $version->chapter->number - 1 || $idempotencyKey !== $delegation->chapterCommitKey($version->chapter->number)) {
                     throw new InvalidArgumentException('AUTOMATION_SCOPE_MISMATCH');
                 }
             }

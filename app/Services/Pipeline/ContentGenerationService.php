@@ -9,6 +9,7 @@ use App\Enums\Stage;
 use App\Models\ChapterGenerationRun;
 use App\Models\ChapterVersion;
 use App\Models\CostLog;
+use App\Models\FirstChapterRun;
 use App\Models\Novel;
 use App\Models\User;
 use App\Services\Ai\AiTextGenerationService;
@@ -22,20 +23,28 @@ use InvalidArgumentException;
 final class ContentGenerationService
 {
     /** 创建前冻结参数；仅本次明确确认才允许增加小说总额度。 */
-    public function start(Novel $reference, User $author, int $maxOutputTokens = 8192, ?int $requestLimit = null, string $reason = '首章有限生成与检查', ?int $executionLimit = null, ?string $modelOverride = null): ChapterGenerationRun
+    public function start(Novel $reference, User $author, int $maxOutputTokens = 8192, ?int $requestLimit = null, string $reason = '首章有限生成与检查', ?int $executionLimit = null, ?string $modelOverride = null, int $chapterNumber = 1): ChapterGenerationRun
     {
         $this->outsideTransaction();
         ContentSchema::text($reason);
         if ($maxOutputTokens < 1 || $maxOutputTokens > 8192) {
             throw new InvalidArgumentException('正文Token上限无效');
         }
-        $run = DB::transaction(function () use ($reference, $author, $maxOutputTokens, $requestLimit, $reason, $executionLimit, $modelOverride): ChapterGenerationRun {
+        $run = DB::transaction(function () use ($reference, $author, $maxOutputTokens, $requestLimit, $reason, $executionLimit, $modelOverride, $chapterNumber): ChapterGenerationRun {
             $novel = Novel::lockForUpdate()->findOrFail($reference->id);
             $plan = $novel->outlinePlans()->where('status', 'completed')->latest('id')->firstOrFail();
             $fine = $plan->config['enable_fine_outline'];
             if (! is_bool($fine) || $novel->generation_mode !== GenerationMode::SettingReal || $novel->status !== NovelStatus::Paused
-                || $novel->current_stage !== ($fine ? Stage::FineOutline : Stage::Content) || $novel->chapters()->exists()) {
+                || ($chapterNumber === 1 && $novel->current_stage !== ($fine ? Stage::FineOutline : Stage::Content))
+                || $chapterNumber !== $novel->chapters_done + 1 || $novel->state_version !== $chapterNumber - 1
+                || $novel->chapters()->where('number', '>=', $chapterNumber)->exists()) {
                 throw new InvalidArgumentException('不在首次正文生成边界');
+            }
+            // 后续章必须属于独立的十章授权，旧首章授权不能自动扩大。
+            if ($chapterNumber > 1) {
+                $automation = FirstChapterRun::where('novel_id', $novel->id)->firstOrFail();
+                $automation->assertDelegation($novel->id, $author->id);
+                $automation->chapterCommitKey($chapterNumber);
             }
             $this->assertIdle($novel, false);
             $settings = app(GeneralSettings::class);
@@ -45,8 +54,11 @@ final class ContentGenerationService
             $snapshot = ['novel' => $novel->only(['id', 'title', 'genre', 'premise_raw', 'target_chapters', 'chapter_length_policy']),
                 'confirmation_id' => $plan->confirmation->id, 'confirmation_hash' => $plan->confirmation->content_hash,
                 'confirmed_setting' => $plan->confirmation->setting, 'decisions' => $plan->confirmation->decisions,
-                'source_chapter' => $plan->chapters()->where('chapter_number', 1)->firstOrFail()->attributesToArray(), 'outline_plan_id' => $plan->id, 'roadmap' => $plan->roadmap];
-            $chapter = $novel->chapters()->create(['number' => 1, 'title' => $snapshot['source_chapter']['title'], 'objective' => $snapshot['source_chapter']['objective'], 'status' => ChapterStatus::Pending]);
+                'source_chapter' => $plan->chapters()->where('chapter_number', $chapterNumber)->firstOrFail()->attributesToArray(), 'outline_plan_id' => $plan->id, 'roadmap' => $plan->roadmap];
+            if ($chapterNumber > 1) {
+                $snapshot['prior_context'] = app(CanonicalChapterContext::class)->build($novel, $chapterNumber);
+            }
+            $chapter = $novel->chapters()->create(['number' => $chapterNumber, 'title' => $snapshot['source_chapter']['title'], 'objective' => $snapshot['source_chapter']['objective'], 'status' => ChapterStatus::Pending]);
             $config['request_cap'] = $limit;
             $config['initial_step'] = $fine ? 'fine' : 'draft';
             $run = ChapterGenerationRun::create(['chapter_id' => $chapter->id, 'outline_chapter_id' => $snapshot['source_chapter']['id'],

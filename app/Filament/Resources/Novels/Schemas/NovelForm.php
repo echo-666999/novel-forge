@@ -19,13 +19,14 @@ class NovelForm
         return $schema
             ->components([
                 Section::make('创作信息')
-                    ->description('默认模拟不产生模型费用。显式选择真实设定将调用模型，成功后暂停等待大纲阶段；也可勾选自动首章，授权后将连续生成并提交第一章。')
+                    ->description('默认模拟不产生模型费用。显式选择真实设定将调用模型，成功后暂停等待大纲阶段；也可授权自动生成首章或前10章，通过检查后逐章正式提交。')
                     ->columns(2)->columnSpanFull()
                     ->schema([
                         Select::make('generation_mode')->label('生成模式')->required()->native()
                             ->options(collect(GenerationMode::cases())->mapWithKeys(fn (GenerationMode $mode): array => [$mode->value => $mode->label()])->all())
                             ->default(GenerationMode::Simulation->value)->columnSpanFull(),
-                        TextInput::make('automatic_model')->label('自动首章模型（可选）')->maxLength(128)->helperText('留空使用通用设置；仅勾选自动首章时生效，不修改全局模型。')->columnSpanFull(),
+                        TextInput::make('automatic_model')->label('自动生成模型（可选）')->maxLength(128)->helperText('留空时前10章使用gpt-6.1-terra，首章使用通用设置；仅自动生成时生效，不修改全局模型。')->columnSpanFull(),
+                        Checkbox::make('automatic_first_ten')->label('授权自动生成并正式提交前10章')->helperText('仅本次新小说生效：自动决定设定问题、采纳通过校验的新实体并逐章正式提交。目标须至少10章；会产生模型费用，全部请求与失败均记录，不代表人工全文阅读。')->default(false)->columnSpanFull(),
                         Checkbox::make('automatic_first_chapter')->label('授权自动生成并正式提交第一章')
                             ->helperText('仅对本次新建小说生效：自动决定设定问题、采纳通过校验的新实体并提交首章。明确失败可自动恢复，同一错误重复或响应未知会暂停。将产生模型费用；不代表人工全文阅读。')->default(false)->columnSpanFull(),
                         TextInput::make('title')->label('书名')->required()->maxLength(255)->regex('/(*UCP)\S/u')

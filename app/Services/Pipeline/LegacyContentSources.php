@@ -25,7 +25,7 @@ final class LegacyContentSources
         $source = NovelOutlineChapter::query()->findOrFail($run->outline_chapter_id);
         $plan = $source->plan;
         $origin = NovelStage::query()->findOrFail($source->source_stage_id);
-        $recorded = collect(data_get($origin->output, 'data.chapters', []))->firstWhere('chapter_number', 1);
+        $recorded = collect(data_get($origin->output, 'data.chapters', []))->firstWhere('chapter_number', $run->chapter->number);
         $chapterData = collect($source->attributesToArray())->except(['id', 'outline_plan_id', 'source_stage_id'])->all();
         $settingStage = NovelStage::query()->findOrFail($confirmation->source_stage_id);
         $checks = [
@@ -34,7 +34,7 @@ final class LegacyContentSources
             '确认来源摘要' => $confirmation->source_hash === (new ConfirmSettingService)->sourceHash($settingStage),
             '小说归属' => $confirmation->novel_id === $run->chapter->novel_id && $plan->novel_id === $confirmation->novel_id,
             '确认身份' => $confirmation->content_hash === $snapshot['confirmation_hash'] && $plan->setting_confirmation_id === $confirmation->id,
-            '大纲状态' => $plan->status === 'completed' && $plan->id === $snapshot['outline_plan_id'] && $source->chapter_number === 1,
+            '大纲状态' => $plan->status === 'completed' && $plan->id === $snapshot['outline_plan_id'] && $source->chapter_number === $run->chapter->number,
             '大纲完整性' => $plan->next_chapter === $plan->target_chapters + 1 && $plan->chapters()->count() === $plan->target_chapters,
             '全书走向' => PlanningJson::hash($plan->roadmap) === PlanningJson::hash($snapshot['roadmap']) && PlanningJson::hash($plan->roadmap) === PlanningJson::hash(data_get($origin->output, 'data.roadmap')),
             '真实来源' => $run->chapter->novel->generation_mode === GenerationMode::SettingReal && $settingStage->stage === Stage::Setting && $settingStage->status === StageStatus::Completed,
@@ -45,6 +45,10 @@ final class LegacyContentSources
             '确认设定' => PlanningJson::hash($snapshot['confirmed_setting']) === PlanningJson::hash($confirmation->setting),
             '作者决定' => PlanningJson::hash($snapshot['decisions']) === PlanningJson::hash($confirmation->decisions),
         ];
+        // 后续章摘要只能来自对应前序正式版本，篡改或误注入未来章节立即拒绝。
+        if ($run->chapter->number > 1) {
+            $checks['前文摘要与正式来源'] = PlanningJson::hash($snapshot['prior_context'] ?? []) === PlanningJson::hash(app(CanonicalChapterContext::class)->build($run->chapter->novel, $run->chapter->number));
+        }
         foreach ($checks as $label => $valid) {
             if (! $valid) {
                 throw new InvalidArgumentException('首章冻结来源不匹配：'.$label);

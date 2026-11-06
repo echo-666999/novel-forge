@@ -29,7 +29,11 @@ final class ChapterGenerationAgent implements Agent, HasStructuredOutput
     /** 生成和检查使用分离的固定中文指令。 */
     public function instructions(): string
     {
-        return ContentExecutionContract::instructions($this->options->chapterStep);
+        $instructions = ContentExecutionContract::instructions($this->options->chapterStep);
+        $number = $this->options->executionContext['chapter_number'] ?? 1;
+
+        // 保留旧首章冻结指令；后续章明确当前章号及已提交前文的优先级。
+        return $number === 1 ? $instructions : str_replace('首章', '第'.$number.'章', $instructions).'续接prior_context中的正式前文与上一章结尾，不重演已完成行动。事件摘要保留事实类别，传闻和信念不能升级为客观事实；候选大纲与正式前文冲突时承接正式事实，只推进当前章。';
     }
 
     /** Schema严格绑定本次冻结目录。

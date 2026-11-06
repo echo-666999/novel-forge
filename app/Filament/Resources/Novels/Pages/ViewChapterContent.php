@@ -27,6 +27,7 @@ use Filament\Actions\Action;
 use Filament\Facades\Filament;
 use Filament\Forms\Components\Checkbox;
 use Filament\Forms\Components\CheckboxList;
+use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Infolists\Components\RepeatableEntry;
@@ -44,8 +45,9 @@ use Filament\Tables\Table;
 use Illuminate\Support\Facades\Schema as DatabaseSchema;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
+use Livewire\Attributes\Url;
 
-/** 只读首章阅读及证据页面，失败正文和每版历史始终可见。 */
+/** 按章节阅读及证据页面，失败正文和每版历史始终可见。 */
 class ViewChapterContent extends Page implements HasTable
 {
     use InteractsWithRecord;
@@ -53,8 +55,13 @@ class ViewChapterContent extends Page implements HasTable
 
     protected static string $resource = NovelResource::class;
 
-    protected static ?string $title = '首章候选与推进检查';
+    protected static ?string $title = '章节候选与推进检查';
 
+    /** 阅读指定章节，查询仍固定在当前小说范围。 */
+    #[Url(as: 'chapter')]
+    public int $chapterNumber = 1;
+
+    /** 当前请求内缓存所选章节运行，切换章节时清空。 */
     private ?ChapterGenerationRun $resolvedRun = null;
 
     /** 路由先解析小说权限，再限制所有运行和版本的所属章节。 */
@@ -67,7 +74,7 @@ class ViewChapterContent extends Page implements HasTable
     /** 同一请求缓存读取，刷新动作明确失效缓存。 */
     public function run(): ?ChapterGenerationRun
     {
-        return $this->resolvedRun ??= ChapterGenerationRun::query()->whereHas('chapter', fn ($query) => $query->where('novel_id', $this->getRecord()->id)->where('number', 1))->latest('id')->first();
+        return $this->resolvedRun ??= ChapterGenerationRun::query()->whereHas('chapter', fn ($query) => $query->where('novel_id', $this->getRecord()->id)->where('number', $this->chapterNumber))->latest('id')->first();
     }
 
     /** 中文运行原因，不用技术错误码替代可理解的下一步。 */
@@ -98,12 +105,12 @@ class ViewChapterContent extends Page implements HasTable
     public function content(Schema $schema): Schema
     {
         return $schema->components([
-            Section::make('首章运行')->description(fn (): string => $this->candidate()?->id !== null && $this->run()?->chapter->formal_version_id === $this->candidate()->id ? '该版本已正式提交，事件与状态已原子保存。' : '这里是正文候选，须通过提交准备与作者批准后才成为正式稿。')->columns(3)->schema([
+            Section::make('章节运行')->description(fn (): string => $this->candidate()?->id !== null && $this->run()?->chapter->formal_version_id === $this->candidate()->id ? '该版本已正式提交，事件与状态已原子保存。' : '这里是正文候选，须通过提交准备与作者批准后才成为正式稿。')->columns(3)->schema([
                 TextEntry::make('run_status')->label('运行状态')->state(fn (): string => match ($this->run()?->status) {
                     'pending' => '待处理', 'running' => '运行中', 'completed' => '候选检查完成', 'paused' => '已暂停', 'error' => '异常', default => '尚未启动'
                 }),
                 TextEntry::make('step')->label('当前步骤')->state(fn (): string => match ($this->run()?->next_step) {
-                    'fine' => '首章细纲', 'draft' => '正文生成', 'check' => '独立推进检查', 'revise' => '推进点修订', 'length_repair' => '定点扩写', default => '无'
+                    'fine' => '章节细纲', 'draft' => '正文生成', 'check' => '独立推进检查', 'revise' => '推进点修订', 'length_repair' => '定点扩写', default => '无'
                 }),
                 TextEntry::make('requests')->label('已领用 / 请求上限')->state(fn (): string => ($this->run()?->requests_used ?? 0).' / '.($this->run()?->request_limit ?? 0)),
                 TextEntry::make('continuous_scope')->label('持续验收范围')->state(fn (): string => ($this->run()?->config['version'] ?? null) === ContentExecutionContract::VERSION ? '本授权内最多一次修订，请求上限不可通过继续操作扩大' : '历史协议，只读保留；恢复会创建有限运行'),
@@ -339,7 +346,10 @@ class ViewChapterContent extends Page implements HasTable
     {
         // 自动授权小说统一从恢复台推进，避免手动与自动任务并发接管同一候选。
         if (FirstChapterRun::where('novel_id', $this->getRecord()->id)->exists()) {
-            return [Action::make('automationRun')->label('自动首章进度 / 恢复')->url(fn (): string => NovelResource::getUrl('run', ['record' => $this->getRecord()])),
+            return [Action::make('selectChapter')->label('选择阅读章节')->schema([Select::make('number')->label('章节')->options(fn (): array => $this->getRecord()->chapters()->orderBy('number')->get()->mapWithKeys(fn ($chapter): array => [$chapter->number => '第'.$chapter->number.'章 '.$chapter->title])->all())->required()])->action(function (array $data): void {
+                $this->chapterNumber = (int) $data['number'];
+                $this->resolvedRun = null;
+            }), Action::make('automationRun')->label('自动生成进度 / 恢复')->url(fn (): string => NovelResource::getUrl('run', ['record' => $this->getRecord()])),
                 Action::make('refresh')->label('刷新状态')->action(function (): void {
                     $this->resolvedRun = null;
                     $this->getRecord()->refresh();

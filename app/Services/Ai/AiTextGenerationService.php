@@ -42,13 +42,14 @@ final class AiTextGenerationService
         if ($model === '' || strlen($model) > 128) {
             throw new InvalidArgumentException('模型标识不能为空且不能超过128字节。');
         }
-        $parameters = $options->toArray();
+        // 费用审计记录最终模型参数，避免将已移除的温度误记为实际发送。
+        $parameters = SingleAttemptOpenAiGateway::modelParameters($options->toArray(), $model);
         if ($options->settingDecision || $options->chapterStep !== null || $options->submissionPurpose !== null) {
             // 同一不可变选项构造实际Agent和调用前审计；写入失败时绝不发送HTTP。
             $agent = $options->settingDecision ? new SettingDecisionAgent($options) : ($options->submissionPurpose !== null ? new SubmissionAgent($options) : new ChapterGenerationAgent($options));
             $schema = (new JsonSchemaTypeFactory)->object($agent->schema(new JsonSchemaTypeFactory))->withoutAdditionalProperties()->toArray();
             $parameters['prompt_audit'] = ['system_prompt' => $agent->instructions(), 'user_prompt' => $prompt,
-                'response_schema' => $schema, 'parameters' => $options->toArray(),
+                'response_schema' => $schema, 'parameters' => $parameters,
                 'system_hash' => hash('sha256', $agent->instructions()), 'user_hash' => hash('sha256', $prompt),
                 'schema_hash' => PlanningJson::hash($schema)];
         }

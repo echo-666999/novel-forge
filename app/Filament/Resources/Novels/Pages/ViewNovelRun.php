@@ -64,6 +64,7 @@ class ViewNovelRun extends Page implements HasTable
                 TextEntry::make('formal')->label('正式章数 / 故事版本')->state(fn (): string => $this->getRecord()->chapters_done.' / '.$this->getRecord()->state_version),
             ]),
             Section::make('自动首章授权与进度')->visible(fn (): bool => $this->automation() !== null)->schema([
+                TextEntry::make('automation_chapters')->label('自动授权章数 / 当前章')->state(fn (): string => ($this->automation()?->chapter_limit ?? 1).' / '.($this->automation()?->artifacts['chapter_number'] ?? 1)),
                 TextEntry::make('automation_state')->label('当前断点')->state(fn (): string => ($this->automation()?->step ?? '').' / '.($this->automation()?->status ?? '')),
                 TextEntry::make('automation_requests')->label('真实 AI 请求次数（含失败及未知）')->state(fn (): int => $this->automation() ? app(FirstChapterService::class)->requestCount($this->automation()) : 0),
                 TextEntry::make('automation_error')->label('停止原因')->state(fn (): ?string => $this->automation()?->error)->placeholder('无'),

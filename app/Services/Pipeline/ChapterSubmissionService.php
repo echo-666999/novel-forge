@@ -236,7 +236,7 @@ final class ChapterSubmissionService
         try {
             $anchors = ContentSchema::anchors($version->body);
             $context = ['anchors' => $anchors, 'entity_catalog' => $run->snapshot['entity_catalog'], 'run_id' => $run->id, 'version_id' => $version->id, 'body_hash' => $version->body_hash];
-            $payload = ['version_id' => $version->id, 'body_hash' => $version->body_hash, 'evidence_catalog' => $anchors, 'word_policy' => $run->snapshot['content_sources']['novel']['chapter_length_policy'],
+            $payload = ['prior_context' => $run->snapshot['content_sources']['prior_context'] ?? null, 'version_id' => $version->id, 'body_hash' => $version->body_hash, 'evidence_catalog' => $anchors, 'word_policy' => $run->snapshot['content_sources']['novel']['chapter_length_policy'],
                 'confirmed_setting' => $run->snapshot['content_sources']['confirmed_setting'], 'author_decisions' => $run->snapshot['content_sources']['decisions'],
                 'chapter_plan' => $run->snapshot['body_plan'], 'rule_catalog' => ContentQualityContract::rules($run->snapshot['content_sources']),
                 'entity_catalog' => $run->snapshot['entity_catalog'], 'prior_state' => $run->snapshot['state'], 'reading_hints' => ContentReadingAudit::inspect($version->body)];
