@@ -319,6 +319,10 @@ final class ContentExecutionService
                     'output' => ['simulation' => false, 'stage' => $stage->stage->value, 'data' => [...$output, 'outcome' => $stop]],
                     'error_message' => $stop === 'awaiting_review' ? null : $stop, 'cost' => $log?->only(['billing_status', 'currency', 'estimated_cost', 'actual_cost']),
                     'duration_ms' => (int) ((hrtime(true) - $started) / 1000000), 'finished_at' => now()]);
+                // 已成功返回的产物先保存，再阻止下一步继续消费额度。
+                if ($stop === null && $novel->pause_requested) {
+                    $stop = 'user_paused';
+                }
                 $run->status = $stop === null ? 'pending' : ($stop === 'awaiting_review' ? 'completed' : 'paused');
                 $run->stop_reason = $stop;
                 $run->invocation_id = (string) Str::uuid7();

@@ -55,7 +55,8 @@ final class OutlineGenerationService
                 'next_chapter' => 1, 'status' => 'pending', 'invocation_id' => $token,
                 'control_history' => [$this->control('start', $author->id, $novel->max_execution_count, $novel->max_execution_count, '作者显式启动大纲')],
             ]);
-            $novel->update(['status' => NovelStatus::Pending]);
+            // 显式启动新阶段同时解除上一阶段的暂停意图。
+            $novel->update(['status' => NovelStatus::Pending, 'pause_requested' => false]);
 
             return $plan;
         });
@@ -91,7 +92,7 @@ final class OutlineGenerationService
             }
             $plan->update(['status' => 'pending', 'stop_reason' => null, 'invocation_id' => (string) Str::uuid7(),
                 'control_history' => [...$plan->control_history, $this->control('continue', $authorId, $oldLimit, $newLimit, $reason ?? '显式继续现有大纲')]]);
-            $novel->update(['status' => NovelStatus::Pending, 'max_execution_count' => $newLimit]);
+            $novel->update(['status' => NovelStatus::Pending, 'pause_requested' => false, 'max_execution_count' => $newLimit]);
 
             return $plan;
         });
@@ -209,6 +210,10 @@ final class OutlineGenerationService
             $plan->status = 'completed';
             $plan->stop_reason = 'awaiting_next_stage';
             $novel->current_stage = $plan->config['enable_fine_outline'] ? Stage::FineOutline : Stage::Content;
+        } elseif ($novel->pause_requested) {
+            // 当前批结果已保存，只暂停尚未执行的下一批。
+            $plan->status = 'paused';
+            $plan->stop_reason = 'user_paused';
         } elseif ($novel->execution_count >= $novel->max_execution_count) {
             $plan->status = 'paused';
             $plan->stop_reason = 'execution_limit';

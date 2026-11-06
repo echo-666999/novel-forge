@@ -72,7 +72,7 @@ final class NovelPipelineService
 
                 return PipelineResult::fromNovel($locked, 'execution_limit');
             }
-            $locked->update(['status' => NovelStatus::Running]);
+            $locked->update(['status' => NovelStatus::Running, 'pause_requested' => false]);
 
             return null;
         });
@@ -96,11 +96,18 @@ final class NovelPipelineService
         if ($novel->status === NovelStatus::Completed) {
             return PipelineResult::fromNovel($novel, 'already_completed');
         }
-        if (in_array($novel->status, [NovelStatus::Paused, NovelStatus::Error], true)) {
-            return PipelineResult::fromNovel($novel, $novel->execution_count >= $novel->max_execution_count ? 'execution_limit' : 'resume_required');
-        }
+        // 迟到的重复消息不能把在途运行改为暂停，否则结算会丢失有效结果。
         if ($novel->stages()->where('status', StageStatus::Running->value)->exists()) {
             return PipelineResult::fromNovel($novel, 'busy');
+        }
+        // 暂停在下一阶段领用前生效，不抹掉刚返回的结果。
+        if ($novel->pause_requested) {
+            $novel->update(['status' => NovelStatus::Paused]);
+
+            return PipelineResult::fromNovel($novel, 'user_paused');
+        }
+        if (in_array($novel->status, [NovelStatus::Paused, NovelStatus::Error], true)) {
+            return PipelineResult::fromNovel($novel, $novel->execution_count >= $novel->max_execution_count ? 'execution_limit' : 'resume_required');
         }
         [$plan, $frozen] = $this->plan($novel, $fineOutline);
         $completed = $novel->stages()->where('status', StageStatus::Completed->value)->orderBy('id')->get();

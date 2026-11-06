@@ -21,7 +21,7 @@ use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Table;
 
-/** 私有工作台的小说入口，仅允许创建和只读查看，运行恢复留给后续任务。 */
+/** 私有工作台的小说入口，仅允许创建和只读查看，通过独立运行台控制恢复。 */
 class NovelResource extends Resource
 {
     protected static ?string $model = Novel::class;
@@ -60,6 +60,9 @@ class NovelResource extends Resource
     public static function statusLabel(NovelStatus $status, ?Novel $record = null): string
     {
         if ($record?->generation_mode === GenerationMode::SettingReal) {
+            if ($record->chapters_done > 0) {
+                return '已正式提交'.$record->chapters_done.'章';
+            }
             if ($record->chapters()->exists()) {
                 return $record->chapters()->whereNotNull('progression_result')->where('progression_result->verdict', 'pass')->exists()
                     ? '首章候选已完成，等待后续评审' : ($status === NovelStatus::Paused ? '首章已暂停，请查看原因' : $status->label());
@@ -98,6 +101,7 @@ class NovelResource extends Resource
             'index' => ListNovels::route('/'),
             'create' => CreateNovel::route('/create'),
             'view' => ViewNovel::route('/{record}'),
+            'run' => Pages\ViewNovelRun::route('/{record}/run'),
             'outline' => ViewOutlinePlan::route('/{record}/outline'),
             'content' => ViewChapterContent::route('/{record}/content'),
         ];

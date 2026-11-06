@@ -15,10 +15,12 @@ use App\Providers\AppServiceProvider;
 use App\Services\Ai\AiTextGenerationService;
 use App\Services\Ai\TextRequestOptions;
 use App\Services\Pipeline\ContentExecutionContract;
+use App\Services\Pipeline\ContentExecutionService;
 use App\Services\Pipeline\ContentGenerationService;
 use App\Services\Pipeline\ContentPromptAudit;
 use App\Services\Pipeline\PlanningJson;
 use App\Services\Pipeline\ProgressionChecker;
+use App\Services\Pipeline\RunControlService;
 use App\Settings\GeneralSettings;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\DevCommands;
@@ -627,5 +629,27 @@ class B04ExecutionTest extends TestCase
             'tokens' => 8192, 'request_limit' => 5, 'execution_limit' => 20, 'reason' => '来源无效应拒绝', 'accept_request' => true])->assertNotified('首章操作未执行');
         $this->assertSame(0, $novel->chapters()->count());
         Http::assertNothingSent();
+    }
+
+    /** B08在正文HTTP返回前请求暂停，保留该步结果并在原额度内继续。 */
+    public function test_b08_pause_after_fine_result_and_resume_remaining_steps(): void
+    {
+        $run = $this->start();
+        Http::fake(['*' => function (Request $request) use ($run) {
+            app(RunControlService::class)->pause($run->chapter->novel_id, auth()->user(), 'B08在途暂停');
+
+            return Http::response(B04ContentTest::validResponse($request));
+        }]);
+        app(ContentExecutionService::class)->runStep($run->id, $run->invocation_id, app(AiTextGenerationService::class));
+        $run->refresh();
+        $this->assertSame('paused', $run->status);
+        $this->assertSame('user_paused', $run->stop_reason);
+        $this->assertSame(1, $run->requests_used);
+        $this->assertNotNull($run->plan_data);
+        $this->assertSame('completed', NovelStage::findOrFail($run->fine_stage_id)->status->value);
+        app(ContentGenerationService::class)->continue($run->id, reason: 'B08继续', authorId: auth()->id());
+        $this->assertSame('pending', $run->fresh()->status);
+        $this->assertFalse($run->chapter->novel->fresh()->pause_requested);
+        $this->assertSame(1, $run->fresh()->requests_used);
     }
 }

@@ -76,6 +76,7 @@ class ViewChapterContent extends Page implements HasTable
             'b04_accepted' => 'B04正文、独立检查及全文核对已通过；候选仍待后续评审及正式提交',
             'awaiting_review' => '推进检查通过，等待后续评审；尚未正式提交',
             'execution_limit' => '请求或小说执行额度耗尽，已停止；继续须显式调整额度并填写原因',
+            'user_paused' => '作者已暂停，可在原额度内继续未执行步骤',
             'retry_limit' => '推进修订次数耗尽，已停止并保留全部版本',
             'unknown' => '调用结果未知，请先核查费用及已保存产物',
             'provider_failed' => '供应商明确失败，未自动重发',
@@ -344,6 +345,23 @@ class ViewChapterContent extends Page implements HasTable
                 $this->performContentAction(fn () => app(ChapterSubmissionService::class)->prepare($this->candidate()->id, Filament::auth()->user(),
                     $this->getRecord()->state_version, $data['reason'], (int) $data['execution_limit']));
                 $this->getRecord()->refresh();
+            }), Action::make('retrySubmission')->label('重跑失败评审 / 提取')
+            ->visible(fn (): bool => $this->submission()?->status === 'failed')
+            ->modalDescription('保留旧正文、评审、提取和费用，新建后继准备；最多重新评审和提取各一次，未知费用不冲销。')
+            ->schema([TextInput::make('predecessor_id')->label('失败准备编号')->default(fn (): ?int => $this->submission()?->id)->readOnly()->required(),
+                TextInput::make('execution_limit')->label('小说累计执行上限')->integer()->minValue(1)->maxValue(2147483647)->required()->default(fn (): int => max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + 2)),
+                Textarea::make('reason')->label('重跑原因')->required(), Checkbox::make('accept_request')->label('已核查旧调用，授权最多两次真实请求及可能重复费用')->accepted()])
+            ->action(function (array $data): void {
+                // 冻结弹窗打开时的失败编号，过期页面不得接管另一次失败。
+                $this->performContentAction(function () use ($data): void {
+                    $run = $this->submission();
+                    if ($run?->status !== 'failed' || $run->id !== (int) $data['predecessor_id']) {
+                        throw new InvalidArgumentException('失败准备已变化，请刷新页面');
+                    }
+                    app(ChapterSubmissionService::class)->prepare($run->version_id, Filament::auth()->user(), $run->expected_state_version,
+                        $data['reason'], (int) $data['execution_limit'], retryOf: $run->id);
+                });
+                $this->getRecord()->refresh();
             }), Action::make('commitChapter')->label('正式提交当前章')->visible(fn (): bool => in_array($this->submission()?->status, ['ready', 'awaiting_approval'], true))
             ->modalHeading('批准冻结正文、实体并正式提交')->modalDescription(fn (): string => '正文摘要：'.$this->candidate()?->body_hash.'。提交原子保存事件与状态，完成章节数加1；所有硬门禁会再次校验。')
             ->schema([TextInput::make('submission_id')->label('冻结准备编号')->default(fn (): ?int => $this->submission()?->id)->readOnly()->required(),
@@ -390,7 +408,7 @@ class ViewChapterContent extends Page implements HasTable
                 $this->resolvedRun = null;
                 $this->getRecord()->refresh();
             }), Action::make('continueContent')->label('在原额度内继续')->modalHeading('继续未执行步骤')
-            ->visible(fn (): bool => ($this->run()?->config['version'] ?? null) === ContentExecutionContract::VERSION && $this->run()?->status === 'paused' && in_array($this->run()?->stop_reason, ['execution_limit', 'dispatch_failed', 'reading_failed'], true))
+            ->visible(fn (): bool => ($this->run()?->config['version'] ?? null) === ContentExecutionContract::VERSION && $this->run()?->status === 'paused' && in_array($this->run()?->stop_reason, ['execution_limit', 'dispatch_failed', 'reading_failed', 'user_paused'], true))
             ->schema([Textarea::make('reason')->label('继续原因')->required()])
             ->action(function (array $data): void {
                 $this->performContentAction(fn () => app(ContentGenerationService::class)->continue($this->run()->id, reason: $data['reason'], authorId: Filament::auth()->id()));

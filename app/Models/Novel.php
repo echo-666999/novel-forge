@@ -12,7 +12,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /** 小说及其运行计数骨架，正式剧情由后续提交体系维护。 */
-#[Fillable(['title', 'genre', 'premise_raw', 'target_chapters', 'chapter_length_policy', 'status', 'current_stage', 'execution_count', 'max_execution_count', 'progress', 'chapters_done', 'chapters_total', 'state_version', 'generation_mode', 'generation_config'])]
+#[Fillable(['title', 'genre', 'premise_raw', 'target_chapters', 'chapter_length_policy', 'status', 'current_stage', 'execution_count', 'max_execution_count', 'progress', 'chapters_done', 'chapters_total', 'state_version', 'generation_mode', 'generation_config', 'pause_requested', 'run_control_history'])]
 class Novel extends Model
 {
     /** 使用隔离测试工厂创建关联数据。
@@ -42,6 +42,9 @@ class Novel extends Model
         return [
             'generation_mode' => GenerationMode::class,
             'generation_config' => 'array',
+            // 运行控制独立于冻结生成配置，避免暂停使来源摘要失效。
+            'pause_requested' => 'boolean',
+            'run_control_history' => 'array',
             'status' => NovelStatus::class,
             'current_stage' => Stage::class,
             'chapter_length_policy' => 'array',

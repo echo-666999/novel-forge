@@ -64,7 +64,7 @@ class ViewOutlinePlan extends Page implements HasTable
                 TextEntry::make('model')->label('请求模型')->state(fn (): ?string => data_get($this->plan()?->config, 'model')),
                 TextEntry::make('next_chapter')->label('下批起始章')->state(fn (): string => $this->plan()?->status === 'completed' ? '无，全部完成' : (string) ($this->plan()?->next_chapter ?? '尚未开始')),
                 TextEntry::make('stop_reason')->label('停止原因')->state(fn (): string => match ($this->plan()?->stop_reason) {
-                    'execution_limit' => '执行额度耗尽，请显式调整后继续', 'batch_failed' => '本批失败，前面成功章节已保留', 'queue_interrupted' => '任务中断，先核查未知费用', 'dispatch_unconfirmed' => '投递未确认，请先核查状态', 'awaiting_next_stage' => '大纲完成，等待后续阶段', default => '无'
+                    'user_paused' => '作者已暂停，成功批次保留，可显式继续', 'execution_limit' => '执行额度耗尽，请显式调整后继续', 'batch_failed' => '本批失败，前面成功章节已保留', 'queue_interrupted' => '任务中断，先核查未知费用', 'dispatch_unconfirmed' => '投递未确认，请先核查状态', 'awaiting_next_stage' => '大纲完成，等待后续阶段', default => '无'
                 }),
                 TextEntry::make('roadmap')->label('全书走向候选')->state(fn (): ?string => data_get($this->plan()?->roadmap, 'whole_story_summary'))->columnSpanFull(),
                 TextEntry::make('ending')->label('终局方向候选')->state(fn (): ?string => data_get($this->plan()?->roadmap, 'ending_direction'))->columnSpanFull(),

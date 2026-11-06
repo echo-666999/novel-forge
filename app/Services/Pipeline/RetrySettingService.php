@@ -49,7 +49,7 @@ final class RetrySettingService
             if (! is_array($config) || ! isset($config['model'], $config['schema_version'])) {
                 throw new InvalidArgumentException('缺少冻结参数，拒绝重新构造调用');
             }
-            $novel->update(['status' => NovelStatus::Pending, 'generation_config' => [...$config, 'invocation_id' => $token]]);
+            $novel->update(['status' => NovelStatus::Pending, 'pause_requested' => false, 'generation_config' => [...$config, 'invocation_id' => $token]]);
 
             return $novel;
         });

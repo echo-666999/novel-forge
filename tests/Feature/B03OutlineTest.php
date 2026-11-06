@@ -21,6 +21,7 @@ use App\Services\Pipeline\ConfirmSettingService;
 use App\Services\Pipeline\OutlineExecutor;
 use App\Services\Pipeline\OutlineGenerationService;
 use App\Services\Pipeline\PlanningJson;
+use App\Services\Pipeline\RunControlService;
 use App\Services\Pipeline\SettingExecutor;
 use Database\Factories\NovelSettingConfirmationFactory;
 use Filament\Actions\Testing\TestAction;
@@ -472,5 +473,29 @@ class B03OutlineTest extends TestCase
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessage('拒绝删除 B03 历史');
         $migration->down();
+    }
+
+    /** B08批次在途暂停保留十章，继续时只生成剩余章并解除暂停标志。 */
+    public function test_b08_inflight_pause_preserves_batch_and_continues(): void
+    {
+        $confirmation = NovelSettingConfirmation::factory()->create(['confirmed_by' => auth()->id()]);
+        $novel = $confirmation->novel;
+        $novel->update(['target_chapters' => 11, 'max_execution_count' => 10]);
+        $service = app(OutlineGenerationService::class);
+        $plan = $service->start($novel, $confirmation->id, auth()->user());
+        Http::fake(['*' => function (Request $request) use ($novel) {
+            app(RunControlService::class)->pause($novel->id, auth()->user(), 'B08在途大纲暂停');
+
+            return Http::response(B02SettingTest::response(json_encode(self::batch(1, 10, 11))));
+        }]);
+        $service->runBatch($plan->id, $plan->invocation_id, app(OutlineExecutor::class));
+        $this->assertSame('user_paused', $plan->fresh()->stop_reason);
+        $this->assertCount(10, $plan->chapters()->get());
+        $before = $plan->chapters()->get()->map->getRawOriginal()->all();
+        $service->continue($plan->id, authorId: auth()->id());
+        $this->assertFalse($novel->fresh()->pause_requested);
+        $this->assertSame($before, $plan->chapters()->get()->map->getRawOriginal()->all());
+        $this->assertSame(11, $plan->fresh()->next_chapter);
+        Http::assertSentCount(1);
     }
 }

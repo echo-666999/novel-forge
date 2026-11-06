@@ -56,7 +56,7 @@ final class ContentGenerationService
                 'control_history' => [['action' => 'start', 'author_id' => $author->id, 'reason' => $reason, 'request_limit' => $limit, 'at' => now()->toIso8601String()]]]);
             $this->authorizeExecution($novel, $limit, $executionLimit, $run, $reason);
             $this->assertFrozenSources($run);
-            $novel->update(['status' => NovelStatus::Pending]);
+            $novel->update(['status' => NovelStatus::Pending, 'pause_requested' => false]);
 
             return $run;
         });
@@ -117,7 +117,7 @@ final class ContentGenerationService
                     'old_model' => $parent->config['model'], 'new_model' => $config['model'], 'unknown_costs_preserved' => CostLog::where('novel_id', $novel->id)->where('status', 'unknown')->pluck('id')->all(), 'at' => now()->toIso8601String()]]]);
             $this->authorizeExecution($novel, $limit, $executionLimit, $run, $reason);
             $this->assertFrozenSources($run);
-            $novel->update(['status' => NovelStatus::Pending]);
+            $novel->update(['status' => NovelStatus::Pending, 'pause_requested' => false]);
 
             return [$run, true];
         });
@@ -133,11 +133,13 @@ final class ContentGenerationService
     {
         $this->outsideTransaction();
         $run = DB::transaction(function () use ($id, $requestLimit, $executionLimit, $reason, $authorId): ChapterGenerationRun {
+            $reference = ChapterGenerationRun::findOrFail($id);
+            // 与暂停及消费入口统一先锁小说再锁运行，避免并发恢复锁顺序反转。
+            $novel = Novel::lockForUpdate()->findOrFail($reference->chapter->novel_id);
             $run = ChapterGenerationRun::lockForUpdate()->findOrFail($id);
-            $novel = Novel::lockForUpdate()->findOrFail($run->chapter->novel_id);
             $this->assertFrozenSources($run);
             if (($run->config['version'] ?? null) !== ContentExecutionContract::VERSION || $run->status !== 'paused'
-                || ! in_array($run->stop_reason, ['execution_limit', 'dispatch_failed', 'reading_failed'], true) || $novel->status !== NovelStatus::Paused
+                || ! in_array($run->stop_reason, ['execution_limit', 'dispatch_failed', 'reading_failed', 'user_paused'], true) || $novel->status !== NovelStatus::Paused
                 || ($requestLimit !== null && $requestLimit !== $run->request_limit)) {
                 throw new InvalidArgumentException('不能直接继续；旧协议或已发送的失败请求须使用显式恢复');
             }
@@ -152,7 +154,7 @@ final class ContentGenerationService
             $this->authorizeExecution($novel, $run->request_limit - $run->requests_used, $executionLimit, $run, $reason);
             $run->update(['status' => 'pending', 'stop_reason' => null, 'invocation_id' => (string) Str::uuid7(),
                 'control_history' => [...$run->control_history, ['action' => 'continue', 'author_id' => $authorId, 'reason' => $reason, 'at' => now()->toIso8601String()]]]);
-            $novel->update(['status' => NovelStatus::Pending]);
+            $novel->update(['status' => NovelStatus::Pending, 'pause_requested' => false]);
 
             return $run;
         });

@@ -42,6 +42,7 @@ class ViewNovel extends ViewRecord
     protected function getHeaderActions(): array
     {
         return [
+            Action::make('viewRun')->label('运行详情与恢复')->url(fn (): string => NovelResource::getUrl('run', ['record' => $this->getRecord()])),
             Action::make('generateFirstChapter')->label('生成第1章')->modalHeading('生成首章候选并独立检查推进')
                 ->visible(fn (): bool => $this->getRecord()->outlinePlans()->where('status', 'completed')->exists() && ! $this->getRecord()->chapters()->exists())
                 ->modalDescription(fn (): string => '仅生成首章候选，不代表正式稿。模型'.app(GeneralSettings::class)->default_model.'，启动时冻结；本小说剩余执行额度'.max(0, $this->getRecord()->max_execution_count - $this->getRecord()->execution_count).'次。启用细纲时依次调用细纲、正文、独立推进检查；细纲和检查各4096输出Token、正文默认8192。请求总上限以下方数值为准，默认开启细纲最多5次、关闭最多4次，最多修订一次；全局设置为0时不修订。技术失败或额度不足立即停止。通用设置保持不变，金额未知不代表免费。')

@@ -541,4 +541,22 @@ class ChapterSubmissionTest extends TestCase
         $this->assertContains('placeholder', SubmissionContract::structuralIssues('正文待补充。', ['min_characters' => 1, 'max_characters' => 100]));
         $this->assertContains('possible_truncation', SubmissionContract::structuralIssues('他的话说到这里', ['min_characters' => 1, 'max_characters' => 100]));
     }
+
+    /** B08后台显式重跑失败准备，保留旧证据且仅入队新后继。 */
+    public function test_b08_backend_retries_failed_submission_without_overwriting_history(): void
+    {
+        $this->scenario = 'review_reject';
+        [$run, $operator] = self::prepared();
+        $before = $run->getRawOriginal();
+        $this->actingAs($operator);
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        Livewire::test(ViewChapterContent::class, ['record' => $run->novel_id])
+            ->callAction('retrySubmission', ['predecessor_id' => $run->id, 'execution_limit' => max($run->novel->max_execution_count, $run->novel->execution_count + 2),
+                'reason' => 'B08显式重跑', 'accept_request' => true])->assertHasNoActionErrors();
+        $successor = ChapterSubmissionRun::where('predecessor_id', $run->id)->sole();
+        $this->assertSame('pending', $successor->status);
+        $this->assertSame(0, $successor->requests_used);
+        $this->assertSame($before, $run->fresh()->getRawOriginal());
+        Http::assertSentCount(4);
+    }
 }
