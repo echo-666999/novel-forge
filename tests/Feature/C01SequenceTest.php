@@ -17,6 +17,7 @@ use App\Services\Pipeline\FirstChapterService;
 use App\Services\Pipeline\LegacyContentSources;
 use App\Services\Pipeline\OutlineGenerationService;
 use App\Services\Pipeline\PlanningJson;
+use App\Services\Pipeline\StoryStateReplay;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Http\Client\ConnectionException;
@@ -170,6 +171,10 @@ class C01SequenceTest extends TestCase
         $service->advance($run->id);
         $this->assertSame(53, $service->requestCount($run));
         $this->assertSame(10, CanonicalCommit::count());
+        // C02从真实提交服务产物回放第五章，不能包含后五章事件。
+        $replay = app(StoryStateReplay::class)->atChapter(Novel::findOrFail($run->novel_id), 5);
+        $this->assertSame(5, $replay['state_version']);
+        $this->assertSame(5, max(array_column($replay['events'], 'chapter')));
         Filament::setCurrentPanel(Filament::getPanel('admin'));
         $this->actingAs(User::findOrFail($run->author_id));
         $page = Livewire::test(ViewChapterContent::class, ['record' => $run->novel_id]);

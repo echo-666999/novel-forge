@@ -102,6 +102,7 @@ class NovelResource extends Resource
             'create' => CreateNovel::route('/create'),
             'view' => ViewNovel::route('/{record}'),
             'run' => Pages\ViewNovelRun::route('/{record}/run'),
+            'state' => Pages\ViewStoryState::route('/{record}/state'),
             'costs' => Pages\ViewNovelCosts::route('/{record}/costs'),
             'outline' => ViewOutlinePlan::route('/{record}/outline'),
             'content' => ViewChapterContent::route('/{record}/content'),
