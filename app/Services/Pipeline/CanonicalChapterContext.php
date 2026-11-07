@@ -47,6 +47,7 @@ final class CanonicalChapterContext
         $commitIds = array_column($chapters, 'commit_id');
         $entities = StoryEntity::where('novel_id', $novel->id)->orderBy('id')->get()
             ->filter(fn (StoryEntity $entity): bool => ($entity->origin['kind'] ?? null) === 'confirmed_setting'
+                || (($entity->origin['kind'] ?? null) === 'author_definition' && ($entity->origin['effective_from'] ?? PHP_INT_MAX) < $number)
                 || in_array($entity->origin['commit_id'] ?? null, $commitIds, true))
             ->mapWithKeys(fn (StoryEntity $entity): array => ['entity-'.$entity->id => $entity->definition])->all();
 

@@ -109,7 +109,7 @@ final class ContextBuilder
             'chapter_plan', 'progression_points', 'slot_plan', 'effective_chapter_contract' => [3, '本章与场景计划'],
             'canonical_state', 'prior_state' => [4, '当前正式状态'],
             'canonical_entities', 'entity_catalog' => [5, '相关人物知识与关系'],
-            'foreshadow_context', 'author_future_constraints' => [6, '到期伏笔与终局约束'],
+            'foreshadow_context', 'author_future_constraints', 'author_structure' => [6, '到期伏笔与终局约束'],
             'prior_context' => [7, '前文结尾与最近章节历史'],
             'long_term_memory', 'candidate_roadmap' => [8, '相关长期记忆与作者未来计划'],
             'style_examples', 'writing_requirements' => [9, '文风样例与负面清单'],

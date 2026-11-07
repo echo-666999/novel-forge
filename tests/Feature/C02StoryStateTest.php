@@ -56,7 +56,7 @@ class C02StoryStateTest extends TestCase
     /** 构造六章独立历史：第五章仍在旧店，第六章搬往新店并新增人物。
      * @return array{0: Novel, 1: StoryEntity}
      */
-    private function history(bool $includeLife = false): array
+    public static function history(bool $includeLife = false): array
     {
         $novel = Novel::factory()->create();
         $actor = StoryEntity::factory()->create(['novel_id' => $novel->id, 'name' => '苏禾', 'normalized_name' => '苏禾']);

@@ -2,6 +2,7 @@
 
 namespace App\Providers\Filament;
 
+use App\Filament\Auth\EditProfile;
 use Filament\Http\Middleware\Authenticate;
 use Filament\Http\Middleware\AuthenticateSession;
 use Filament\Http\Middleware\DisableBladeIconComponents;
@@ -19,8 +20,10 @@ use Illuminate\Routing\Middleware\SubstituteBindings;
 use Illuminate\Session\Middleware\StartSession;
 use Illuminate\View\Middleware\ShareErrorsFromSession;
 
+/** 私有后台面板，注册登录、账户安全及业务导航。 */
 class AdminPanelProvider extends PanelProvider
 {
+    /** 会话认证中间件用于密码变更和撤销其他设备后的凭据失效。 */
     public function panel(Panel $panel): Panel
     {
         return $panel
@@ -29,7 +32,7 @@ class AdminPanelProvider extends PanelProvider
             ->path('admin')
             ->brandName(config('app.name'))
             ->login()
-            ->profile()
+            ->profile(EditProfile::class)
             ->colors([
                 'primary' => Color::Amber,
             ])
@@ -54,7 +57,7 @@ class AdminPanelProvider extends PanelProvider
                 DisableBladeIconComponents::class,
                 DispatchServingFilamentEvent::class,
             ])
-            ->sidebarWidth('sm')
+            // ->sidebarWidth('sm')
             ->maxContentWidth('full')
             ->authMiddleware([
                 Authenticate::class,

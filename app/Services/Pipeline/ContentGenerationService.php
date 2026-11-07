@@ -6,11 +6,13 @@ use App\Enums\ChapterStatus;
 use App\Enums\GenerationMode;
 use App\Enums\NovelStatus;
 use App\Enums\Stage;
+use App\Enums\StageStatus;
 use App\Models\ChapterGenerationRun;
 use App\Models\ChapterVersion;
 use App\Models\CostLog;
 use App\Models\FirstChapterRun;
 use App\Models\Novel;
+use App\Models\NovelStage;
 use App\Models\User;
 use App\Services\Ai\AiTextGenerationService;
 use App\Services\Ai\TextRequestOptions;
@@ -60,6 +62,21 @@ final class ContentGenerationService
             }
             // 新运行单独冻结伏笔上下文，历史运行及正式上下文摘要保持原样。
             // 仅新运行冻结上下文预算；历史恢复继续沿用原快照。
+            // 作者卷弧仅在新运行建立时冻结，历史恢复沿用父运行快照。
+            $structure = app(StoryStructure::class)->context($novel, $chapterNumber);
+            if ($structure !== null) {
+                $snapshot['author_structure'] = $structure;
+            }
+            // 场景规划仅在首次启动时冻结，后续恢复保持原版本。
+            $scenes = app(ScenePlanning::class)->context($novel, $plan->chapters()->where('chapter_number', $chapterNumber)->firstOrFail());
+            if ($scenes !== null) {
+                $snapshot['author_scene_plan'] = $scenes;
+            }
+            // 实体扩展与初始关系仅在新运行冻结，不能改变历史调用。
+            $definitions = app(EntityDefinitions::class)->context($novel->id, $chapterNumber);
+            if ($definitions !== []) {
+                $snapshot['author_entity_definitions'] = $definitions;
+            }
             $snapshot['context_policy'] = app(ContextBuilder::class)->policy();
             $snapshot['foreshadow_context'] = app(ForeshadowLedger::class)->context($novel, $chapterNumber);
             $chapter = $novel->chapters()->create(['number' => $chapterNumber, 'title' => $snapshot['source_chapter']['title'], 'objective' => $snapshot['source_chapter']['objective'], 'status' => ChapterStatus::Pending]);
@@ -169,6 +186,55 @@ final class ContentGenerationService
         return $run->refresh();
     }
 
+    /** 人工正文另存不可变候选并使旧检查失效，保存本身不投递AI请求。 */
+    public function saveManualCandidate(int $novelId, int $versionId, User $author, int $draftRevision, string $reason): ChapterVersion
+    {
+        ContentSchema::text($reason);
+
+        return DB::transaction(function () use ($novelId, $versionId, $author, $draftRevision, $reason): ChapterVersion {
+            $novel = Novel::lockForUpdate()->findOrFail($novelId);
+            $source = app(ManualContentDrafts::class)->source($novelId, $versionId, $author);
+            $this->assertIdle($novel, false);
+            $parent = ChapterGenerationRun::findOrFail($source->run_id);
+            $draft = DB::table('manual_content_drafts')->where(['chapter_id' => $source->chapter_id, 'actor_id' => $author->id])->first();
+            if ($draft === null || (int) $draft->revision !== $draftRevision || (int) $draft->base_version_id !== $source->id) {
+                throw new InvalidArgumentException('人工工作草稿已变化，请先保存并刷新');
+            }
+            ContentSchema::text($draft->title);
+            ContentSchema::text($draft->body);
+            if (ContentQualityContract::issues($draft->body, $parent->snapshot['novel']['chapter_length_policy']) !== []) {
+                throw new InvalidArgumentException('正文未通过字数或完整性检查，工作草稿已保留，请继续编辑');
+            }
+            if ($draft->title === $source->title && $draft->body === $source->body) {
+                throw new InvalidArgumentException('正文和标题没有改变，无需创建相同候选');
+            }
+            $snapshot = $parent->snapshot;
+            $snapshot['recovery'] = ['parent_run_id' => $parent->id, 'parent_input_hash' => $parent->input_hash, 'parent_status' => $parent->status,
+                'parent_stop_reason' => $parent->stop_reason, 'source_version_id' => $source->id, 'source_body_hash' => $source->body_hash,
+                'source_lineage' => $this->recoveryLineage($parent, $source), 'plan_hash' => PlanningJson::hash($parent->plan_data), 'fine_stage_id' => $parent->fine_stage_id];
+            $config = $this->configuration($parent->config['model'], $parent->config['temperature'], $parent->config['enable_fine_outline'], 8192, 0, $author->id, $reason);
+            $config['initial_step'] = 'check';
+            $config['request_cap'] = 1;
+            $config['manual_edit'] = ['source_version_id' => $source->id, 'body_hash' => hash('sha256', $draft->body), 'title' => $draft->title, 'author_id' => $author->id];
+            $run = ChapterGenerationRun::create(['chapter_id' => $source->chapter_id, 'outline_chapter_id' => $parent->outline_chapter_id, 'parent_run_id' => $parent->id,
+                'source_version_id' => $source->id, 'snapshot' => $snapshot, 'config' => $config, 'input_hash' => PlanningJson::hash([$snapshot, $config]),
+                'plan_data' => $parent->plan_data, 'fine_stage_id' => $parent->fine_stage_id, 'status' => 'paused', 'next_step' => 'check', 'stop_reason' => 'manual_draft_saved',
+                'invocation_id' => (string) Str::uuid7(), 'requests_used' => 0, 'request_limit' => 1, 'retry_count' => 0, 'length_repair_count' => 0,
+                'control_history' => [['action' => 'manual_edit_saved', 'author_id' => $author->id, 'reason' => $reason, 'at' => now()->toIso8601String()]]]);
+            $stage = NovelStage::create(['novel_id' => $novelId, 'stage' => Stage::Content, 'status' => StageStatus::Completed,
+                'execution_count' => 0, 'input' => ['run_id' => $run->id, 'author_id' => $author->id, 'mode' => 'manual_edit'],
+                'output' => ['mode' => 'manual_edit', 'body_hash' => $config['manual_edit']['body_hash']], 'started_at' => now(), 'finished_at' => now()]);
+            $version = ChapterVersion::create(['chapter_id' => $source->chapter_id, 'run_id' => $run->id, 'source_stage_id' => $stage->id, 'parent_version_id' => $source->id,
+                'version' => (int) ChapterVersion::where('chapter_id', $source->chapter_id)->max('version') + 1, 'title' => $draft->title, 'body' => $draft->body,
+                'body_hash' => $config['manual_edit']['body_hash'], 'character_count' => ContentSchema::count($draft->body), 'count_version' => ContentSchema::COUNT_VERSION, 'created_at' => now()]);
+            $source->chapter->update(['current_candidate_version_id' => $version->id, 'title' => $version->title, 'progression_result' => null, 'status' => ChapterStatus::Checking]);
+            DB::table('manual_content_drafts')->where('id', $draft->id)->update(['base_version_id' => $version->id, 'revision' => $draftRevision + 1, 'updated_at' => now()]);
+            $this->assertFrozenSources($run->fresh());
+
+            return $version;
+        });
+    }
+
     /** 同一授权只能补未执行步骤，不扩大冻结请求上限或重发未知付费意图。 */
     public function continue(int $id, bool $confirmUnknown = false, ?int $requestLimit = null, ?int $executionLimit = null, ?string $reason = null, ?int $authorId = null): ChapterGenerationRun
     {
@@ -180,9 +246,12 @@ final class ContentGenerationService
             $run = ChapterGenerationRun::lockForUpdate()->findOrFail($id);
             $this->assertFrozenSources($run);
             if (($run->config['version'] ?? null) !== ContentExecutionContract::VERSION || $run->status !== 'paused'
-                || ! in_array($run->stop_reason, ['execution_limit', 'dispatch_failed', 'reading_failed', 'user_paused'], true) || $novel->status !== NovelStatus::Paused
+                || ! in_array($run->stop_reason, ['execution_limit', 'dispatch_failed', 'reading_failed', 'user_paused', 'manual_draft_saved'], true) || $novel->status !== NovelStatus::Paused
                 || ($requestLimit !== null && $requestLimit !== $run->request_limit)) {
                 throw new InvalidArgumentException('不能直接继续；旧协议或已发送的失败请求须使用显式恢复');
+            }
+            if (isset($run->config['manual_edit']) && ($authorId !== $run->config['author_id'])) {
+                throw new InvalidArgumentException('人工候选检查只能由原编辑作者授权');
             }
             $this->assertIdle($novel, false);
             if ($run->stop_reason === 'reading_failed') {

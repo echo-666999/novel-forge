@@ -40,6 +40,8 @@ class Novel extends Model
     protected function casts(): array
     {
         return [
+            'archived_at' => 'immutable_datetime',
+            'archive_history' => 'array',
             'generation_mode' => GenerationMode::class,
             'generation_config' => 'array',
             // 运行控制独立于冻结生成配置，避免暂停使来源摘要失效。

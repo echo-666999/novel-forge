@@ -125,13 +125,16 @@ final class ChapterSubmissionService
     public function catalog(int $novelId): array
     {
         $catalog = [];
+        $number = Novel::findOrFail($novelId)->chapters_done + 1;
         foreach (StoryEntity::where('novel_id', $novelId)->orderBy('id')->get() as $entity) {
             if ($entity->definition_hash !== PlanningJson::hash($entity->definition) || $entity->normalized_name !== SubmissionValidator::name($entity->name) || $entity->name !== $entity->definition['name'] || $entity->type !== $entity->definition['type']
                 || PlanningJson::hash($entity->aliases) !== PlanningJson::hash($entity->definition['aliases'])) {
                 throw new InvalidArgumentException('ENTITY_DEFINITION_CHANGED');
             }
-            $catalog['entity-'.$entity->id] = ['id' => $entity->id, 'name' => $entity->name, 'type' => $entity->type, 'aliases' => $entity->aliases,
-                'definition' => $entity->definition, 'definition_hash' => $entity->definition_hash, 'origin' => $entity->origin, 'approved_by' => $entity->approved_by, 'approved_at' => $entity->approved_at->toIso8601String()];
+            // 新实体审批版本供当前准备使用；已有冻结快照仍保留原定义与摘要。
+            $effective = app(EntityDefinitions::class)->effective($entity, $number);
+            $catalog['entity-'.$entity->id] = ['id' => $entity->id, 'name' => $entity->name, 'type' => $entity->type, 'aliases' => $effective['aliases'],
+                'definition' => $effective, 'definition_hash' => PlanningJson::hash($effective), 'origin' => $entity->origin, 'approved_by' => $entity->approved_by, 'approved_at' => $entity->approved_at->toIso8601String()];
         }
         ksort($catalog, SORT_STRING);
 

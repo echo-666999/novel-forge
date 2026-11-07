@@ -29,6 +29,26 @@ class CreateNovel extends CreateRecord
     /** 本请求的投递确认状态不作为客户端可写的表单字段。 */
     private bool $startupConfirmed = false;
 
+    /** 复制仅预填作者输入；运行快照、正式正文及自动提交授权绝不继承。 */
+    public function mount(): void
+    {
+        parent::mount();
+        if (! request()->has('copy_from')) {
+            return;
+        }
+        $source = Novel::findOrFail(request()->integer('copy_from'));
+        $this->form->fill([
+            'title' => mb_substr($source->title, 0, 250).'（副本）',
+            'genre' => $source->genre,
+            'premise_raw' => $source->premise_raw,
+            'target_chapters' => $source->target_chapters,
+            'chapter_length_policy' => $source->chapter_length_policy,
+            'generation_mode' => GenerationMode::Simulation->value,
+            'automatic_first_chapter' => false,
+            'automatic_first_ten' => false,
+        ]);
+    }
+
     /** 统一经过应用服务，所有运行字段由服务端生成。
      * @param  array<string, mixed>  $data
      */

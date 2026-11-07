@@ -45,6 +45,17 @@ class ViewNovel extends ViewRecord
     protected function getHeaderActions(): array
     {
         $actions = [
+            // 作者规划入口在手动与自动小说中均可达，不自动修改正式状态。
+            Action::make('requirements')->label('覆盖矩阵')->url(fn (): string => NovelResource::getUrl('requirements', ['record' => $this->getRecord()])),
+            Action::make('blueprints')->label('蓝图版本')->url(fn (): string => NovelResource::getUrl('blueprints', ['record' => $this->getRecord()])),
+            Action::make('exports')->label('导出中心')->url(fn (): string => NovelResource::getUrl('exports', ['record' => $this->getRecord()])),
+            Action::make('acceptance')->label('验收工作台')->url(fn (): string => NovelResource::getUrl('acceptance', ['record' => $this->getRecord()])),
+            Action::make('knowledge')->label('角色知识与时序')->url(fn (): string => NovelResource::getUrl('knowledge', ['record' => $this->getRecord()])),
+            Action::make('entities')->label('人物与实体库')->url(fn (): string => NovelResource::getUrl('entities', ['record' => $this->getRecord()])),
+            Action::make('scenes')->label('场景规划')->url(fn (): string => NovelResource::getUrl('scenes', ['record' => $this->getRecord()])),
+            Action::make('structure')->label('卷弧规划')->url(fn (): string => NovelResource::getUrl('structure', ['record' => $this->getRecord()])),
+            // 章节目录在自动和手动小说中均可达。
+            Action::make('chapters')->label('章节目录')->url(fn (): string => NovelResource::getUrl('chapters', ['record' => $this->getRecord()])),
             // 正式导出对手动和自动生成小说均开放，只导出从第一章开始的连续正式版本。
             Action::make('exportFormal')->label('导出正式章节')->visible(fn (): bool => $this->getRecord()->chapters_done > 0)
                 ->modalHeading('导出 TXT / Markdown')->modalDescription('从第1章导出至指定章，包含目录。仅使用正式提交版本，缺章或来源损坏时拒绝导出。不调用AI。')
@@ -143,7 +154,7 @@ class ViewNovel extends ViewRecord
         ];
         // 自动小说同样保留检索实验室及只读产物入口，推进与恢复仍经独占编排器。
         if (FirstChapterRun::where('novel_id', $this->getRecord()->id)->exists()) {
-            return array_values(array_filter($actions, fn (Action $action): bool => in_array($action->getName(), ['exportFormal', 'searchLab', 'viewContexts', 'viewForeshadows', 'viewState', 'viewCosts', 'viewRun', 'viewContent', 'refreshStatus', 'viewOutline'], true)));
+            return array_values(array_filter($actions, fn (Action $action): bool => in_array($action->getName(), ['entities', 'scenes', 'exports', 'acceptance', 'knowledge', 'requirements', 'blueprints', 'structure', 'chapters', 'exportFormal', 'searchLab', 'viewContexts', 'viewForeshadows', 'viewState', 'viewCosts', 'viewRun', 'viewContent', 'refreshStatus', 'viewOutline'], true)));
         }
 
         return $actions;

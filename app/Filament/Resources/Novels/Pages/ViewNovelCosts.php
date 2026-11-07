@@ -4,8 +4,10 @@ namespace App\Filament\Resources\Novels\Pages;
 
 use App\Filament\Resources\Novels\NovelResource;
 use App\Models\CostLog;
+use App\Services\Ai\CostLedgerExport;
 use App\Services\Ai\NovelCostSummary;
 use Filament\Actions\Action;
+use Filament\Forms\Components\DatePicker;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Resources\Pages\Concerns\InteractsWithRecord;
 use Filament\Resources\Pages\Page;
@@ -15,8 +17,11 @@ use Filament\Schemas\Schema;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Concerns\InteractsWithTable;
 use Filament\Tables\Contracts\HasTable;
+use Filament\Tables\Filters\Filter;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /** 逐次成本明细只读页面，不重发请求、不修订账单、不影响流水线。 */
 class ViewNovelCosts extends Page implements HasTable
@@ -69,6 +74,11 @@ class ViewNovelCosts extends Page implements HasTable
             TextColumn::make('estimated_cost')->label('估算费用')->placeholder('未知')->formatStateUsing(fn (string $state, CostLog $record): string => self::amount($state, $record)),
             TextColumn::make('started_at')->label('请求时间')->dateTime('Y-m-d H:i:s')->placeholder('未记录'),
         ])->filters([
+            SelectFilter::make('requested_model')->label('请求模型')->options(fn (): array => CostLog::where('novel_id', $this->getRecord()->id)->distinct()->pluck('requested_model', 'requested_model')->all())->searchable(),
+            SelectFilter::make('billing_status')->label('计费状态')->options(['unknown' => '未知', 'estimated' => '估算', 'simulated' => '模拟']),
+            SelectFilter::make('novel_stage_id')->label('阶段编号')->options(fn (): array => CostLog::where('novel_id', $this->getRecord()->id)->whereNotNull('novel_stage_id')->distinct()->pluck('novel_stage_id', 'novel_stage_id')->all()),
+            Filter::make('date')->label('请求日期')->schema([DatePicker::make('from')->label('起始日期'), DatePicker::make('to')->label('截至日期')->afterOrEqual('from')])
+                ->query(fn (Builder $query, array $data): Builder => $query->when($data['from'] ?? null, fn (Builder $q, $date): Builder => $q->whereDate('started_at', '>=', $date))->when($data['to'] ?? null, fn (Builder $q, $date): Builder => $q->whereDate('started_at', '<=', $date))),
             SelectFilter::make('mode')->label('模式')->options(['real' => '真实', 'fake' => '模拟']),
             SelectFilter::make('status')->label('请求结果')->options(['pending' => '待返回', 'succeeded' => '成功', 'failed' => '失败', 'unknown' => '结果未知']),
         ])->recordActions([
@@ -96,7 +106,15 @@ class ViewNovelCosts extends Page implements HasTable
      */
     protected function getHeaderActions(): array
     {
-        return [Action::make('refreshCosts')->label('刷新费用')->action(fn () => $this->getRecord()->refresh()),
+        return [Action::make('exportCosts')->label('导出筛选账单')->requiresConfirmation()->modalDescription('导出当前小说与筛选范围的计费元数据，未知金额保持为空；不包含正文、原始请求或密钥。超过10000条时需缩小范围。')
+            ->action(function (): StreamedResponse {
+                $payload = app(CostLedgerExport::class)->payload($this->getRecord()->id, $this->getFilteredTableQuery());
+                $json = json_encode($payload, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+
+                return response()->streamDownload(function () use ($json): void {
+                    echo $json;
+                }, 'novel-'.$this->getRecord()->id.'-costs.json', ['Content-Type' => 'application/json', 'Cache-Control' => 'private, no-store']);
+            }), Action::make('refreshCosts')->label('刷新费用')->action(fn () => $this->getRecord()->refresh()),
             Action::make('back')->label('返回小说')->url(fn (): string => NovelResource::getUrl('view', ['record' => $this->getRecord()]))];
     }
 }

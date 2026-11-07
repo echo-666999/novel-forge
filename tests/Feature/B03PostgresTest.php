@@ -161,6 +161,15 @@ class B03PostgresTest extends TestCase
         $lineageMigration = require database_path('migrations/2026_11_06_023001_add_successor_lineage_to_chapter_submission_runs.php');
         // 伏笔证据依赖正式提交，隔离迁移测试先撤销空账本表。
         $foreshadowMigration = require database_path('migrations/2026_11_06_164613_create_foreshadow_ledger_tables.php');
+        // C09 阅读证据引用正文版本，先撤销空阅读表再验证旧迁移。
+        $readingMigration = require database_path('migrations/2026_11_07_014131_create_reading_records_table.php');
+        // 场景规划引用大纲章节，先撤销空子表再验证大纲迁移。
+        $sceneMigration = require database_path('migrations/2026_11_07_132700_create_scene_plan_versions_table.php');
+        $sceneMigration->down();
+        $readingMigration->down();
+        // C09 实体版本依赖正式实体，专库回滚按子表优先执行，禁止级联删除。
+        $entityDefinitionsMigration = require database_path('migrations/2026_11_07_133118_create_entity_definition_versions_table.php');
+        $entityDefinitionsMigration->down();
         $foreshadowMigration->down();
         $lineageMigration->down();
         $submissionMigration->down();
@@ -173,6 +182,9 @@ class B03PostgresTest extends TestCase
         $submissionMigration->up();
         $lineageMigration->up();
         $foreshadowMigration->up();
+        $entityDefinitionsMigration->up();
+        $readingMigration->up();
+        $sceneMigration->up();
         $this->assertSame($beforeNovel, Novel::findOrFail($stage->novel_id)->getRawOriginal());
         $this->assertSame($beforeStage, $stage->fresh()->getRawOriginal());
     }

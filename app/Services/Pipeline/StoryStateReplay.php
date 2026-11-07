@@ -115,7 +115,7 @@ final class StoryStateReplay
                     'alive' => '存活', 'dead' => '死亡', default => $value['value_text']
                 }).'（'.FactCategory::from($value['fact_category'])->label().'，事件 #'.$value['source_event_id'].'）', $values)));
             }
-            $display[] = ['name' => $entity->name, 'facts' => implode("\n", $facts)];
+            $display[] = ['id' => $entity->id, 'type' => $entity->type, 'name' => $entity->name, 'facts' => implode("\n", $facts)];
         }
 
         return ['chapter' => $number, 'state_version' => $expected, 'state' => $state, 'entities' => $display, 'events' => $history, 'body' => $body];

@@ -50,7 +50,7 @@ class C08FormalExportTest extends TestCase
     }
 
     /** 逆序插入十章，保证导出依据章序且标题取正式版本而非可变章节标题。 */
-    private function history(): Novel
+    public static function history(): Novel
     {
         $novel = Novel::factory()->create(['title' => '书名𠮷😀', 'chapters_done' => 10, 'state_version' => 10]);
         foreach (range(10, 1) as $number) {

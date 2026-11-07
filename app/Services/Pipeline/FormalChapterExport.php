@@ -3,6 +3,7 @@
 namespace App\Services\Pipeline;
 
 use App\Models\CanonicalCommit;
+use App\Models\Chapter;
 use App\Models\ChapterVersion;
 use App\Models\Novel;
 use Illuminate\Support\Facades\DB;
@@ -61,6 +62,41 @@ final class FormalChapterExport
                 'mime' => $format === 'txt' ? 'text/plain; charset=UTF-8' : 'text/markdown; charset=UTF-8',
                 'content' => $content, 'manifest' => $manifest];
         });
+    }
+
+    /** 从已冻结的正式清单重建文件，不改用当前候选，也不读取后来修改的书名。
+     * @return array{filename: string, mime: string, content: string, manifest: array}
+     */
+    public function fromManifest(int $novelId, string $bookTitle, array $manifest, string $format): array
+    {
+        if (! in_array($format, ['txt', 'md'], true) || $manifest === [] || ! array_is_list($manifest)) {
+            throw new InvalidArgumentException('冻结导出清单或格式无效');
+        }
+        $toc = [];
+        $sections = [];
+        foreach ($manifest as $index => $entry) {
+            $number = $index + 1;
+            $version = ChapterVersion::find($entry['version_id']);
+            $commit = CanonicalCommit::find($entry['commit_id']);
+            if ($entry['number'] !== $number || $version === null || $commit === null || $commit->novel_id !== $novelId
+                || $commit->version_id !== $version->id || $commit->chapter_id !== $version->chapter_id
+                || ! Chapter::where('novel_id', $novelId)->where('number', $number)->whereKey($commit->chapter_id)->exists()
+                || $commit->previous_state_version !== $number - 1 || $commit->state_version !== $number
+                || $version->title !== $entry['title'] || $version->body_hash !== $entry['body_hash']
+                || ($commit->result['body_hash'] ?? null) !== $version->body_hash || hash('sha256', $version->body) !== $version->body_hash) {
+                throw new InvalidArgumentException('冻结清单与正式来源不一致');
+            }
+            $name = preg_replace('/^第[〇零一二三四五六七八九十百千万两0-9]+[章节回][\s：:、.\-]*/u', '', $this->singleLine($version->title));
+            $title = '第'.$number.'章 '.$name;
+            $toc[] = $format === 'md' ? '- '.$this->markdown($title) : $title;
+            $sections[] = ($format === 'md' ? '## '.$this->markdown($title) : $title)."\n\n".$version->body;
+        }
+        $title = $this->singleLine($bookTitle);
+        $content = ($format === 'md' ? '# '.$this->markdown($title) : $title)."\n\n"
+            .($format === 'md' ? '## 目录' : '目录')."\n\n".implode("\n", $toc)."\n\n".implode("\n\n", $sections)."\n";
+
+        return ['filename' => 'novel-'.$novelId.'-chapters-1-'.count($manifest).'.'.$format,
+            'mime' => $format === 'txt' ? 'text/plain; charset=UTF-8' : 'text/markdown; charset=UTF-8', 'content' => $content, 'manifest' => $manifest];
     }
 
     /** 标题只占一行，避免把标题中的换行注入目录结构。 */

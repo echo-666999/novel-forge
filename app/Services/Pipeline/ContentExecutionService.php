@@ -34,11 +34,12 @@ final class ContentExecutionService
         app(LegacyContentSources::class)->assertPlanningSources($run);
         $config = $run->config;
         $initial = $config['initial_step'] ?? null;
-        $base = $initial === 'fine' ? 3 : 2;
+        $manual = $initial === 'check' && isset($config['manual_edit']);
+        $base = $manual ? 1 : ($initial === 'fine' ? 3 : 2);
         $cap = $base + ($initial === 'revise' ? 0 : 2 * ($config['max_retries'] ?? 0));
         if (($config['version'] ?? null) !== ContentExecutionContract::VERSION || $run->request_limit !== ($config['request_cap'] ?? null)
             || ! in_array($config['max_retries'] ?? null, [0, 1], true) || $run->retry_count > $config['max_retries']
-            || ! in_array($initial, ['fine', 'draft', 'revise'], true) || ($initial === 'fine' && ! $config['enable_fine_outline'])
+            || ! in_array($initial, ['fine', 'draft', 'revise', 'check'], true) || ($initial === 'check' && (! $manual || $config['max_retries'] !== 0 || $run->parent_run_id === null)) || ($initial === 'fine' && ! $config['enable_fine_outline'])
             || $run->requests_used < 0 || $run->requests_used > $run->request_limit || $run->request_limit < $base || $run->request_limit > $cap || $run->length_repair_count !== 0
             || data_get($config, 'authorization.scope') !== 'bounded_content') {
             throw new InvalidArgumentException('正文协议或冻结额度无效');
@@ -78,6 +79,19 @@ final class ContentExecutionService
             throw new InvalidArgumentException('关闭细纲时必须直接沿用B03章计划');
         }
         $version = $this->candidate($run);
+        // 人工候选绑定独立来源阶段、作者及正文摘要，不复用旧模型评审。
+        if ($manual) {
+            $edit = $config['manual_edit'];
+            $stage = $version === null ? null : NovelStage::find($version->source_stage_id);
+            if ($version === null || $version->run_id !== $run->id || $version->parent_version_id !== $run->source_version_id
+                || $edit['source_version_id'] !== $run->source_version_id || $stage?->stage !== Stage::Content || $stage?->status !== StageStatus::Completed
+                || $version->body_hash !== $edit['body_hash'] || $version->title !== $edit['title'] || $edit['author_id'] !== $config['author_id']
+                || $stage?->novel_id !== $run->chapter->novel_id || data_get($stage?->input, 'run_id') !== $run->id
+                || data_get($stage?->input, 'author_id') !== $config['author_id'] || data_get($stage?->output, 'mode') !== 'manual_edit'
+                || data_get($stage?->output, 'body_hash') !== $version->body_hash) {
+                throw new InvalidArgumentException('人工候选来源或正文不一致');
+            }
+        }
         $result = $run->chapter->progression_result;
         if ($result !== null) {
             $check = ChapterProgressionCheck::where('chapter_id', $run->chapter_id)->findOrFail($result['check_id']);
@@ -192,6 +206,18 @@ final class ContentExecutionService
         }
 
         // 只读取冻结快照，恢复和重试不能混入后续账本变更。
+        // 卷弧为作者未来约束，来自冻结快照而非当前可变规划。
+        // 作者场景也进入细纲、正文及检查请求，不能读取后来修订的版本。
+        // 作者关系和规则保留作者视角，与正式状态分栏传递。
+        if (array_key_exists('author_entity_definitions', $run->snapshot)) {
+            $payload['author_entity_definitions'] = $run->snapshot['author_entity_definitions'];
+        }
+        if (array_key_exists('author_scene_plan', $run->snapshot)) {
+            $payload['author_scene_plan'] = $run->snapshot['author_scene_plan'];
+        }
+        if (array_key_exists('author_structure', $run->snapshot)) {
+            $payload['author_structure'] = $run->snapshot['author_structure'];
+        }
         if (array_key_exists('foreshadow_context', $run->snapshot)) {
             $payload['foreshadow_context'] = $run->snapshot['foreshadow_context'];
         }

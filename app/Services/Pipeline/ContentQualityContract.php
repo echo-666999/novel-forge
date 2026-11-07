@@ -23,6 +23,14 @@ final class ContentQualityContract
             $rules['decision-'.($index + 1)] = $decision['answer'];
         }
 
+        // 只纳入当前运行冻结且作者批准的规则，旧快照没有此字段时完全保持旧协议。
+        foreach ($snapshot['author_entity_definitions'] ?? [] as $entry) {
+            $text = trim($entry['definition']['rules'] ?? '');
+            if ($text !== '') {
+                $rules['entity-definition-'.$entry['version_id']] = $entry['definition']['name'].'：'.$text;
+            }
+        }
+
         return $rules;
     }
 

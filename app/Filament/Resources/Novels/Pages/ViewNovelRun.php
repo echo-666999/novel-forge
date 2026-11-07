@@ -70,7 +70,7 @@ class ViewNovelRun extends Page implements HasTable
                 TextEntry::make('automation_error')->label('停止原因')->state(fn (): ?string => $this->automation()?->error)->placeholder('无'),
                 TextEntry::make('automation_evidence')->label('自动授权与完整断点证据（非人工阅读）')->state(fn (): string => PlanningJson::encode($this->automation()?->only(['id', 'author_id', 'policy', 'policy_hash', 'artifacts', 'history']) ?? [])),
             ]),
-            Section::make('阶段流水线')->description('显示每阶段最后一次尝试；下方保留全部历史。真实模式的润色和导出尚未接入，不表示已执行。')->schema([
+            Section::make('阶段流水线')->description('显示每阶段最后一次尝试；下方保留全部历史。阶段记录不代表正式提交；正式导出从小说详情单独执行，不计作生成阶段。')->schema([
                 RepeatableEntry::make('stages')->label('阶段状态')->hiddenLabel()->state(fn (): array => $this->stageSummary())->columns(3)->schema([
                     TextEntry::make('name')->label('阶段'), TextEntry::make('status')->label('状态'), TextEntry::make('attempts')->label('尝试总数'),
                     TextEntry::make('error')->label('最近错误')->placeholder('无')->columnSpanFull(),
