@@ -121,16 +121,18 @@ final class AcceptanceWorkbench
 
         return $this->write($novelId, $batchId, $actor, function (AcceptanceBatch $batch) use ($actor, $data): AcceptanceEvidence {
             $entry = collect($batch->snapshot['manifest'])->firstWhere('number', (int) $data['chapter']);
-            if ($entry === null || ! str_contains(ChapterVersion::findOrFail($entry['version_id'])->body, trim($data['quote']))) {
-                throw ValidationException::withMessages(['quote' => '章号或摘录不属于本批次冻结正式正文。']);
+            if ($entry === null) {
+                throw ValidationException::withMessages(['chapter' => '所选章号不属于本批次冻结正式正文。']);
             }
+            // 与阅读问题共用原文匹配规则，支持空行分隔摘录；只匹配本批次冻结版本，不替换评分。
+            $quote = app(ReadingRecordService::class)->sourceQuotes(ChapterVersion::findOrFail($entry['version_id'])->body, $data['quote'], 10000);
             $scores = array_map('intval', $data['scores']);
             if (min($scores) < 3 && trim($data['repair'] ?? '') === '') {
                 throw ValidationException::withMessages(['repair' => '低于3分必须填写修复期待。']);
             }
             $pass = min($scores) >= 3 && array_sum($scores) >= 27 && ! $data['blocking'];
 
-            $evidence = $this->append($batch, $actor, 'human', 'chapter_'.$data['chapter'], ['scores' => $scores, 'quote' => trim($data['quote']), 'reason' => $data['reason'],
+            $evidence = $this->append($batch, $actor, 'human', 'chapter_'.$data['chapter'], ['scores' => $scores, 'quote' => $quote, 'reason' => $data['reason'],
                 'repair' => $data['repair'] ?? '', 'blocking' => (bool) $data['blocking'], 'read_confirmed' => true, 'pass' => $pass, 'version_id' => $entry['version_id']]);
             $this->refreshStatus($batch);
 

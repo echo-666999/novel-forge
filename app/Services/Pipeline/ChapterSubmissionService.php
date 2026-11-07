@@ -245,6 +245,9 @@ final class ChapterSubmissionService
                 $context['context_source'] = ['submission_run_id' => $run->id, 'input_hash' => $run->input_hash, 'version_id' => $version->id, 'chapter_number' => $run->chapter->number];
             }
             $payload = ['prior_context' => $run->snapshot['content_sources']['prior_context'] ?? null, 'version_id' => $version->id, 'body_hash' => $version->body_hash, 'evidence_catalog' => $anchors, 'word_policy' => $run->snapshot['content_sources']['novel']['chapter_length_policy'],
+                // 字数使用与本地硬门禁相同的确定性计数，避免模型按段数估计而误拒合格正文。
+                'body_measurement' => ['visible_non_whitespace_characters' => ContentSchema::count($version->body),
+                    'method' => 'Unicode可见非空白正文字符，包含标点，不包含标题；字数判断使用此程序实测值，不按段数或Token估算。'],
                 'confirmed_setting' => $run->snapshot['content_sources']['confirmed_setting'], 'author_decisions' => $run->snapshot['content_sources']['decisions'],
                 'chapter_plan' => $run->snapshot['body_plan'], 'rule_catalog' => ContentQualityContract::rules($run->snapshot['content_sources']),
                 'entity_catalog' => $run->snapshot['entity_catalog'], 'prior_state' => $run->snapshot['state'], 'reading_hints' => ContentReadingAudit::inspect($version->body)];

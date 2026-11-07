@@ -21,6 +21,7 @@ use App\Services\Ai\AiTextGenerationService;
 use App\Services\Pipeline\CanonicalCommitService;
 use App\Services\Pipeline\ChapterSubmissionService;
 use App\Services\Pipeline\ContentGenerationService;
+use App\Services\Pipeline\ContentSchema;
 use App\Services\Pipeline\PlanningJson;
 use App\Services\Pipeline\ProgressionChecker;
 use App\Services\Pipeline\SubmissionContract;
@@ -197,6 +198,11 @@ class ChapterSubmissionTest extends TestCase
     {
         [$run, $operator] = self::prepared();
         $this->assertSame('ready', $run->status, $run->stop_reason ?? '');
+        // 实际供应商输入必须携带正文确定性字数，评审与提取均不能依靠模型估数。
+        foreach (CostLog::where('novel_id', $run->novel_id)->where('prompt_version', 'like', 'submission-%')->get() as $request) {
+            $prompt = $request->request_parameters['prompt_audit']['user_prompt'];
+            $this->assertStringContainsString('"visible_non_whitespace_characters":'.ContentSchema::count($run->version->body), $prompt);
+        }
         $before = $run->version->getRawOriginal();
         $novel = $run->novel->getRawOriginal();
         $key = (string) Str::uuid7();

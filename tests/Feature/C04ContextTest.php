@@ -73,6 +73,41 @@ class C04ContextTest extends TestCase
         $this->assertSame(PlanningJson::hash($document), PlanningJson::hash(json_decode(json_encode($document), true)));
     }
 
+    /** 重复引文可完整还原，不能借去重删除独有证据或扩大冻结容量。 */
+    public function test_repeated_quotes_are_lossless_and_unique_evidence_still_blocks(): void
+    {
+        $builder = app(ContextBuilder::class);
+        $quote = str_repeat('原文证据不能省略。', 100);
+        $events = [];
+        for ($i = 0; $i < 20; $i++) {
+            $events[] = ['event_id' => $i, 'fact_category' => $i % 2 ? 'rumor' : 'objective_confirmed', 'evidence' => ['quote' => $quote, 'start' => intdiv($i, 2), 'source' => str_repeat('不可丢失的来源', 20)]];
+        }
+        $payload = ['events' => $events];
+        $policy = [...$builder->policy(), 'capacity' => 15000];
+        $document = $builder->build($payload, '', '', [], $policy, 100, []);
+        $this->assertSame('ready', $document['status']);
+        $encoded = $document['payload'];
+        $catalog = $encoded['context_value_catalog'];
+        unset($encoded['context_value_catalog'], $encoded['context_value_encoding']);
+        // 引用还原必须得到完全一致的事件、类别、坐标及完整引文。
+        $decode = function (mixed $value) use (&$decode, $catalog): mixed {
+            if (is_array($value) && array_keys($value) === ['context_value_ref']) {
+                return $decode($catalog[$value['context_value_ref']]);
+            }
+            if (is_array($value)) {
+                foreach ($value as $key => $item) {
+                    $value[$key] = $decode($item);
+                }
+            }
+
+            return $value;
+        };
+        $this->assertSame(PlanningJson::hash($payload), PlanningJson::hash($decode($encoded)));
+        $this->assertSame(15000, $document['policy']['capacity']);
+        $unique = $builder->build(['events' => [['quote' => str_repeat('唯一证据', 4000)]]], '', '', [], $policy, 100, []);
+        $this->assertSame('blocked', $unique['status']);
+    }
+
     /** 真正执行正文入口，预算在启动时冻结；阻塞持久化且没有HTTP或成本流水。 */
     public function test_pipeline_blocks_before_provider_and_persists_manifest(): void
     {

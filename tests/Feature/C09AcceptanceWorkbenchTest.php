@@ -164,6 +164,36 @@ class C09AcceptanceWorkbenchTest extends TestCase
         $this->assertSame(1, AcceptanceEvidence::count());
     }
 
+    /** 评分弹窗错误可见，保留低分输入，修正后保存未通过评价而不是拒绝低分。 */
+    public function test_rating_modal_displays_errors_and_saves_low_scores(): void
+    {
+        [$novel, $actor, $batch, $version] = $this->batch();
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        $this->actingAs($actor);
+        $data = $this->rating('不是该章原文');
+        $data['scores']['naturalness'] = 1;
+        $data['scores']['appeal'] = 1;
+        $data['repair'] = '期待像一篇人工写的网络小说';
+        $data['blocking'] = '0';
+        $page = Livewire::test(WorkbenchPage::class, ['record' => $novel->id])
+            ->callTableAction('rate', $batch, $data);
+        $page->assertHasTableActionErrors(['quote'])
+            ->assertNotified('人工评分未保存')
+            ->assertSet('mountedActions.0.data.scores.naturalness', 1);
+        $this->assertSame(0, AcceptanceEvidence::count());
+        // 两处原文使用空行分隔，并模拟浏览器粘贴产生的空格和换行。
+        $quote = mb_substr($version->body, 0, 5)."\n\n".mb_substr($version->body, -5);
+        $page->fillForm(['quote' => " \r\n".$quote."\r\n ", 'repair' => ''], 'mountedActionSchema0')
+            ->callMountedAction()->assertHasTableActionErrors(['repair'])->assertNotified('人工评分未保存');
+        $page->fillForm(['repair' => $data['repair']], 'mountedActionSchema0')->callMountedAction()
+            ->assertHasNoTableActionErrors()->assertNotified('人工评分已追加，未自动认可');
+        $evidence = AcceptanceEvidence::sole();
+        $this->assertSame(1, $evidence->payload['scores']['naturalness']);
+        $this->assertFalse($evidence->payload['pass']);
+        $this->assertSame('rejected', $batch->fresh()->status);
+        $this->assertSame(0, CostLog::count());
+    }
+
     /** 每项评分均显式填写，不使用界面默认通过分。 */
     private function rating(string $quote): array
     {

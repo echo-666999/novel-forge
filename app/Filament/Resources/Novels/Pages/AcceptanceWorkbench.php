@@ -85,8 +85,18 @@ class AcceptanceWorkbench extends Page implements HasTable
                     app(Workbench::class)->machine($this->getRecord()->id, $record->id, Filament::auth()->user());
                     Notification::make()->success()->title('机器结果已追加，请查看缺口')->send();
                 }),
-                Action::make('rate')->label('逐章人工评分')->visible($editable)->schema(fn (AcceptanceBatch $record): array => $this->ratingFields($record))->action(function (AcceptanceBatch $record, array $data): void {
-                    app(Workbench::class)->rate($this->getRecord()->id, $record->id, Filament::auth()->user(), $data);
+                Action::make('rate')->label('逐章人工评分')->visible($editable)->schema(fn (AcceptanceBatch $record): array => $this->ratingFields($record))->action(function (AcceptanceBatch $record, array $data, Schema $schema): void {
+                    try {
+                        app(Workbench::class)->rate($this->getRecord()->id, $record->id, Filament::auth()->user(), $data);
+                    } catch (ValidationException $error) {
+                        // 业务字段错误必须归入弹窗状态路径；通知让长表单底部也能立即看见失败原因。
+                        Notification::make()->danger()->title('人工评分未保存')->body(implode('；', $error->validator->errors()->all()))->send();
+                        $messages = [];
+                        foreach ($error->errors() as $field => $errors) {
+                            $messages[$schema->getStatePath().'.'.$field] = $errors;
+                        }
+                        throw ValidationException::withMessages($messages);
+                    }
                     Notification::make()->success()->title('人工评分已追加，未自动认可')->send();
                 }),
                 Action::make('import')->label('导入外部证据')->visible($editable)->schema([
@@ -138,7 +148,7 @@ class AcceptanceWorkbench extends Page implements HasTable
             $fields[] = TextInput::make('scores.'.$key)->label($label.'（1～5）')->integer()->minValue(1)->maxValue(5)->required();
         }
 
-        return [...$fields, Textarea::make('quote')->label('该章正式原文依据')->required()->maxLength(10000), Textarea::make('reason')->label('评分原因')->required()->maxLength(10000),
+        return [...$fields, Textarea::make('quote')->label('该章正式原文依据')->helperText('支持多处摘录，用空行分隔；忽略复制产生的空格和换行，文字与标点须匹配所选章的冻结版本。')->required()->maxLength(10000), Textarea::make('reason')->label('评分原因')->required()->maxLength(10000),
             Textarea::make('repair')->label('修复期待（低于3分必填）')->maxLength(10000), Select::make('blocking')->label('是否存在严重冲突、知情越界、因果断裂或重复拼接')->options([0 => '没有发现', 1 => '存在阻塞'])->required(),
             Checkbox::make('read_confirmed')->label('我已完整阅读本章，并明确记录本人评分')->accepted()];
     }

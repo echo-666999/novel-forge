@@ -20,6 +20,7 @@ use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\HtmlString;
+use Illuminate\Validation\ValidationException;
 use Livewire\Attributes\Locked;
 
 /** 按书及不可变版本隔离的阅读页，作者阅读标记不替代提交评审。 */
@@ -133,9 +134,19 @@ class ReadChapter extends Page
                 Notification::make()->success()->title('此版本已标记读完')->send();
             }),
             Action::make('issue')->label('记录原文问题')->visible(fn (): bool => $this->version() !== null)->schema([
-                Textarea::make('quote')->label('原文摘录')->required()->maxLength(5000), Textarea::make('note')->label('问题说明')->required()->maxLength(2000),
-            ])->action(function (array $data): void {
-                app(ReadingRecordService::class)->record($this->getRecord()->id, $this->version()->id, Filament::auth()->user(), 'issue', $data['quote'], $data['note']);
+                Textarea::make('quote')->label('原文摘录')->helperText('支持多处摘录，请用空行分隔，每处内部须连续；不含章名。复制产生的空格和换行不影响匹配，文字与标点须一致。')->required()->maxLength(5000), Textarea::make('note')->label('问题说明')->required()->maxLength(2000),
+            ])->action(function (array $data, Schema $schema): void {
+                try {
+                    app(ReadingRecordService::class)->record($this->getRecord()->id, $this->version()->id, Filament::auth()->user(), 'issue', $data['quote'], $data['note']);
+                } catch (ValidationException $error) {
+                    // 服务层使用业务字段名；映射到当前弹窗路径，确保失败可见且保留输入供修改。
+                    Notification::make()->danger()->title('原文问题未保存')->body(implode('；', $error->validator->errors()->all()))->send();
+                    $messages = [];
+                    foreach ($error->errors() as $field => $errors) {
+                        $messages[$schema->getStatePath().'.'.$field] = $errors;
+                    }
+                    throw ValidationException::withMessages($messages);
+                }
                 Notification::make()->success()->title('原文问题已保存')->send();
             }),
             Action::make('workbench')->label('正文与提交工作台')->url(fn (): string => NovelResource::getUrl('content', ['record' => $this->getRecord(), 'chapter' => $this->chapterNumber])),

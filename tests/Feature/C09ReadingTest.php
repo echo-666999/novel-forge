@@ -51,6 +51,61 @@ class C09ReadingTest extends TestCase
         $service->record($novelId, $version->id, $actor, 'issue', '不存在的摘录', '说明');
     }
 
+    /** 业务校验失败显示在弹窗内，保留问题说明并支持修正摘录后提交。 */
+    public function test_issue_accepts_separate_excerpts_and_copy_whitespace_but_preserves_source(): void
+    {
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        $this->actingAs(User::factory()->create());
+        $body = "林岚拖着工具箱走进修复站。\n中间一段不摘录。\n许澄说：“这里是一百四十二，下一条是一百五十一。”";
+        $version = ChapterVersion::factory()->create(['body' => $body, 'body_hash' => hash('sha256', $body)]);
+        $version->chapter->update(['current_candidate_version_id' => $version->id]);
+        $quote = "\u{FEFF}林岚 拖着工具箱\r\n走进修复站。\r\n\r\n许澄说：“这里是一百四十二，\u{00A0}下一条是一百五十一。\u{200B}";
+        Livewire::test(ReadChapter::class, ['record' => $version->chapter->novel_id])
+            ->callAction('issue', ['quote' => $quote, 'note' => '开场缺少背景，叙事过于流程化'])
+            ->assertHasNoActionErrors()->assertNotified('原文问题已保存');
+        $this->assertDatabaseHas('reading_records', ['version_id' => $version->id,
+            'quote' => "林岚拖着工具箱走进修复站。\n\n许澄说：“这里是一百四十二，下一条是一百五十一。",
+            'note' => '开场缺少背景，叙事过于流程化']);
+        $this->assertSame($body, $version->fresh()->body);
+        // 标点或文字真正改变仍然拒绝，并指出错误发生在第二处摘录。
+        $page = Livewire::test(ReadChapter::class, ['record' => $version->chapter->novel_id])
+            ->callAction('issue', ['quote' => "林岚拖着工具箱走进修复站。\n\n许澄说：“这里是一百四十三，", 'note' => '待核对'])
+            ->assertHasActionErrors(['quote'])->assertNotified('原文问题未保存');
+        $this->assertStringContainsString('第2处摘录', $page->instance()->getErrorBag()->first('mountedActions.0.data.quote'));
+        $this->assertSame(1, DB::table('reading_records')->count());
+    }
+
+    /** 说明校验错误不能错误归入摘录字段，避免误导作者反复修改原文。 */
+    public function test_invalid_note_has_its_own_validation_field(): void
+    {
+        $version = ChapterVersion::factory()->create();
+        try {
+            app(ReadingRecordService::class)->record($version->chapter->novel_id, $version->id, User::factory()->create(), 'issue', '林澈', '');
+            $this->fail('空白问题说明必须拒绝');
+        } catch (ValidationException $error) {
+            $this->assertArrayHasKey('note', $error->errors());
+            $this->assertArrayNotHasKey('quote', $error->errors());
+        }
+    }
+
+    /** 业务校验失败显示在弹窗内，保留问题说明并支持修正摘录后提交。 */
+    public function test_issue_modal_shows_source_error_and_can_retry_without_losing_note(): void
+    {
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        $this->actingAs(User::factory()->create());
+        $version = ChapterVersion::factory()->create();
+        $version->chapter->update(['current_candidate_version_id' => $version->id]);
+        $page = Livewire::test(ReadChapter::class, ['record' => $version->chapter->novel_id])
+            ->callAction('issue', ['quote' => '不在原文中的摘录', 'note' => '缺少人物背景，叙事缺少情绪起伏'])
+            ->assertHasActionErrors(['quote'])
+            ->assertNotified('原文问题未保存')
+            ->assertSet('mountedActions.0.data.note', '缺少人物背景，叙事缺少情绪起伏');
+        $this->assertSame(0, DB::table('reading_records')->count());
+        $page->fillForm(['quote' => '林澈'], 'mountedActionSchema0')
+            ->callMountedAction()->assertHasNoActionErrors()->assertNotified('原文问题已保存');
+        $this->assertDatabaseHas('reading_records', ['version_id' => $version->id, 'kind' => 'issue', 'quote' => '林澈', 'note' => '缺少人物背景，叙事缺少情绪起伏']);
+    }
+
     /** 历史版本不能从另一小说URL打开，自己的备注不会展示给其他账号。 */
     public function test_reader_checks_lineage_and_hides_other_users_notes(): void
     {

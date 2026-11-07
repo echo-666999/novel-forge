@@ -48,6 +48,10 @@ final class ContextBuilder
                 'ending_direction' => $payload['candidate_roadmap']['ending_direction'] ?? null,
                 'major_turning_points' => $payload['candidate_roadmap']['major_turning_points'] ?? []];
         }
+        // 长篇事件常重复引用同一整段正文；仅对完全相同的完整值建立字典，保留所有事实与来源。
+        if ($this->estimate(PlanningJson::encode($payload)) > $policy['capacity'] / 2) {
+            $payload = $this->deduplicateEvidence($payload);
+        }
         $entries = [];
         $ordered = [];
         $keys = array_keys($payload);
@@ -86,6 +90,62 @@ final class ContextBuilder
             'reasoning_note' => '当前路由推理计入最大输出，不重复预留', 'estimate_note' => '按UTF-8字节保守估算，非模型精确分词；误差未校准。容量是本地运行上限，非供应商规格。',
             'required_capacity' => $required, 'blocked_reason' => $required <= $policy['capacity'] ? null : '硬约束、计划、正式事实或到期伏笔无法完整容纳，阻塞请求；请调整后创建新运行',
             'system_prompt' => $system, 'response_schema' => $schema, 'user_prompt' => $prompt, 'user_hash' => hash('sha256', $prompt), 'payload' => $ordered];
+    }
+
+    /** 对重复完整值建立无损字典；原始事实、引文和来源不摘要、不裁剪。
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function deduplicateEvidence(array $payload): array
+    {
+        if (array_key_exists('context_value_catalog', $payload) || array_key_exists('context_value_encoding', $payload)) {
+            return $payload;
+        }
+        $counts = [];
+        $scan = function (mixed $value) use (&$scan, &$counts): void {
+            if ((is_array($value) || is_string($value)) && strlen(PlanningJson::encode($value)) > 256) {
+                $key = PlanningJson::hash($value);
+                $counts[$key] = ($counts[$key] ?? 0) + 1;
+            }
+            if (is_array($value)) {
+                foreach ($value as $item) {
+                    $scan($item);
+                }
+            }
+        };
+        $scan($payload);
+        $catalog = [];
+        $references = [];
+        $encode = function (mixed $value) use (&$encode, &$catalog, &$references, $counts): mixed {
+            $key = (is_array($value) || is_string($value)) && strlen(PlanningJson::encode($value)) > 256 ? PlanningJson::hash($value) : null;
+            if ($key !== null && isset($references[$key])) {
+                return ['context_value_ref' => $references[$key]];
+            }
+            // 子值先编码；只引用严格更小的子树，不可能形成循环。
+            if (is_array($value)) {
+                foreach ($value as $name => $item) {
+                    $value[$name] = $encode($item);
+                }
+            }
+            if ($key !== null && ($counts[$key] ?? 0) > 1) {
+                $reference = 'v'.(count($catalog) + 1);
+                $catalog[$reference] = $value;
+                $references[$key] = $reference;
+
+                return ['context_value_ref' => $references[$key]];
+            }
+
+            return $value;
+        };
+        $encoded = $encode($payload);
+        if ($catalog === []) {
+            return $payload;
+        }
+        $encoded['context_value_catalog'] = $catalog;
+        $encoded['context_value_encoding'] = '任何仅包含context_value_ref的对象，完整原值在context_value_catalog同名键中。先还原再阅读；保留所有事实、原文、坐标和类别，不是摘要或缺失证据。字典内如有引用须递归还原，引用仅指向严格更小的子值，不存在循环。';
+
+        // 只有确实减小输入才采用；不改变冻结容量与硬约束门禁。
+        return strlen(PlanningJson::encode($encoded)) < strlen(PlanningJson::encode($payload)) ? $encoded : $payload;
     }
 
     /** 条目来源使用冻结快照摘要；没有检索器时不伪造检索分数。
