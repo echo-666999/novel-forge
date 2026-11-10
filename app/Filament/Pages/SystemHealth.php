@@ -73,7 +73,7 @@ class SystemHealth extends Page implements HasTable
         return array_map(function (array $row) use ($novel): array {
             $url = match ($row['page']) {
                 'profile' => Filament::getProfileUrl(), 'overview' => ProductionOverview::getUrl(),
-                'templates' => ManagePromptTemplates::getUrl(), 'settings' => ManageGeneralSettings::getUrl(),
+                'templates' => ManagePromptTemplates::getUrl(), 'settings' => ManageGeneralSettings::getUrl(), 'prices' => ManageModelPrices::getUrl(),
                 'runs' => GenerationRuns::getUrl(), 'health' => static::getUrl(),
                 'index' => NovelResource::getUrl('index'), null => null,
                 default => $novel === null ? null : NovelResource::getUrl($row['page'], ['record' => $novel]),

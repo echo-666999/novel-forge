@@ -139,7 +139,7 @@ final class NovelPipelineService
                 'pipeline' => ['version' => $real ? 'b02-setting-v1' : 'a05-v1', 'enable_fine_outline' => $frozen],
                 ...($real ? ['generation_config' => $novel->generation_config, 'invocation_id' => $invocationId] : []),
                 // 仅保存本次实际可见的业务输入，避免把全局配置或凭据混入快照。
-                'novel' => $novel->only(['id', 'title', 'genre', 'premise_raw', 'target_chapters', 'chapter_length_policy']),
+                'novel' => $novel->planningInput(),
                 'execution' => ['execution_count' => $novel->execution_count + 1, 'max_execution_count' => $novel->max_execution_count, 'attempt_no' => $ordinal],
                 'previous_stage_id' => $previous?->id,
                 'previous_output' => $previous?->output,

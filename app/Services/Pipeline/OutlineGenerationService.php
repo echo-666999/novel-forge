@@ -53,7 +53,7 @@ final class OutlineGenerationService
             $token = (string) Str::uuid7();
             $plan = NovelOutlinePlan::query()->create([
                 'novel_id' => $novel->id, 'setting_confirmation_id' => $confirmation->id, 'target_chapters' => $novel->target_chapters,
-                'snapshot' => ['confirmation_hash' => $confirmation->content_hash, 'novel' => $novel->only(['id', 'title', 'genre', 'premise_raw', 'target_chapters', 'chapter_length_policy']), 'confirmed_setting' => $confirmation->setting, 'decisions' => $confirmation->decisions],
+                'snapshot' => ['confirmation_hash' => $confirmation->content_hash, 'novel' => $novel->planningInput(), 'confirmed_setting' => $confirmation->setting, 'decisions' => $confirmation->decisions],
                 'config' => [...$config, 'model' => $model, 'batch_size' => 10, 'prompt_version' => 'b03-outline-prompt-v1', 'enable_fine_outline' => data_get($novel->generation_config, 'enable_fine_outline')],
                 'next_chapter' => 1, 'status' => 'pending', 'invocation_id' => $token,
                 'control_history' => [$this->control('start', $author->id, $novel->max_execution_count, $novel->max_execution_count, '作者显式启动大纲')],

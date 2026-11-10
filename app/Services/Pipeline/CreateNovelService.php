@@ -21,6 +21,9 @@ use Throwable;
 /** 创建小说并按显式模式异步投递流程，运行状态不接受客户端赋值。 */
 final class CreateNovelService
 {
+    /** 补充创作要求的字段与中文名称。 */
+    public const BRIEF_FIELDS = ['target_readers' => '目标读者', 'selling_points' => '核心卖点', 'forbidden_content' => '禁用内容', 'style' => '文风', 'ending_preference' => '结局偏好'];
+
     /** 校验业务字段，先提交小说，再投递 Redis；投递失败仍保留原始创意。
      * @param  array<string, mixed>  $input
      */
@@ -38,6 +41,11 @@ final class CreateNovelService
             'chapter_length_policy' => ['required', 'array:min_characters,max_characters'],
             'chapter_length_policy.min_characters' => ['required', 'integer', 'min:1', 'max:2147483647'],
             'chapter_length_policy.max_characters' => ['required', 'integer', 'min:1', 'max:2147483647', 'gte:chapter_length_policy.min_characters'],
+            // 补充创作要求可选，原文保存，进入设定、大纲和正文的冻结输入。
+            'creative_brief' => ['nullable', 'array:'.implode(',', array_keys(self::BRIEF_FIELDS))],
+            ...collect(self::BRIEF_FIELDS)->mapWithKeys(fn (string $label, string $key): array => ['creative_brief.'.$key => ['nullable', 'string', 'max:2000']])->all(),
+            'budget_amount' => ['nullable', 'regex:/\A\d{1,12}(?:\.\d{1,8})?\z/'],
+            'budget_currency' => ['nullable', 'required_with:budget_amount', 'in:CNY,USD'],
         ], [
             'required' => '请填写:attribute。', 'string' => ':attribute必须为文本。',
             'max' => ':attribute超出允许范围。', 'min' => ':attribute必须大于0。',
@@ -46,7 +54,11 @@ final class CreateNovelService
         ], [
             'generation_mode' => '生成模式', 'title' => '书名', 'genre' => '题材', 'premise_raw' => '原始创意', 'target_chapters' => '目标章数',
             'chapter_length_policy.min_characters' => '每章字数下限', 'chapter_length_policy.max_characters' => '每章字数上限',
+            'budget_amount' => '预算金额', 'budget_currency' => '预算币种',
+            ...collect(self::BRIEF_FIELDS)->mapWithKeys(fn (string $label, string $key): array => ['creative_brief.'.$key => $label])->all(),
         ])->validate();
+        $brief = array_filter(array_map(fn ($value): string => trim((string) $value), $data['creative_brief'] ?? []), fn (string $value): bool => $value !== '');
+        $budget = filled($data['budget_amount'] ?? null) ? (string) $data['budget_amount'] : null;
         $mode = GenerationMode::from($data['generation_mode'] ?? 'simulation');
         $settings = app(GeneralSettings::class);
         $limit = $settings->max_execution_count;
@@ -81,6 +93,10 @@ final class CreateNovelService
                 'max_characters' => (int) $data['chapter_length_policy']['max_characters'],
             ],
             'max_execution_count' => $limit,
+            'creative_brief' => $brief === [] ? null : $brief,
+            'budget_amount' => $budget,
+            'budget_currency' => $budget === null ? null : $data['budget_currency'],
+            'budget_history' => $budget === null ? [] : [['from' => null, 'to' => $budget, 'to_currency' => $data['budget_currency'], 'reason' => '建书时设定', 'at' => now()->toIso8601String()]],
         ]));
 
         // 自动首章由独立编排器接管，避免旧队列重复领取。

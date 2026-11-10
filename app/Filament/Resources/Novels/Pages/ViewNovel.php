@@ -10,10 +10,12 @@ use App\Filament\Resources\Novels\NovelResource;
 use App\Filament\Resources\Novels\Schemas\SettingConfirmationForm;
 use App\Models\Novel;
 use App\Models\ProductionRun;
+use App\Services\Ai\CostForecast;
 use App\Services\Ai\ModelProfiles;
 use App\Services\Pipeline\ConfirmSettingService;
 use App\Services\Pipeline\ContentGenerationService;
 use App\Services\Pipeline\FormalChapterExport;
+use App\Services\Pipeline\NovelBudget;
 use App\Services\Pipeline\NovelProgressQuery;
 use App\Services\Pipeline\OutlineGenerationService;
 use App\Services\Pipeline\ProductionRunService;
@@ -80,7 +82,7 @@ class ViewNovel extends ViewRecord
                 ->visible(fn (): bool => ProductionRun::activeFor($this->getRecord()->id) !== null),
             Action::make('generateFirstChapter')->label('生成第1章')->modalHeading('生成首章候选并独立检查推进')
                 ->visible(fn (): bool => $this->getRecord()->outlinePlans()->where('status', 'completed')->exists() && ! $this->getRecord()->chapters()->exists())
-                ->modalDescription(fn (): string => '仅生成首章候选，不代表正式稿。模型'.app(GeneralSettings::class)->default_model.'，启动时冻结；本小说剩余执行额度'.max(0, $this->getRecord()->max_execution_count - $this->getRecord()->execution_count).'次。启用细纲时依次调用细纲、正文、独立推进检查；细纲和检查各4096输出Token、正文默认8192。请求总上限以下方数值为准，默认开启细纲最多5次、关闭最多4次，最多修订一次；全局设置为0时不修订。技术失败或额度不足立即停止。通用设置保持不变，金额未知不代表免费。')
+                ->modalDescription(fn (): string => '仅生成首章候选，不代表正式稿。模型'.app(GeneralSettings::class)->default_model.'，启动时冻结；本小说剩余执行额度'.max(0, $this->getRecord()->max_execution_count - $this->getRecord()->execution_count).'次。启用细纲时依次调用细纲、正文、独立推进检查；细纲和检查各4096输出Token、正文默认8192。请求总上限以下方数值为准，默认开启细纲最多5次、关闭最多4次，最多修订一次；全局设置为0时不修订。技术失败或额度不足立即停止。通用设置保持不变，金额未知不代表免费。'.$this->forecast($this->chapterRequestFloor(), $this->contentRequestCap()))
                 ->schema([
                     TextInput::make('tokens')->label('本次正文输出Token上限')->integer()->minValue(1)->maxValue(8192)->default(8192)->required(),
                     TextInput::make('request_limit')->label('本次请求总上限（含细纲、检查及修订）')->integer()->minValue(1)->maxValue(2147483647)->maxValue(fn (): int => $this->contentRequestCap())->default(fn (): int => $this->contentRequestCap())->required(),
@@ -100,7 +102,7 @@ class ViewNovel extends ViewRecord
             // 手动逐章：已正式提交的下一章，连续性与额度校验由正文服务再次执行。
             Action::make('generateNextChapter')->label(fn (): string => '生成第'.($this->getRecord()->chapters_done + 1).'章')->modalHeading(fn (): string => '生成第'.($this->getRecord()->chapters_done + 1).'章候选并独立检查推进')
                 ->visible(fn (): bool => $this->canContinueWriting())
-                ->modalDescription(fn (): string => '仅生成候选，通过评审并由你批准后才正式提交。模型'.app(GeneralSettings::class)->default_model.'，启动时冻结；本小说剩余执行额度'.max(0, $this->getRecord()->max_execution_count - $this->getRecord()->execution_count).'次。金额未知不代表免费。')
+                ->modalDescription(fn (): string => '仅生成候选，通过评审并由你批准后才正式提交。模型'.app(GeneralSettings::class)->default_model.'，启动时冻结；本小说剩余执行额度'.max(0, $this->getRecord()->max_execution_count - $this->getRecord()->execution_count).'次。金额未知不代表免费。'.$this->forecast($this->chapterRequestFloor(), $this->contentRequestCap()))
                 ->schema([
                     TextInput::make('tokens')->label('本次正文输出Token上限')->integer()->minValue(1)->maxValue(8192)->default(8192)->required(),
                     TextInput::make('request_limit')->label('本次请求总上限（含细纲、检查及修订）')->integer()->minValue(1)->maxValue(fn (): int => $this->contentRequestCap())->default(fn (): int => $this->contentRequestCap())->required(),
@@ -121,7 +123,7 @@ class ViewNovel extends ViewRecord
             // 续写授权：从下一章起自动生成并正式提交，单次最多十章，范围与模型冻结在运行上。
             Action::make('extendProduction')->label('继续自动生成')->modalHeading('授权自动生成后续章节')
                 ->visible(fn (): bool => $this->canContinueWriting())
-                ->modalDescription(fn (): string => '从第'.($this->getRecord()->chapters_done + 1).'章起自动生成、评审、提取并正式提交，自动采纳通过校验的新实体；任何门禁未通过都会停下等你处理。单次最多'.ProductionRun::MAX_RANGE.'章，会产生模型费用，金额未知不代表免费；不代表人工全文阅读。')
+                ->modalDescription(fn (): string => '从第'.($this->getRecord()->chapters_done + 1).'章起自动生成、评审、提取并正式提交，自动采纳通过校验的新实体；任何门禁未通过都会停下等你处理。单次最多'.ProductionRun::MAX_RANGE.'章，会产生模型费用，金额未知不代表免费；不代表人工全文阅读。'.$this->forecast(5 * $this->extendLimit(), 7 * $this->extendLimit(), '按最多'.$this->extendLimit().'章估算：'))
                 ->schema([
                     TextInput::make('count')->label('授权章数')->integer()->minValue(1)->maxValue(fn (): int => $this->extendLimit())->default(fn (): int => $this->extendLimit())->required()
                         ->helperText(fn (): string => '本次范围：第'.($this->getRecord()->chapters_done + 1).'章起，最多'.$this->extendLimit().'章。'),
@@ -138,6 +140,18 @@ class ViewNovel extends ViewRecord
                     }
                     Notification::make()->success()->title('续写已启动')->body('可在运行详情查看进度、请求次数和失败恢复。')->send();
                     $this->redirect(NovelResource::getUrl('run', ['record' => $this->getRecord()]));
+                }),
+            // 调整未来预算：只影响之后的请求，历史费用与预留不改写，原因写入预算记录。
+            Action::make('adjustBudget')->label('调整预算')->modalHeading('调整本书金额预算')
+                ->modalDescription(fn (): string => app(NovelBudget::class)->describe($this->getRecord()).' 清空金额即取消预算。设了预算后，所用模型必须已登记同币种单价，否则请求会在发送前被拒绝。')
+                ->fillForm(fn (): array => ['amount' => $this->getRecord()->budget_amount === null ? null : (string) $this->getRecord()->budget_amount, 'currency' => $this->getRecord()->budget_currency ?? 'CNY'])
+                ->schema([
+                    TextInput::make('amount')->label('预算金额')->regex('/\A\d{1,12}(?:\.\d{1,8})?\z/'),
+                    Select::make('currency')->label('币种')->options(['CNY' => '人民币（CNY）', 'USD' => '美元（USD）'])->native(false)->required(),
+                    Textarea::make('reason')->label('调整原因')->required()->maxLength(2000),
+                ])->action(function (array $data): void {
+                    app(NovelBudget::class)->set($this->getRecord()->id, Filament::auth()->user(), $data['amount'] ?? null, $data['currency'], $data['reason']);
+                    Notification::make()->success()->title('预算已更新')->body(app(NovelBudget::class)->describe($this->getRecord()->refresh()))->send();
                 }),
             Action::make('viewContent')->label('查看首章候选')->url(fn (): string => NovelResource::getUrl('content', ['record' => $this->getRecord()]))
                 ->visible(fn (): bool => $this->getRecord()->chapters()->exists()),
@@ -186,10 +200,26 @@ class ViewNovel extends ViewRecord
         ];
         // 自动小说同样保留检索实验室及只读产物入口，推进与恢复仍经独占编排器。
         if (ProductionRun::activeFor($this->getRecord()->id) !== null) {
-            return $this->highlight(array_values(array_filter($actions, fn (Action $action): bool => in_array($action->getName(), ['exportFormal', 'viewRun', 'viewContent', 'refreshStatus'], true))));
+            return $this->highlight(array_values(array_filter($actions, fn (Action $action): bool => in_array($action->getName(), ['exportFormal', 'viewRun', 'viewContent', 'refreshStatus', 'adjustBudget'], true))));
         }
 
         return $this->highlight($actions);
+    }
+
+    /** 启动弹窗中的费用区间与预算余额提示。 */
+    private function forecast(int $minRequests, int $maxRequests, string $prefix = ''): string
+    {
+        $model = $this->getRecord()->generation_config['model'] ?? app(GeneralSettings::class)->default_model;
+
+        return "\n".$prefix.app(CostForecast::class)->range($model, $minRequests, $maxRequests, 8192)['text']."\n".app(NovelBudget::class)->describe($this->getRecord());
+    }
+
+    /** 单章正文最少请求数：细纲（如启用）、正文、推进检查。 */
+    private function chapterRequestFloor(): int
+    {
+        $plan = $this->getRecord()->outlinePlans()->where('status', 'completed')->latest('id')->first();
+
+        return data_get($plan?->config, 'enable_fine_outline', true) ? 3 : 2;
     }
 
     /** 只把“下一步”对应的动作标为主色，其余为灰色，避免作者在多个按钮间猜测。
@@ -244,6 +274,6 @@ class ViewNovel extends ViewRecord
         /** @var Novel $novel */
         $novel = $this->getRecord();
 
-        return '目标'.$novel->target_chapters.'章，共'.(int) ceil($novel->target_chapters / 10).'批；模型'.app(GeneralSettings::class)->default_model.'，在启动时冻结。每批最多8192输出Token，剩余执行额度'.max(0, $novel->max_execution_count - $novel->execution_count).'次；不足则暂停，不自动增加。未配置价格时金额保持未知。';
+        return '目标'.$novel->target_chapters.'章，共'.(int) ceil($novel->target_chapters / 10).'批；模型'.app(GeneralSettings::class)->default_model.'，在启动时冻结。每批最多8192输出Token，剩余执行额度'.max(0, $novel->max_execution_count - $novel->execution_count).'次；不足则暂停，不自动增加。'.$this->forecast((int) ceil($novel->target_chapters / 10), (int) ceil($novel->target_chapters / 10));
     }
 }

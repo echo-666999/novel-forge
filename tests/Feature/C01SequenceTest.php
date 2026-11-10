@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Enums\ProductionFailure;
 use App\Filament\Resources\Novels\Pages\CreateNovel;
 use App\Filament\Resources\Novels\Pages\ViewChapterContent;
 use App\Filament\Resources\Novels\Pages\ViewNovel;
@@ -12,6 +13,7 @@ use App\Models\ChapterGenerationRun;
 use App\Models\ChapterSubmissionRun;
 use App\Models\ContextManifest;
 use App\Models\CostLog;
+use App\Models\ModelPrice;
 use App\Models\Novel;
 use App\Models\ProductionRun;
 use App\Models\User;
@@ -22,6 +24,7 @@ use App\Services\Pipeline\ContentExecutionService;
 use App\Services\Pipeline\ContentGenerationService;
 use App\Services\Pipeline\ForeshadowLedger;
 use App\Services\Pipeline\LegacyContentSources;
+use App\Services\Pipeline\NovelBudget;
 use App\Services\Pipeline\NovelProgressQuery;
 use App\Services\Pipeline\OutlineGenerationService;
 use App\Services\Pipeline\PlanningJson;
@@ -175,6 +178,10 @@ class C01SequenceTest extends TestCase
     protected function tearDown(): void
     {
         $this->assertSame(':memory:', DB::connection()->getDatabaseName());
+        // 预算与单价只在内存库清理，迁移回滚保护保持开启。
+        DB::table('cost_logs')->update(['reserved_cost' => null, 'reserved_currency' => null]);
+        DB::table('novels')->update(['budget_amount' => null, 'budget_currency' => null]);
+        DB::table('model_prices')->delete();
         // 续写运行引用前序运行，先解除引用再清理内存夹具。
         DB::table('production_runs')->update(['predecessor_id' => null]);
         DB::table('production_runs')->delete();
@@ -430,6 +437,27 @@ class C01SequenceTest extends TestCase
         $this->assertSame('已正式提交1/10章，可以继续写', $this->progressHeadline($novel));
         Livewire::test(ViewNovel::class, ['record' => $novel->id])->assertActionVisible('generateNextChapter')->assertActionVisible('extendProduction')
             ->assertSee('原始要求与覆盖')->assertSee('成品验收')->assertDontSee('B04');
+    }
+
+    /** O4：续写运行遇到预算不足时，第11章在发送请求前停下，停止原因可读，补足预算后恢复继续。 */
+    public function test_extension_stops_before_request_when_budget_is_insufficient(): void
+    {
+        $service = app(ProductionRunService::class);
+        $author = User::factory()->create();
+        $first = $this->drain($service->start([...B02SettingTest::input(), 'target_chapters' => 20, 'chapter_length_policy' => ['min_characters' => 20, 'max_characters' => 300]], $author, true, false, chapterLimit: 10));
+        ModelPrice::factory()->create(['model' => 'gpt-6.1-terra', 'currency' => 'CNY']);
+        app(NovelBudget::class)->set($first->novel_id, $author, '0.000001', 'CNY', '隔离验证预算拦截');
+        $logs = CostLog::count();
+        $run = $this->drain($service->extend($first->novel_id, $author, 2, null, '预算不足的续写', false));
+        $this->assertSame(['failed', 'CONTENT_STOPPED:budget_exhausted'], [$run->status, $run->error]);
+        $this->assertSame($logs, CostLog::count());
+        $this->assertStringContainsString('预算不足', ProductionFailure::describe($run->error, $run->step)['label']);
+        // 提高预算后显式恢复，从同一断点继续并完成两章。
+        app(NovelBudget::class)->set($first->novel_id, $author, '1000', 'CNY', '补足预算');
+        $run = $this->drain($service->retry($run->id, $author));
+        $this->assertSame('completed', $run->status, $run->error ?? '');
+        $this->assertSame(12, Novel::findOrFail($first->novel_id)->chapters_done);
+        $this->assertSame(0, CostLog::where('id', '>', $logs)->whereNull('reserved_cost')->count());
     }
 
     /** 旧首章授权不能派生第二章提交密钥。 */

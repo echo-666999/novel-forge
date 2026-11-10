@@ -100,7 +100,7 @@ final class AcceptanceBranch
                 'content_hash' => PlanningJson::hash(['source_hash' => $sourceHash, 'setting' => $setting, 'decisions' => $decisions]),
                 'confirmed_by' => $author->id, 'confirmed_at' => now()]);
             $plan = NovelOutlinePlan::create(['novel_id' => $novel->id, 'setting_confirmation_id' => $confirmed->id, 'target_chapters' => $sourcePlan->target_chapters,
-                'snapshot' => ['confirmation_hash' => $confirmed->content_hash, 'novel' => $novel->only(['id', 'title', 'genre', 'premise_raw', 'target_chapters', 'chapter_length_policy']), 'confirmed_setting' => $confirmed->setting, 'decisions' => $confirmed->decisions, 'branch_source' => $lineage],
+                'snapshot' => ['confirmation_hash' => $confirmed->content_hash, 'novel' => $novel->planningInput(), 'confirmed_setting' => $confirmed->setting, 'decisions' => $confirmed->decisions, 'branch_source' => $lineage],
                 'config' => [...$sourcePlan->config, 'model' => $model, 'enable_fine_outline' => true], 'roadmap' => $outline['roadmap'], 'handoff' => $outline['handoff'],
                 'next_chapter' => $sourcePlan->target_chapters + 1, 'status' => 'completed', 'invocation_id' => (string) Str::uuid7(), 'control_history' => [['action' => 'branch_import', ...$lineage]]]);
             $chapters = $sourcePlan->chapters()->orderBy('chapter_number')->get()->map(fn ($row): array => $row->only(['chapter_number', 'title', 'summary', 'objective', 'conflict', 'hook', 'progression_points']))->all();

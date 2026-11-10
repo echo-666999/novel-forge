@@ -12,7 +12,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /** 小说及其运行计数骨架，正式剧情由后续提交体系维护。 */
-#[Fillable(['title', 'genre', 'premise_raw', 'target_chapters', 'chapter_length_policy', 'status', 'current_stage', 'execution_count', 'max_execution_count', 'progress', 'chapters_done', 'chapters_total', 'state_version', 'generation_mode', 'generation_config', 'pause_requested', 'run_control_history'])]
+#[Fillable(['title', 'genre', 'premise_raw', 'target_chapters', 'chapter_length_policy', 'status', 'current_stage', 'execution_count', 'max_execution_count', 'progress', 'chapters_done', 'chapters_total', 'state_version', 'generation_mode', 'generation_config', 'pause_requested', 'run_control_history', 'creative_brief', 'budget_amount', 'budget_currency', 'budget_history'])]
 class Novel extends Model
 {
     /** 使用隔离测试工厂创建关联数据。
@@ -42,6 +42,10 @@ class Novel extends Model
         return [
             'archived_at' => 'immutable_datetime',
             'archive_history' => 'array',
+            // 补充创作要求与预算；预算金额以十进制字符串读取，不经过浮点数。
+            'creative_brief' => 'array',
+            'budget_amount' => 'decimal:8',
+            'budget_history' => 'array',
             'generation_mode' => GenerationMode::class,
             'generation_config' => 'array',
             // 运行控制独立于冻结生成配置，避免暂停使来源摘要失效。
@@ -60,6 +64,19 @@ class Novel extends Model
             'created_at' => 'immutable_datetime',
             'updated_at' => 'immutable_datetime',
         ];
+    }
+
+    /** 冻结进设定、大纲和正文运行的作者输入；只有填写了补充创作要求时才带上该字段，旧书快照保持不变。
+     * @return array<string, mixed>
+     */
+    public function planningInput(): array
+    {
+        $input = $this->only(['id', 'title', 'genre', 'premise_raw', 'target_chapters', 'chapter_length_policy']);
+        if (filled($this->creative_brief)) {
+            $input['creative_brief'] = $this->creative_brief;
+        }
+
+        return $input;
     }
 
     /** 阶段执行记录，允许同一阶段产生多条记录。

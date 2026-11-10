@@ -299,7 +299,7 @@ final class ChapterSubmissionService
             $result = $purpose === 'review' ? SubmissionContract::review($data, $version->body) : app(SubmissionValidator::class)->normalize($data, $version->body, $run->snapshot['state']);
         } catch (AiGenerationException $exception) {
             $log = $exception->costLogId === null ? null : CostLog::find($exception->costLogId);
-            $error = $exception->status === 'unknown' ? 'UNKNOWN_RESPONSE' : 'PROVIDER_FAILED';
+            $error = in_array($exception->category, ['budget_exhausted', 'budget_price_unknown'], true) ? 'BUDGET_EXHAUSTED' : ($exception->status === 'unknown' ? 'UNKNOWN_RESPONSE' : 'PROVIDER_FAILED');
         } catch (Throwable $exception) {
             $error = $exception instanceof InvalidArgumentException ? $exception->getMessage() : ($log?->status === 'succeeded' ? 'INVALID_RESPONSE' : 'AUDIT_OR_LOCAL_FAILURE');
         }

@@ -49,6 +49,9 @@ class CreateNovel extends CreateRecord
             'target_chapters' => $source->target_chapters,
             'chapter_length_policy' => $source->chapter_length_policy,
             'production_mode' => 'manual',
+            'creative_brief' => $source->creative_brief ?? [],
+            'budget_amount' => $source->budget_amount === null ? null : (string) $source->budget_amount,
+            'budget_currency' => $source->budget_currency ?? 'CNY',
         ]);
     }
 
@@ -58,6 +61,10 @@ class CreateNovel extends CreateRecord
     protected function handleRecordCreation(array $data): Model
     {
         $mode = $data['production_mode'] ?? 'manual';
+        // 未填预算时不提交币种默认值，避免出现只有币种没有金额的预算。
+        if (! filled($data['budget_amount'] ?? null)) {
+            unset($data['budget_amount'], $data['budget_currency']);
+        }
         $model = filled($data['automatic_model'] ?? null) ? $data['automatic_model'] : null;
         unset($data['production_mode'], $data['automatic_model']);
         // 创建小说前返回字段错误，防止十章授权搭配不足十章计划产生半成品。

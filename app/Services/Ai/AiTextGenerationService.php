@@ -7,6 +7,7 @@ use App\Models\CostLog;
 use App\Models\Novel;
 use App\Models\NovelStage;
 use App\Services\Pipeline\ContextBuilder;
+use App\Services\Pipeline\NovelBudget;
 use App\Services\Pipeline\PlanningJson;
 use App\Settings\GeneralSettings;
 use Illuminate\JsonSchema\JsonSchemaTypeFactory;
@@ -92,23 +93,21 @@ final class AiTextGenerationService
                 'schema_hash' => PlanningJson::hash($schema)];
         }
         // 必须在调用前写入数据库；写入失败直接停止，避免产生没有本地记录的费用。
-        $log = CostLog::query()->create([
-            'request_uuid' => (string) Str::uuid7(), 'mode' => $mode, 'requested_provider' => $provider,
-            'requested_model' => $model, 'novel_id' => $novelId, 'novel_stage_id' => $novelStageId,
-            'route_version' => $mode === 'real' ? ($options->submissionPurpose !== null ? 'submission-'.$provider.'-'.$options->submissionPurpose.'-v1' : ($options->chapterStep !== null ? 'b04-'.$provider.'-'.$options->chapterStep.'-'.Str::afterLast($options->chapterVersion(), '-') : ($options->outlineRange !== null ? 'b03-'.$provider.'-outline-v1' : ($options->structuredSetting ? 'b02-'.$provider.'-setting-v1' : 'a03-'.$provider.'-v1')))) : 'a03-fake-v1', 'prompt_version' => $promptVersion,
-            'prompt_hash' => hash('sha256', $prompt), 'request_parameters' => $parameters,
-            'status' => 'pending', 'billing_status' => $mode === 'fake' ? 'simulated' : 'unknown', 'started_at' => now(),
-        ]);
+        // 设了预算的书在同一事务内锁定小说并预留本次上限金额，超出时在发送前拒绝。
+        $inputEstimate = mb_strlen($prompt) + mb_strlen((string) data_get($parameters, 'prompt_audit.system_prompt', ''));
+        $log = DB::transaction(fn (): CostLog => $this->createPendingLog($mode, $provider, $model, $novelId, $novelStageId, $options, $promptVersion, $prompt, $parameters,
+            $mode === 'real' && $novelId !== null ? app(NovelBudget::class)->reserve($novelId, $model, $inputEstimate, $options->maxOutputTokens) : null));
         $started = hrtime(true);
-        // 在外部调用前冻结整个价格集合，运行中配置变化不影响本次计价。
-        $prices = config('ai.costs.prices', []);
+        // 在外部调用前冻结整个单价集合（后台登记与配置合并），运行中登记新单价不影响本次计价。
+        $prices = app(ModelPrices::class)->snapshot();
         try {
             $result = (match ($provider) {
                 'fake' => $this->fake, 'deepseek' => $this->deepSeek, default => $this->real
             })->generate($prompt, $model, $options);
             $log->fill($this->resultAttributes($result));
             $this->validateUsage($result);
-            $price = $result->model !== null && is_array($prices[$result->model] ?? null) ? $prices[$result->model] : null;
+            // 先按实际响应模型匹配，未登记时按请求模型匹配（同名带日期后缀的响应模型）。
+            $price = ModelPrices::resolve($prices, $result->model) ?? ModelPrices::resolve($prices, $model);
             $log->fill($this->estimator->estimate($result, $mode, $price));
             $log->status = 'succeeded';
         } catch (AiGenerationException $exception) {
@@ -130,6 +129,22 @@ final class AiTextGenerationService
         $log->fill(['duration_ms' => (int) ((hrtime(true) - $started) / 1000000), 'finished_at' => now()])->saveOrFail();
 
         return $log->refresh();
+    }
+
+    /** 写入待返回记录，可附带预算预留；路由版本规则与原实现一致。
+     * @param  array<string, mixed>  $parameters
+     * @param  array{amount: string, currency: string}|null  $reservation
+     */
+    private function createPendingLog(string $mode, string $provider, string $model, ?int $novelId, ?int $novelStageId, TextRequestOptions $options, ?string $promptVersion, string $prompt, array $parameters, ?array $reservation): CostLog
+    {
+        return CostLog::query()->create([
+            'request_uuid' => (string) Str::uuid7(), 'mode' => $mode, 'requested_provider' => $provider,
+            'requested_model' => $model, 'novel_id' => $novelId, 'novel_stage_id' => $novelStageId,
+            'route_version' => $mode === 'real' ? ($options->submissionPurpose !== null ? 'submission-'.$provider.'-'.$options->submissionPurpose.'-v1' : ($options->chapterStep !== null ? 'b04-'.$provider.'-'.$options->chapterStep.'-'.Str::afterLast($options->chapterVersion(), '-') : ($options->outlineRange !== null ? 'b03-'.$provider.'-outline-v1' : ($options->structuredSetting ? 'b02-'.$provider.'-setting-v1' : 'a03-'.$provider.'-v1')))) : 'a03-fake-v1', 'prompt_version' => $promptVersion,
+            'prompt_hash' => hash('sha256', $prompt), 'request_parameters' => $parameters,
+            'status' => 'pending', 'billing_status' => $mode === 'fake' ? 'simulated' : 'unknown', 'started_at' => now(),
+            'reserved_cost' => $reservation['amount'] ?? null, 'reserved_currency' => $reservation['currency'] ?? null,
+        ]);
     }
 
     /** 提取统一结果；不覆盖请求前冻结的模型与路由快照。

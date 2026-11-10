@@ -214,7 +214,7 @@ final class ContentExecutionService
             $context['extended_output'] = true;
         }
         // 原始创意保留具体时间、视角和限制；失败反馈只用于修复响应，不成为故事事实。
-        $payload = ['chapter_number' => $run->chapter->number, 'prior_context' => $run->snapshot['prior_context'] ?? null, 'writing_requirements' => ['原始创意中的时间、人物称谓及具体限制不得被规划摘要覆盖。', '以可观察的具体行动、对白、阻力及结果推进，每段须有新信息；不反复宣告调查方向明确或决心坚定。', '不得输出故事将在后续展开、待续等写作说明。每段必须以完整句子的结束标点收束，不允许为满足字数而在句中截断或把半句拆到下一段。'], 'author_idea' => $run->snapshot['novel']['premise_raw'], 'previous_response_failure' => $run->config['recovery_validation_error'] ?? null, 'author_decisions' => $run->snapshot['decisions'], 'confirmed_setting' => $run->snapshot['confirmed_setting'], 'candidate_roadmap' => $run->snapshot['roadmap'],
+        $payload = ['chapter_number' => $run->chapter->number, 'prior_context' => $run->snapshot['prior_context'] ?? null, 'writing_requirements' => ['原始创意中的时间、人物称谓及具体限制不得被规划摘要覆盖。', '以可观察的具体行动、对白、阻力及结果推进，每段须有新信息；不反复宣告调查方向明确或决心坚定。', '不得输出故事将在后续展开、待续等写作说明。每段必须以完整句子的结束标点收束，不允许为满足字数而在句中截断或把半句拆到下一段。'], 'author_idea' => $run->snapshot['novel']['premise_raw'], ...(isset($run->snapshot['novel']['creative_brief']) ? ['creative_brief' => $run->snapshot['novel']['creative_brief']] : []), 'previous_response_failure' => $run->config['recovery_validation_error'] ?? null, 'author_decisions' => $run->snapshot['decisions'], 'confirmed_setting' => $run->snapshot['confirmed_setting'], 'candidate_roadmap' => $run->snapshot['roadmap'],
             'rule_catalog' => $context['rules'], 'chapter_plan' => $run->plan_data ?? $run->snapshot['source_chapter'], 'word_policy' => $run->snapshot['novel']['chapter_length_policy'],
             'progression_points' => $run->snapshot['source_chapter']['progression_points'], 'findings' => $context['findings'], 'count_rule' => ContentSchema::COUNT_VERSION];
         // 字数失败时提供原段和实际计数错误，避免后继请求看不到失败正文而盲目重写。
@@ -415,8 +415,10 @@ final class ContentExecutionService
             }
         } catch (AiGenerationException $exception) {
             $log = $exception->costLogId === null ? null : CostLog::find($exception->costLogId);
-            $failure = $exception->category === 'context_capacity' ? 'context_capacity' : ($exception->status === 'unknown' ? 'unknown' : 'provider_failed');
-            $error = $exception->category === 'context_capacity' ? $exception->getMessage() : null;
+            // 上下文容量与预算拦截都发生在请求前，保留原因，不当作供应商失败。
+            $budget = in_array($exception->category, ['budget_exhausted', 'budget_price_unknown'], true);
+            $failure = $exception->category === 'context_capacity' ? 'context_capacity' : ($budget ? 'budget_exhausted' : ($exception->status === 'unknown' ? 'unknown' : 'provider_failed'));
+            $error = $exception->category === 'context_capacity' || $budget ? $exception->getMessage() : null;
         } catch (Throwable $exception) {
             $failure = $log?->status === 'succeeded' ? 'invalid_schema' : (CostLog::where('novel_stage_id', $stage->id)->exists() ? 'unknown' : 'audit_failed');
             $error = $exception instanceof InvalidArgumentException ? $exception->getMessage() : '本地处理异常，保留证据后显式恢复';

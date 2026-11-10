@@ -56,7 +56,7 @@ final class ContentGenerationService
             $config = $this->configuration($modelOverride ?? $settings->default_model, $settings->temperature, $fine, $maxOutputTokens, $settings->max_retries_per_chapter, $author->id, $reason);
             $base = $fine ? 3 : 2;
             $limit = $this->limit($requestLimit, $base, $config['max_retries']);
-            $snapshot = ['novel' => $novel->only(['id', 'title', 'genre', 'premise_raw', 'target_chapters', 'chapter_length_policy']),
+            $snapshot = ['novel' => $novel->planningInput(),
                 'confirmation_id' => $plan->confirmation->id, 'confirmation_hash' => $plan->confirmation->content_hash,
                 'confirmed_setting' => $plan->confirmation->setting, 'decisions' => $plan->confirmation->decisions,
                 'source_chapter' => $plan->chapters()->where('chapter_number', $chapterNumber)->firstOrFail()->attributesToArray(), 'outline_plan_id' => $plan->id, 'roadmap' => $plan->roadmap];

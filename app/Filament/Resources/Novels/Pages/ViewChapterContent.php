@@ -126,6 +126,7 @@ class ViewChapterContent extends Page implements HasTable
             'progression_insufficient' => '独立检查判定推进或钩子不足，本次恢复已停止',
             'body_quality_insufficient' => '当前有限预算内无法修复正文篇幅或写作说明问题，原文已保留',
             'audit_failed' => '费用审计保存失败，未发送模型请求；处理原因后可明确授权恢复',
+            'budget_exhausted' => '预算不足或未登记单价，已在请求前停止；调整预算或登记单价后可恢复',
             'reading_failed' => '全文核对未通过；意见已保存，继续修订须显式操作且受原预算约束',
             'dispatch_failed' => '队列投递失败，尚未发送模型请求，可显式继续',
             'invalid_contract' => '冻结来源或正文摘要变化，拒绝继续',

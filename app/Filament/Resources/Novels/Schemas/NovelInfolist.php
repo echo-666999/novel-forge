@@ -12,6 +12,8 @@ use App\Models\CostLog;
 use App\Models\Novel;
 use App\Models\NovelStage;
 use App\Services\Ai\NovelCostSummary;
+use App\Services\Pipeline\CreateNovelService;
+use App\Services\Pipeline\NovelBudget;
 use App\Services\Pipeline\NovelProgressQuery;
 use Filament\Infolists\Components\RepeatableEntry;
 use Filament\Infolists\Components\RepeatableEntry\TableColumn;
@@ -55,9 +57,15 @@ class NovelInfolist
                         TextEntry::make('title')->label('书名'),
                         TextEntry::make('genre')->label('题材')->placeholder('未填写'),
                         TextEntry::make('premise_raw')->label('原始创意')->columnSpanFull(),
+                        TextEntry::make('creative_brief_text')->label('补充创作要求')->columnSpanFull()->visible(fn (Novel $record): bool => filled($record->creative_brief))
+                            ->state(fn (Novel $record): array => collect($record->creative_brief ?? [])->map(fn (string $value, string $key): string => (CreateNovelService::BRIEF_FIELDS[$key] ?? $key).'：'.$value)->values()->all())->listWithLineBreaks(),
                     ]),
-                Section::make('累计调用费用')->description('费用仅供查看，不参与停止判断；金额未知不等于免费。')->columnSpanFull()->schema([
-                    TextEntry::make('cost_summary')->label('小说全部调用')->state(fn (Novel $record): string => app(NovelCostSummary::class)->describe(app(NovelCostSummary::class)->forNovel($record->id))),
+                Section::make('预算与费用')->description('设了预算时，每次请求前按单价上限预留，余额不足即在发送前停下；未设预算时只受执行次数上限约束。金额未知不等于免费。')->columnSpanFull()->schema([
+                    TextEntry::make('budget_summary')->label('预算')->state(fn (Novel $record): string => app(NovelBudget::class)->describe($record))
+                        ->color(fn (Novel $record): ?string => match (app(NovelBudget::class)->summary($record)['state']) {
+                            'exhausted' => 'danger', 'warning' => 'warning', default => null
+                        }),
+                    TextEntry::make('cost_summary')->label('全部调用')->state(fn (Novel $record): string => app(NovelCostSummary::class)->describe(app(NovelCostSummary::class)->forNovel($record->id))),
                 ]),
                 Section::make('篇幅计划')->collapsible()->collapsed()->columns(3)->columnSpanFull()->schema([
                     TextEntry::make('target_chapters')->label('目标章数')->suffix('章'),
