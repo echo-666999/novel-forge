@@ -1,11 +1,13 @@
 <?php
 
-/** A03 只启用已批准的 OpenAI 文本路由，其他 SDK 配置沿用包内默认值。 */
+/** 文本供应商固定注册；密钥只从本机环境读取，嵌入检索继续使用原OpenAI路由。 */
 return [
     // C04本地保守运行预算，不声明供应商模型窗口；新运行冻结后不随配置变化。
     'context' => ['capacity' => 262144],
     'default' => 'openai',
     'providers' => [
+        // DeepSeek使用官方SDK驱动，实际地址由适配器白名单校验。
+        'deepseek' => ['driver' => 'deepseek', 'key' => env('DEEPSEEK_API_KEY'), 'url' => env('DEEPSEEK_URL', 'https://api.deepseek.com/v1')],
         'openai' => [
             'driver' => 'openai',
             'key' => env('OPENAI_API_KEY'),

@@ -85,7 +85,7 @@ class ReadChapter extends Page
                 TextEntry::make('source')->label('版本')->state(function (): string {
                     $version = $this->version();
 
-                    return $version === null ? '本章尚无正文' : '第'.$this->chapterNumber.'章 · 版本#'.$version->id.' · '.($this->chapter()->formal_version_id === $version->id ? '正式版本' : '候选 / 历史版本');
+                    return $version === null ? '本章尚无正文' : '第'.$this->chapterNumber.'章 · '.$version->displayVersion().' · '.($this->chapter()->formal_version_id === $version->id ? '正式版本' : '候选 / 历史版本');
                 }),
                 TextEntry::make('read')->label('我的阅读状态')->state(fn (): string => DB::table('reading_records')->where(['actor_id' => Filament::auth()->id(), 'version_id' => $this->version()?->id, 'kind' => 'read'])->exists() ? '此版本已标记读完（不代表验收通过）' : '此版本尚未标记读完'),
             ]),
@@ -118,11 +118,11 @@ class ReadChapter extends Page
         return [
             Action::make('previous')->label('上一章')->visible(fn (): bool => $this->getRecord()->chapters()->where('number', $this->chapterNumber - 1)->exists())->url(fn (): string => $this->readingUrl($this->chapterNumber - 1)),
             Action::make('next')->label('下一章')->visible(fn (): bool => $this->getRecord()->chapters()->where('number', $this->chapterNumber + 1)->exists())->url(fn (): string => $this->readingUrl($this->chapterNumber + 1)),
-            Action::make('versions')->label('选择版本')->schema([Select::make('version')->label('版本')->options(fn (): array => ChapterVersion::where('chapter_id', $this->chapter()?->id)->orderByDesc('id')->pluck('id', 'id')->map(fn ($id): string => '版本#'.$id)->all())->required()])->action(function (array $data): void {
+            Action::make('versions')->label('选择版本')->schema([Select::make('version')->label('版本')->options(fn (): array => ChapterVersion::where('chapter_id', $this->chapter()?->id)->orderByDesc('version')->get()->mapWithKeys(fn (ChapterVersion $version): array => [$version->id => $version->displayVersion()])->all())->required()])->action(function (array $data): void {
                 $this->redirect(NovelResource::getUrl('reader', ['record' => $this->getRecord(), 'chapter' => $this->chapterNumber, 'version' => $data['version']]));
             }),
             Action::make('compare')->label('对照历史版本')->visible(fn (): bool => $this->version() !== null)->schema([
-                Select::make('version')->label('旧版 / 对照版本')->options(fn (): array => ChapterVersion::where('chapter_id', $this->chapter()?->id)->orderBy('id')->pluck('id', 'id')->map(fn ($id): string => '版本#'.$id)->all())->required(),
+                Select::make('version')->label('旧版 / 对照版本')->options(fn (): array => ChapterVersion::where('chapter_id', $this->chapter()?->id)->orderByDesc('version')->get()->mapWithKeys(fn (ChapterVersion $version): array => [$version->id => $version->displayVersion()])->all())->required(),
             ])->action(function (array $data): void {
                 $this->compareVersionId = ChapterVersion::where('chapter_id', $this->chapter()?->id)->findOrFail((int) $data['version'])->id;
             }),

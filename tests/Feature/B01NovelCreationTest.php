@@ -68,7 +68,12 @@ class B01NovelCreationTest extends TestCase
     /** 表单保存完整原文后只入队，返回可轮询列表，不在 HTTP 内运行阶段。 */
     public function test_form_creates_one_pending_novel_and_queues_start_after_commit(): void
     {
-        $page = Livewire::test(CreateNovel::class)->assertSuccessful()->fillForm($this->input())->call('create')
+        $page = Livewire::test(CreateNovel::class)->assertSuccessful()->assertSee('创建并启动');
+        // 首屏按钮必须提交原表单，不能绕过校验或另建一条创建流程。
+        $action = $page->instance()->getCachedHeaderActions()[0];
+        $this->assertSame('form', $action->getFormId());
+        $this->assertSame('create', $action->getFormToSubmit());
+        $page->fillForm($this->input())->call('create')
             ->assertHasNoFormErrors()->assertRedirect(NovelResource::getUrl('index'))
             ->assertNotified('小说已创建，已提交启动请求');
         $novel = Novel::query()->sole();

@@ -8,6 +8,8 @@ use App\Enums\NovelStatus;
 use App\Enums\Stage;
 use App\Enums\StageStatus;
 use App\Models\ChapterGenerationRun;
+use App\Models\ChapterReview;
+use App\Models\ChapterSubmissionRun;
 use App\Models\ChapterVersion;
 use App\Models\CostLog;
 use App\Models\FirstChapterRun;
@@ -57,6 +59,14 @@ final class ContentGenerationService
                 'confirmation_id' => $plan->confirmation->id, 'confirmation_hash' => $plan->confirmation->content_hash,
                 'confirmed_setting' => $plan->confirmation->setting, 'decisions' => $plan->confirmation->decisions,
                 'source_chapter' => $plan->chapters()->where('chapter_number', $chapterNumber)->firstOrFail()->attributesToArray(), 'outline_plan_id' => $plan->id, 'roadmap' => $plan->roadmap];
+            // 验收分支的首章实验模板仅用于首章，后续章冻结这一适用范围。
+            if (isset($novel->generation_config['acceptance_branch'])) {
+                $snapshot['acceptance_branch'] = $novel->generation_config['acceptance_branch'];
+                // 新分支后续章首次正文预留推理容量；旧运行配置保持冻结。
+                if ($chapterNumber > 1 && str_starts_with($config['model'], 'deepseek')) {
+                    $config['draft_max_output_tokens'] = 16384;
+                }
+            }
             if ($chapterNumber > 1) {
                 $snapshot['prior_context'] = app(CanonicalChapterContext::class)->build($novel, $chapterNumber);
             }
@@ -101,14 +111,25 @@ final class ContentGenerationService
     /** 旧产物只能通过此入口转为新协议；工作台问题冻结在新运行，旧授权绝不自动续用。
      * @param  list<string>|null  $issues  作者明确指定的问题，空值沿用原恢复入口。
      */
-    public function recover(int $parentId, User $author, string $reason, ?int $requestLimit = null, ?int $executionLimit = null, bool $confirmUnknown = false, bool $rewrite = false, ?string $model = null, ?array $issues = null, ?int $expectedVersionId = null): ChapterGenerationRun
+    public function recover(int $parentId, User $author, string $reason, ?int $requestLimit = null, ?int $executionLimit = null, bool $confirmUnknown = false, bool $rewrite = false, ?string $model = null, ?array $issues = null, ?int $expectedVersionId = null, ?int $submissionReviewId = null): ChapterGenerationRun
     {
         $this->outsideTransaction();
         ContentSchema::text($reason);
         $reference = ChapterGenerationRun::findOrFail($parentId);
-        [$run, $created] = DB::transaction(function () use ($reference, $author, $reason, $requestLimit, $executionLimit, $confirmUnknown, $rewrite, $model, $issues, $expectedVersionId): array {
+        [$run, $created] = DB::transaction(function () use ($reference, $author, $reason, $requestLimit, $executionLimit, $confirmUnknown, $rewrite, $model, $issues, $expectedVersionId, $submissionReviewId): array {
             $novel = Novel::lockForUpdate()->findOrFail($reference->chapter->novel_id);
             $parent = ChapterGenerationRun::lockForUpdate()->findOrFail($reference->id);
+            $review = $submissionReviewId === null ? null : ChapterReview::findOrFail($submissionReviewId);
+            if ($review !== null) {
+                $submission = ChapterSubmissionRun::findOrFail($review->submission_run_id);
+                if ($submission->status !== 'failed' || $submission->stop_reason !== 'REVIEW_NOT_PASSED'
+                    || $submission->chapter_id !== $parent->chapter_id || $submission->config['operator_id'] !== $author->id
+                    || $parent->chapter->formal_version_id !== null || $review->version_id !== $parent->chapter->current_candidate_version_id
+                    || $review->body_hash !== ChapterVersion::findOrFail($review->version_id)->body_hash
+                    || $review->result_hash !== PlanningJson::hash($review->result) || $review->verdict !== 'needs_revision') {
+                    throw new InvalidArgumentException('提交评审修订来源已变化');
+                }
+            }
             // 工作台只能提交绑定版本的问题清单；旧恢复入口不能绕过工作台轮次门禁。
             if ($issues === null && isset($parent->config['workbench'])) {
                 throw new InvalidArgumentException('工作台修订必须从指定问题入口继续，达到上限转人工');
@@ -122,7 +143,7 @@ final class ContentGenerationService
 
                 return [$existing, false];
             }
-            if (! in_array($parent->status, ['paused', 'error', 'completed'], true) || ($parent->stop_reason === 'b04_accepted' && $issues === null) || $novel->status !== NovelStatus::Paused) {
+            if (! in_array($parent->status, ['paused', 'error', 'completed'], true) || ($parent->stop_reason === 'b04_accepted' && $issues === null && $review === null) || $novel->status !== NovelStatus::Paused) {
                 throw new InvalidArgumentException('当前运行不能恢复或验收已经完成');
             }
             $workbench = $issues === null ? null : app(RevisionWorkbench::class)->freeze($parent, $author, $expectedVersionId ?? 0, $issues);
@@ -138,16 +159,40 @@ final class ContentGenerationService
                 $plan ??= $parent->snapshot['source_chapter'];
             }
             $step = $fine && $plan === null ? 'fine' : ($source !== null && ! $rewrite ? 'revise' : 'draft');
+            // 仅纠正自动段尾误报：保留旧失败，另建检查运行；真实残句或人工拒绝仍须修订。
+            $controls = $parent->control_history;
+            $lastControl = end($controls);
+            $endingRecheck = ! $rewrite && $source !== null && $parent->stop_reason === 'reading_failed'
+                && ($lastControl['acceptance_mode'] ?? null) === 'delegated_policy'
+                && count($lastControl['notes'] ?? []) === 1
+                && str_starts_with($lastControl['notes'][0], '自动段落完整性检查未通过：')
+                && ContentExecutionContract::incompleteParagraphs($source->body) === [];
+            if ($endingRecheck) {
+                $step = 'check';
+            }
             if ($step === 'revise' && count(ContentSchema::anchors($source->body)) < 2) {
                 throw new InvalidArgumentException('源正文不足两段，无法保留范围外原文，请明确选择整章重写');
             }
             $settings = app(GeneralSettings::class);
             $config = $this->configuration($model ?? $parent->config['model'], $parent->config['temperature'], $fine, 8192, $settings->max_retries_per_chapter, $author->id, $reason);
+            if (isset($parent->snapshot['acceptance_branch']) && str_starts_with($config['model'], 'deepseek')) {
+                // 多轮修订复查需重新比对当前原文，避免无推理响应直接复述旧缺陷。
+                $config['check_max_output_tokens'] = 16384;
+                // 细纲恢复后仍可能首次生成正文，保持新分支的正文推理预算。
+                if ($parent->chapter->number > 1) {
+                    $config['draft_max_output_tokens'] = 16384;
+                }
+            }
             if ($step === 'revise' && $config['max_retries'] === 0) {
                 throw new InvalidArgumentException('设置禁止修订，不能新建修订运行');
             }
             $base = $step === 'fine' ? 3 : 2;
             $limit = $step === 'revise' ? ($requestLimit ?? 2) : $this->limit($requestLimit, $base, $config['max_retries']);
+            if ($endingRecheck) {
+                $config['max_retries'] = 0;
+                $limit = 1;
+                $config['automated_ending_recheck'] = ['version_id' => $source->id, 'body_hash' => $source->body_hash];
+            }
             if ($step === 'revise' && $limit !== 2) {
                 throw new InvalidArgumentException('恢复范围修订只允许修订和检查各一次');
             }
@@ -157,10 +202,55 @@ final class ContentGenerationService
                 'source_lineage' => $source === null ? [] : $this->recoveryLineage($parent, $source), 'plan_hash' => PlanningJson::hash($plan), 'fine_stage_id' => $parent->fine_stage_id];
             $config['request_cap'] = $limit;
             $config['initial_step'] = $step;
+            // 新分支的DeepSeek定点修订需要推理空间，范围与完整性门禁不因此放宽。
+            if ($step === 'revise' && isset($parent->snapshot['acceptance_branch']) && str_starts_with($config['model'], 'deepseek')) {
+                $config['revision_max_output_tokens'] = 16384;
+            }
             // 冻结前轮响应契约错误，后继请求才能针对真实失败修复，旧响应不改写。
             $failedStage = $novel->stages()->where('input->run_id', $parent->id)->where('status', 'failed')->latest('id')->first();
             $config['recovery_validation_error'] = data_get($failedStage?->output, 'data.validation_error');
+            // DeepSeek推理与文本共用输出容量；仅新分支单段修复的已知耗尽允许增加推理余量。
+            $failedResponse = CostLog::where('novel_stage_id', $failedStage?->id)->whereKey(data_get($failedStage?->output, 'data.cost_log_id'))->first();
+            if (isset($parent->snapshot['acceptance_branch']) && str_starts_with($config['model'], 'deepseek')
+                && (isset($parent->config['repair_max_output_tokens']) || ($failedResponse?->error_category === 'invalid_response' && $failedResponse->output_tokens === 8192))) {
+                $config['repair_max_output_tokens'] = 16384;
+            }
+            // 只携带同一失败阶段的完整正文响应；后继运行冻结副本，旧费用及原始输出不修改。
+            if ($step === 'draft' && data_get($failedStage?->output, 'data.step') === 'draft') {
+                $failedLog = CostLog::where('novel_stage_id', $failedStage->id)
+                    ->whereKey(data_get($failedStage->output, 'data.cost_log_id'))->where('status', 'succeeded')->first();
+                $repaired = data_get($failedStage?->output, 'data.repaired_draft');
+                if (is_array($repaired) && $repaired['hash'] === PlanningJson::hash($repaired['response']) && $repaired['source_input_hash'] === $parent->input_hash) {
+                    // 继承已通过单段校验的合并结果及来源，失败槽位下一轮继续处理，不篡改旧响应。
+                    $config['recovery_draft'] = ['cost_log_id' => $failedLog?->id, 'response' => $repaired['response'], 'merged_stage_id' => $failedStage->id, 'merged_hash' => $repaired['hash']];
+                } elseif (isset($parent->config['recovery_draft'], $parent->snapshot['acceptance_branch'])) {
+                    $config['recovery_draft'] = $parent->config['recovery_draft'];
+                    // 未达字数的完整单段只作为下次修复输入，绝不合入正式正文；截断时保留上次完整尝试。
+                    $parts = $failedLog?->structured_output['paragraphs'] ?? null;
+                    $config['recovery_repair'] = $parent->config['recovery_repair'] ?? null;
+                    if (is_array($parts) && count($parts) === 1) {
+                        $slot = array_key_first($parts);
+                        $previous = $config['recovery_repair']['paragraphs'][$slot] ?? $config['recovery_draft']['response']['paragraphs'][$slot] ?? null;
+                        if (is_string($parts[$slot]) && is_string($previous)) {
+                            $budget = ContentExecutionContract::budget($parent->snapshot['novel']['chapter_length_policy'], $plan, $fine);
+                            $distance = fn (string $text): int => max($budget['min'] - ContentSchema::count($text), ContentSchema::count($text) - $budget['max'], 0);
+                            // 失败仍保留费用原文，但不能用离预算更远的新尝试替换更好的修复输入。
+                            if ($distance($parts[$slot]) < $distance($previous)) {
+                                $config['recovery_repair'] = ['cost_log_id' => $failedLog->id, 'paragraphs' => $parts];
+                            }
+                        }
+                    }
+                } elseif (is_array($failedLog?->structured_output['paragraphs'] ?? null)) {
+                    $config['recovery_draft'] = ['cost_log_id' => $failedLog->id, 'response' => $failedLog->structured_output];
+                }
+            }
             $config['recovery_findings'] = app(ContentExecutionService::class)->findings($parent, $source);
+            if ($review !== null) {
+                $config['submission_review'] = ['id' => $review->id, 'result_hash' => $review->result_hash, 'version_id' => $review->version_id, 'body_hash' => $review->body_hash];
+                foreach ($review->result['findings'] as $index => $finding) {
+                    $config['recovery_findings']['submission-review-'.$review->id.'-'.$index] = ['type' => 'submission_review', 'reason' => $finding['reason'], 'evidence_ids' => $finding['evidence_ids'], 'source_body_hash' => $review->body_hash];
+                }
+            }
             if ($workbench !== null) {
                 $config['workbench'] = $workbench;
                 foreach ($issues as $index => $issue) {

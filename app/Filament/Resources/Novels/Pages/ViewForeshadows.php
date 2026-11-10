@@ -73,7 +73,7 @@ class ViewForeshadows extends Page implements HasTable
                 ...$record->evidence->map(fn (ForeshadowEvidence $entry): Section => Section::make('第'.$entry->chapter_number.'章 · '.Foreshadow::statusLabel($entry->to_status))->schema([
                     TextEntry::make('quote'.$entry->id)->label('正式原文（第'.$entry->evidence['paragraph'].'段）')->state($entry->evidence['quote']),
                     TextEntry::make('reason'.$entry->id)->label('登记理由')->state($entry->reason),
-                    TextEntry::make('source'.$entry->id)->label('正式来源')->state('正文版本 '.$entry->version_id.' / 提交 '.$entry->commit_id)->url(NovelResource::getUrl('state', ['record' => $record->novel_id, 'chapter' => $entry->chapter_number])),
+                    TextEntry::make('source'.$entry->id)->label('正式来源')->state('正文记录 #'.$entry->version_id.' / 提交 '.$entry->commit_id)->url(NovelResource::getUrl('state', ['record' => $record->novel_id, 'chapter' => $entry->chapter_number])),
                 ]))->all(),
             ]),
             Action::make('recordEvidence')->label('登记进展')->visible(fn (Foreshadow $record): bool => $record->status !== 'resolved')->schema(fn (Foreshadow $record): array => [

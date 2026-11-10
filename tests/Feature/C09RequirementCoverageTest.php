@@ -2,14 +2,17 @@
 
 namespace Tests\Feature;
 
+use App\Filament\Resources\Novels\Pages\Requirements;
 use App\Models\Novel;
 use App\Models\NovelOutlineChapter;
 use App\Models\RequirementVersion;
 use App\Models\User;
 use App\Services\Pipeline\RequirementCoverage;
+use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use Livewire\Livewire;
 use Tests\TestCase;
 
 /** 要求版本、作者决定及计划证据必须保持隔离且可复核。 */
@@ -79,6 +82,25 @@ class C09RequirementCoverageTest extends TestCase
         $novel = Novel::factory()->create();
         $this->expectException(ValidationException::class);
         app(RequirementCoverage::class)->save($novel->id, User::factory()->create(), $this->input($novel, ['source_quote' => '不在创意里的内容']));
+    }
+
+    /** 全部历史按要求归集，筛选到当前版仍保留真实版本号。 */
+    public function test_history_keeps_requirement_identity_and_revision_order(): void
+    {
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        $actor = User::factory()->create();
+        $this->actingAs($actor);
+        $novel = Novel::factory()->create();
+        $service = app(RequirementCoverage::class);
+        $first = $service->save($novel->id, $actor, $this->input($novel));
+        $other = $service->save($novel->id, $actor, $this->input($novel, ['description' => '另一项要求']));
+        $next = $service->save($novel->id, $actor, $this->input($novel, ['description' => '修订要求']), $first->id);
+        $expected = $first->requirement_key < $other->requirement_key ? [$next, $first, $other] : [$other, $next, $first];
+        $page = Livewire::test(Requirements::class, ['record' => $novel->id])
+            ->assertSee('要求标识')->assertSee('记录编号')->assertSee('V2')
+            ->assertCanNotSeeTableRecords([$first])
+            ->filterTable('versions', 'all')->assertCanSeeTableRecords($expected, inOrder: true);
+        $page->filterTable('versions', 'latest')->assertCanSeeTableRecords([$next, $other])->assertCanNotSeeTableRecords([$first])->assertSee('V2');
     }
 
     /** 构造明确作者确认的测试输入。 */

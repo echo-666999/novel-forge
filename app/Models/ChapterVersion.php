@@ -35,6 +35,12 @@ class ChapterVersion extends Model
         return ['version' => 'integer', 'character_count' => 'integer', 'created_at' => 'immutable_datetime'];
     }
 
+    /** 展示章内真实版本号，保留全局记录编号供审计定位。 */
+    public function displayVersion(): string
+    {
+        return 'V'.$this->version.'（记录 #'.$this->id.'）';
+    }
+
     /** 所属稳定章节节点。
      * @return BelongsTo<Chapter, $this>
      */

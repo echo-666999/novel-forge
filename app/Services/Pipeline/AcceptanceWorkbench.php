@@ -27,6 +27,20 @@ final class AcceptanceWorkbench
     /** 必须人工核验的证据，导入记录明确属于操作者声明。 */
     public const CASES = ['pre_generation_contract' => '生成前契约及冻结时间', 'requirements' => '原始要求覆盖及硬约束', 'foreshadows' => '伏笔埋设和来源', 'boundaries' => '知情边界、因果与重复拼接'];
 
+    /** PRD AC03 评分锚点，评分界面逐项展示，不改变通过阈值。 */
+    public const SCORE_ANCHORS = [1 => '无法作为连续正文阅读', 2 => '大量明显问题', 3 => '可读但需要局部修订', 4 => '连续流畅且主要选择有说服力', 5 => '表达鲜明、节奏和人物反应突出'];
+
+    /** 外部证据的取证说明，只提示作者如何核验，不代表系统已执行。 */
+    public const CASE_GUIDANCE = [
+        'pre_generation_contract' => '打开生成前冻结的契约文件或运行快照，核对创意、字数政策、终局与评分政策的冻结时间早于第1章正文生成。',
+        'requirements' => '在“原始要求与覆盖”页逐条核对硬约束均有承接计划或正文证据，没有被静默豁免。',
+        'foreshadows' => '在“伏笔账本”核对至少3条主伏笔在前5章有正式原文埋设证据，且来源指向本批次冻结版本。',
+        'boundaries' => '通读时留意人物是否知道了不该知道的信息、因果是否断裂、段落是否重复拼接；记录检查范围与结论。',
+        'long_foreshadow' => '核对百章规划中的长程伏笔在生成前已冻结，并有第100章回收的正式原文证据。',
+        'recovery_drill' => '在隔离环境完成一次恢复，抽查章节正文与事件和恢复前一致，附恢复记录。',
+        'security_controls' => '附上鉴权隔离、密钥不落日志等专项测试的执行结果。',
+    ];
+
     /** 专项类别增加对应证据，不能用通用正文检查冒充安全或恢复通过。 */
     public static function casesFor(string $kind): array
     {
@@ -197,6 +211,43 @@ final class AcceptanceWorkbench
         }
 
         return $gaps;
+    }
+
+    /** 只读汇总批次进度：每章及每项外部证据取最新记录，供评分页与进度矩阵展示，不写入任何证据。
+     * @return array{machine: ?bool, chapters: list<array{number: int, title: string, version_id: int, scores: ?array<string, int>, sum: ?int, pass: ?bool, blocking: ?bool, rated_at: ?string}>, cases: list<array{key: string, label: string, guidance: string, pass: ?bool}>, rated: int, passed: int, total: int}
+     */
+    public function progress(AcceptanceBatch $batch): array
+    {
+        $latest = AcceptanceEvidence::where('batch_id', $batch->id)->orderBy('id')->get()->keyBy(fn ($row): string => $row->kind.':'.$row->case_key);
+        $chapters = [];
+        foreach ($batch->snapshot['manifest'] as $entry) {
+            $evidence = $latest->get('human:chapter_'.$entry['number']);
+            $scores = $evidence?->payload['scores'] ?? null;
+            $chapters[] = ['number' => (int) $entry['number'], 'title' => (string) ($entry['title'] ?? ''), 'version_id' => (int) $entry['version_id'],
+                'scores' => $scores, 'sum' => $scores === null ? null : array_sum($scores), 'pass' => $evidence?->payload['pass'] ?? null,
+                'blocking' => $evidence?->payload['blocking'] ?? null, 'rated_at' => $evidence?->created_at?->format('Y-m-d H:i')];
+        }
+        $cases = [];
+        foreach ($batch->snapshot['manual_cases'] as $key => $label) {
+            $cases[] = ['key' => $key, 'label' => $label, 'guidance' => self::CASE_GUIDANCE[$key] ?? '按用例名称核验并附上证据。', 'pass' => $latest->get('external:'.$key)?->payload['pass'] ?? null];
+        }
+
+        return ['machine' => $latest->get('machine:system')?->payload['pass'] ?? null, 'chapters' => $chapters, 'cases' => $cases,
+            'rated' => count(array_filter($chapters, fn (array $chapter): bool => $chapter['pass'] !== null)),
+            'passed' => count(array_filter($chapters, fn (array $chapter): bool => $chapter['pass'] === true)), 'total' => count($chapters)];
+    }
+
+    /** 从指定章之后寻找下一章未评分或未通过的章节；都已通过时返回空。 */
+    public function nextChapterToRate(AcceptanceBatch $batch, int $after): ?int
+    {
+        $pending = array_values(array_filter($this->progress($batch)['chapters'], fn (array $chapter): bool => $chapter['pass'] !== true));
+        foreach ($pending as $chapter) {
+            if ($chapter['number'] > $after) {
+                return $chapter['number'];
+            }
+        }
+
+        return $pending[0]['number'] ?? null;
     }
 
     /** 冻结正文、原始输入、审计记录及成本摘要组成私有证据包，不包含凭据或原始API载荷。 */

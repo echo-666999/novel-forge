@@ -126,7 +126,7 @@ class ViewNovel extends ViewRecord
                 ->modalDescription(fn (): string => $this->startDescription())
                 ->schema([
                     Select::make('confirmation_id')->label('确认设定版本')->required()->native()
-                        ->options(fn (): array => $this->getRecord()->settingConfirmations()->orderByDesc('id')->get()->mapWithKeys(fn ($confirmation): array => [$confirmation->id => '版本 '.$confirmation->id.' · '.mb_substr($confirmation->content_hash, 0, 12)])->all())
+                        ->options(fn (): array => $this->getRecord()->settingConfirmations()->orderByDesc('id')->get()->mapWithKeys(fn ($confirmation): array => [$confirmation->id => '确认记录 #'.$confirmation->id.' · '.mb_substr($confirmation->content_hash, 0, 12)])->all())
                         ->default(fn (): ?int => $this->getRecord()->settingConfirmations()->max('id')),
                     Checkbox::make('accept_request')->label('我确认按上述批次数和剩余额度调用真实模型，产生费用；失败即停。')->accepted(),
                 ])

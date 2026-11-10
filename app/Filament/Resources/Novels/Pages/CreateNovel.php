@@ -95,4 +95,17 @@ class CreateNovel extends CreateRecord
     {
         return parent::getCreateFormAction()->label('创建并启动');
     }
+
+    /** 首屏提供明确提交入口，关联原表单，保留必填校验、提交锁及唯一创建流程。
+     * @return array<Action>
+     */
+    protected function getHeaderActions(): array
+    {
+        return [
+            Action::make('submitNovel')
+                ->label('创建并启动')
+                ->submit('create')
+                ->formId('form'),
+        ];
+    }
 }

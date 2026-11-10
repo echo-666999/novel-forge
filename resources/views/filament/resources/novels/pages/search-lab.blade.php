@@ -31,7 +31,7 @@
             <p>本书 #{{ $result['novel_id'] }} · 截至第 {{ $result['through_chapter'] }} 章 · {{ count($result['results']) }} 个来源版本</p>
         </x-filament::section>
         @forelse ($result['results'] as $hit)
-            <x-filament::section :heading="'第'.$hit['chapter'].'章 · 正式版本 #'.$hit['version_id']">
+            <x-filament::section :heading="'第'.$hit['chapter'].'章 · 正式正文记录 #'.$hit['version_id']">
                 <p>命中通路：{{ implode('、', array_map(fn ($name) => ['exact'=>'实体精确','fulltext'=>'中文全文','fuzzy'=>'模糊','vector'=>'向量'][$name], array_keys($hit['channels']))) }} · 融合分数 {{ number_format($hit['score'], 5) }}</p>
                 <p class="whitespace-pre-wrap">{{ $hit['quote'] }}</p>
                 <p class="break-all">来源摘要 {{ $hit['body_hash'] }} · 原文码点起始 {{ $hit['start_offset'] }}</p>

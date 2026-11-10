@@ -81,7 +81,7 @@ class C09NavigationTest extends TestCase
     /** 公开注册保持关闭，配置页面须登录，读取页面不触发模型。 */
     public function test_global_pages_are_private_and_registration_is_closed(): void
     {
-        $paths = ['/admin/production-overview', '/admin/generation-runs', '/admin/system-health', '/admin/manage-general-settings', '/admin/manage-prompt-templates', '/admin/novels/create'];
+        $paths = ['/admin', '/admin/generation-runs', '/admin/system-health', '/admin/manage-general-settings', '/admin/manage-prompt-templates', '/admin/novels/create'];
         foreach ($paths as $path) {
             $this->get($path)->assertRedirect('/admin/login');
         }

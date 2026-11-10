@@ -74,7 +74,7 @@ class ExportCenter extends Page implements HasTable
                 ->query(fn (Builder $query, array $data): Builder => $query->when($data['from'] ?? null, fn (Builder $q, $date): Builder => $q->whereDate('created_at', '>=', $date))->when($data['to'] ?? null, fn (Builder $q, $date): Builder => $q->whereDate('created_at', '<=', $date))),
         ])->recordActions([
             Action::make('inspect')->label('来源与执行记录')->modalSubmitAction(false)->modalCancelActionLabel('关闭')->schema(fn (NovelExport $record): array => [
-                TextEntry::make('source')->label('冻结来源清单')->state(collect($record->snapshot['manifest'])->map(fn ($entry): string => '第'.$entry['number'].'章 · 正式版本#'.$entry['version_id'].' · '.$entry['title'])->all())->bulleted(),
+                TextEntry::make('source')->label('冻结来源清单')->state(collect($record->snapshot['manifest'])->map(fn ($entry): string => '第'.$entry['number'].'章 · 正式正文记录 #'.$entry['version_id'].' · '.$entry['title'])->all())->bulleted(),
                 TextEntry::make('hash')->label('文件SHA-256')->state($record->snapshot['content_hash']), TextEntry::make('error')->label('失败原因')->state($record->error)->placeholder('无'),
                 TextEntry::make('history')->label('追加审计')->state(collect($record->history)->map(fn ($entry): string => ($entry['at'] ?? '').' · '.$entry['action'].' · 账号'.($entry['actor_id'] ?? '系统'))->all())->bulleted(),
             ]),

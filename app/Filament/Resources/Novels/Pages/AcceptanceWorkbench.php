@@ -13,12 +13,14 @@ use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Infolists\Components\RepeatableEntry;
+use Filament\Infolists\Components\RepeatableEntry\TableColumn;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\Concerns\InteractsWithRecord;
 use Filament\Resources\Pages\Page;
 use Filament\Schemas\Components\EmbeddedTable;
 use Filament\Schemas\Components\Section;
+use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Schema;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Concerns\InteractsWithTable;
@@ -54,7 +56,53 @@ class AcceptanceWorkbench extends Page implements HasTable
     {
         return $schema->components([Section::make('来源冻结与人工结论')->schema([
             TextEntry::make('scope')->label('验收规则')->state('批次冻结当前连续正式版本，不是生成前契约。机器只核验可计算项目；完整验收还需要基础外部证据、类别专项证据及逐章七项人工评分。每项至少3分、均分至少3.8，低分须填写修复期待，通过项也要原文依据。仅负责人能写入，历史不可删除。'),
-        ]), EmbeddedTable::make()]);
+        ]), ...$this->progressSections(), EmbeddedTable::make()]);
+    }
+
+    /** 当前未关闭的最新批次：章节评分矩阵与外部证据待办，只读展示，写入仍走各自动作。
+     * @return list<Section>
+     */
+    private function progressSections(): array
+    {
+        $batch = $this->openBatch();
+        if ($batch === null) {
+            return [];
+        }
+        $progress = app(Workbench::class)->progress($batch);
+        $status = fn (?bool $pass): string => $pass === null ? '○ 待处理' : ($pass ? '✓ 通过' : '✗ 未通过');
+        $rows = array_map(fn (array $chapter): array => [
+            'chapter' => '第'.$chapter['number'].'章 · '.$chapter['title'],
+            ...collect(Workbench::DIMENSIONS)->mapWithKeys(fn (string $label, string $key): array => [$key => $chapter['scores'][$key] ?? '-'])->all(),
+            'sum' => $chapter['sum'] ?? '-', 'result' => $chapter['pass'] === null ? '○ 未评分' : ($chapter['pass'] ? '✓ 达标' : '✗ 未达标'),
+            'url' => NovelResource::getUrl('acceptanceReading', ['record' => $this->getRecord(), 'batch' => $batch->id, 'chapter' => $chapter['number']]),
+        ], $progress['chapters']);
+
+        return [
+            Section::make('批次 #'.$batch->id.' 逐章评分进度')
+                ->description('已评分 '.$progress['rated'].'/'.$progress['total'].' 章，达标 '.$progress['passed'].' 章；机器核验：'.$status($progress['machine']).'。点击章节进入左文右表的阅读评分。')
+                ->headerActions([Action::make('startReading')->label($progress['rated'] === 0 ? '开始逐章阅读评分' : '继续逐章阅读评分')
+                    ->url(NovelResource::getUrl('acceptanceReading', ['record' => $this->getRecord(), 'batch' => $batch->id]))])
+                ->schema([RepeatableEntry::make('matrix')->hiddenLabel()->state($rows)->table([
+                    TableColumn::make('章节'), ...array_map(fn (string $label): TableColumn => TableColumn::make($label), array_values(Workbench::DIMENSIONS)),
+                    TableColumn::make('合计'), TableColumn::make('结论'), TableColumn::make('操作'),
+                ])->schema([
+                    TextEntry::make('chapter'),
+                    ...array_map(fn (string $key): TextEntry => TextEntry::make($key), array_keys(Workbench::DIMENSIONS)),
+                    TextEntry::make('sum'), TextEntry::make('result'),
+                    TextEntry::make('url')->url(fn (?string $state): ?string => $state)->formatStateUsing(fn (): string => '阅读评分'),
+                ])]),
+            Section::make('外部证据待办')->description('以下项目需要你在系统外核验后，通过表格中的“导入外部证据”记录；系统不会代为判定。')
+                ->schema([RepeatableEntry::make('cases')->hiddenLabel()->state(array_map(fn (array $case): array => [...$case, 'status' => $status($case['pass'])], $progress['cases']))->schema([
+                    TextEntry::make('label')->label('用例'), TextEntry::make('status')->label('状态'),
+                    TextEntry::make('guidance')->label('如何取证')->columnSpanFull(),
+                ])->columns(2)]),
+        ];
+    }
+
+    /** 当前小说最新一个未关闭批次。 */
+    private function openBatch(): ?AcceptanceBatch
+    {
+        return AcceptanceBatch::where('novel_id', $this->getRecord()->id)->where('status', '!=', 'accepted')->latest('id')->first();
     }
 
     /** 表格按书隔离，关闭后保留只读详情和证据下载。 */
@@ -65,6 +113,11 @@ class AcceptanceWorkbench extends Page implements HasTable
         return $table->query(AcceptanceBatch::where('novel_id', $this->getRecord()->id))->defaultSort('id', 'desc')->columns([
             TextColumn::make('id')->label('验收编号'), TextColumn::make('kind')->label('类别')->formatStateUsing(fn ($state) => self::kinds()[$state]),
             TextColumn::make('end_chapter')->label('首章至章号'), TextColumn::make('status')->label('结论状态')->formatStateUsing(fn ($state) => self::statuses()[$state]),
+            TextColumn::make('rating_progress')->label('人工评分')->state(function (AcceptanceBatch $record): string {
+                $progress = app(Workbench::class)->progress($record);
+
+                return '已评 '.$progress['rated'].'/'.$progress['total'].' · 达标 '.$progress['passed'];
+            }),
             TextColumn::make('actor_id')->label('负责人'), TextColumn::make('created_at')->label('冻结时间')->dateTime(),
         ])->filters([SelectFilter::make('kind')->label('类别')->options(self::kinds()), SelectFilter::make('status')->label('状态')->options(self::statuses())])
             ->recordActions([
@@ -85,7 +138,8 @@ class AcceptanceWorkbench extends Page implements HasTable
                     app(Workbench::class)->machine($this->getRecord()->id, $record->id, Filament::auth()->user());
                     Notification::make()->success()->title('机器结果已追加，请查看缺口')->send();
                 }),
-                Action::make('rate')->label('逐章人工评分')->visible($editable)->schema(fn (AcceptanceBatch $record): array => $this->ratingFields($record))->action(function (AcceptanceBatch $record, array $data, Schema $schema): void {
+                Action::make('readAndRate')->label('逐章阅读评分')->url(fn (AcceptanceBatch $record): string => NovelResource::getUrl('acceptanceReading', ['record' => $this->getRecord(), 'batch' => $record->id])),
+                Action::make('rate')->label('弹窗评分（备用）')->visible($editable)->schema(fn (AcceptanceBatch $record): array => $this->ratingFields($record))->action(function (AcceptanceBatch $record, array $data, Schema $schema): void {
                     try {
                         app(Workbench::class)->rate($this->getRecord()->id, $record->id, Filament::auth()->user(), $data);
                     } catch (ValidationException $error) {
@@ -100,7 +154,8 @@ class AcceptanceWorkbench extends Page implements HasTable
                     Notification::make()->success()->title('人工评分已追加，未自动认可')->send();
                 }),
                 Action::make('import')->label('导入外部证据')->visible($editable)->schema([
-                    Select::make('case_key')->label('必需用例')->options(fn (AcceptanceBatch $record): array => $record->snapshot['manual_cases'])->required(), Select::make('result')->label('核验结论')->options(['pass' => '通过', 'fail' => '失败'])->required(),
+                    Select::make('case_key')->label('必需用例')->options(fn (AcceptanceBatch $record): array => $record->snapshot['manual_cases'])->required()->live()
+                        ->helperText(fn (Get $get): ?string => Workbench::CASE_GUIDANCE[$get('case_key')] ?? '选择用例后显示取证说明。'), Select::make('result')->label('核验结论')->options(['pass' => '通过', 'fail' => '失败'])->required(),
                     TextInput::make('source')->label('证据出处及执行时间')->required()->maxLength(2000),
                     Textarea::make('report')->label('脱敏测试或核验报告（勿粘贴密钥）')->required()->maxLength(100000), Textarea::make('reason')->label('核验说明')->required()->maxLength(10000),
                     Checkbox::make('verified')->label('我已核验此证据对应本批次来源；这不是后台自动执行结果')->accepted(),

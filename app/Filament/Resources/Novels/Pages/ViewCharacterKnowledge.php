@@ -59,7 +59,7 @@ class ViewCharacterKnowledge extends Page
                     RepeatableEntry::make('knowledge')->label('角色视角记录')->state($data['rows'])->placeholder('未记录明确认知；可选择角色查询历史证据。')->schema([
                         TextEntry::make('kind')->label('记录类型'), TextEntry::make('category')->label('事实类别'),
                         TextEntry::make('text')->label('内容')->columnSpanFull(), TextEntry::make('chapter')->label('获得章位'),
-                        TextEntry::make('event_id')->label('来源事件'), TextEntry::make('version_id')->label('正式版本')->url(fn (Get $get): string => NovelResource::getUrl('reader', ['record' => $this->getRecord(), 'version' => $get('version_id')])),
+                        TextEntry::make('event_id')->label('来源事件'), TextEntry::make('version_id')->label('正式正文记录编号')->url(fn (Get $get): string => NovelResource::getUrl('reader', ['record' => $this->getRecord(), 'version' => $get('version_id')])),
                         RepeatableEntry::make('evidence')->label('正文证据')->schema([TextEntry::make('quote')->label('原文')])->columnSpanFull(),
                     ]),
                 ]),

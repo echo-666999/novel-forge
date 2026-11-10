@@ -11,9 +11,10 @@ final readonly class TextRequestOptions
 {
     /** 参数仅由用途工厂生成；正文仅接受当前统一协议。
      * @param  array{start: int, end: int, total: int}|null  $outlineRange
+     * @param  string|null  $builtinInstructions  根运行冻结的固定提示词，空值兼容历史程序文本。
      * @param  array<string, mixed>|null  $executionContext
      */
-    private function __construct(public int $maxOutputTokens, public int $timeoutSeconds, public ?float $temperature, public bool $structuredSetting, public ?array $outlineRange = null, public ?string $chapterStep = null, public ?array $executionContext = null, public ?string $submissionPurpose = null, public ?array $submissionContext = null, public bool $settingDecision = false, public string $templateInstructions = '', public ?array $templateSnapshot = null) {}
+    private function __construct(public int $maxOutputTokens, public int $timeoutSeconds, public ?float $temperature, public bool $structuredSetting, public ?array $outlineRange = null, public ?string $chapterStep = null, public ?array $executionContext = null, public ?string $submissionPurpose = null, public ?array $submissionContext = null, public bool $settingDecision = false, public string $templateInstructions = '', public ?array $templateSnapshot = null, public ?string $builtinInstructions = null) {}
 
     /** 复制不可变选项并附加根运行冻结模板；正文和审计引用使用同一份快照。 */
     public function withTemplates(array $snapshot, array $variables): self
@@ -27,7 +28,7 @@ final readonly class TextRequestOptions
         };
         $instructions = app(PromptTemplateManager::class)->instructions($snapshot, $scope, $variables);
 
-        return new self(...[...get_object_vars($this), 'templateInstructions' => $instructions, 'templateSnapshot' => $snapshot]);
+        return new self(...[...get_object_vars($this), 'templateInstructions' => $instructions, 'templateSnapshot' => $snapshot, 'builtinInstructions' => $snapshot['items']['builtin_'.$scope]['body'] ?? null]);
     }
 
     /** 自动授权下的设定决策仍经过独立结构化请求与计费审计。 */
@@ -44,14 +45,19 @@ final readonly class TextRequestOptions
         }
         ksort($context['anchors'], SORT_STRING);
 
-        return new self($purpose === 'review' ? 4096 : 8192, 180, 0.0, false, submissionPurpose: $purpose, submissionContext: $context);
+        $thinkingReview = $purpose === 'review' && ($context['deepseek_reasoning_effort'] ?? null) === 'low';
+
+        return new self($thinkingReview ? 16384 : ($purpose === 'review' ? 4096 : 8192), $thinkingReview ? 300 : 180, 0.0, false, submissionPurpose: $purpose, submissionContext: $context);
     }
 
     /** 新旧协议选项隔离；统一执行器显式冻结版本并稳定JSONB目录顺序。 */
     public static function executionChapter(string $step, float $temperature, array $context, int $bodyTokens = 8192): self
     {
         self::setting($temperature);
-        if (! in_array($step, ['fine', 'draft', 'revise', 'check'], true) || $bodyTokens < 1 || $bodyTokens > 8192) {
+        // 仅显式单段修复或新分支正文、修订、复查允许16K推理，其他请求保持原上限。
+        $repairThinking = ($context['deepseek_reasoning_effort'] ?? null) === 'low'
+            && (($step === 'draft' && isset($context['draft_repair_slot'])) || (in_array($step, ['draft', 'revise', 'check'], true) && ($context['accepted_branch_continuation'] ?? false)));
+        if (! in_array($step, ['fine', 'draft', 'revise', 'check'], true) || $bodyTokens < 1 || $bodyTokens > ($repairThinking ? 16384 : 8192)) {
             throw new InvalidArgumentException('统一正文步骤无效');
         }
         foreach (['anchors', 'rules', 'findings'] as $field) {
@@ -59,7 +65,7 @@ final readonly class TextRequestOptions
         }
         $context['version'] = ContentExecutionContract::VERSION;
 
-        return new self(in_array($step, ['fine', 'check'], true) ? 4096 : $bodyTokens, 180, $step === 'check' ? 0.0 : $temperature, false, null, $step, $context);
+        return new self($step === 'fine' || ($step === 'check' && ! $repairThinking) ? 4096 : $bodyTokens, $repairThinking && $bodyTokens > 8192 ? 300 : 180, $step === 'check' ? 0.0 : $temperature, false, null, $step, $context);
     }
 
     /** 正文请求的版本固定，不再根据已退役的策略字段推测版本。 */

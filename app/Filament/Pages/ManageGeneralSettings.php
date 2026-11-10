@@ -11,6 +11,7 @@ use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 
+/** 维护新运行默认参数，供应商由模型名称识别，密钥仅保存在本机环境。 */
 class ManageGeneralSettings extends SettingsPage
 {
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedCog6Tooth;
@@ -21,6 +22,7 @@ class ManageGeneralSettings extends SettingsPage
 
     protected static ?string $navigationLabel = '通用设置';
 
+    /** 展示模型与执行设置；不在页面暴露供应商密钥。 */
     public function form(Schema $schema): Schema
     {
         return $schema
@@ -31,6 +33,7 @@ class ManageGeneralSettings extends SettingsPage
                     ->schema([
                         TextInput::make('default_model')
                             ->label('默认模型')
+                            ->helperText('DeepSeek填写deepseek-flash或deepseek-v4-pro，并在本机配置DEEPSEEK_API_KEY；其他模型使用OpenAI。')
                             ->required(),
                         TextInput::make('temperature')
                             ->label('采样温度')

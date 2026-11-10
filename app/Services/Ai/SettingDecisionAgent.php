@@ -21,10 +21,10 @@ final class SettingDecisionAgent implements Agent, HasStructuredOutput
     /** 冻结输出额度及温度，不读取变动中的全局配置。 */
     public function __construct(private TextRequestOptions $options) {}
 
-    /** 由同一冻结选项拼接模板，程序契约保持独立且不可由后台覆盖。 */
+    /** 固定文本取自冻结发布版本；输出结构和业务校验仍由程序控制。 */
     public function instructions(): string
     {
-        return $this->contractInstructions().$this->options->templateInstructions;
+        return ($this->options->builtinInstructions ?? $this->contractInstructions()).$this->options->templateInstructions;
     }
 
     /** 自动创作决策不能违背作者原文，也不能伪称人工确认。 */

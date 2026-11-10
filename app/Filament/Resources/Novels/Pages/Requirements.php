@@ -58,13 +58,16 @@ class Requirements extends Page implements HasTable
     /** 默认显示每项要求的最新版本，历史版本可单独筛选查看。 */
     public function table(Table $table): Table
     {
-        return $table->query(RequirementVersion::where('novel_id', $this->getRecord()->id))->defaultSort('id', 'desc')->columns([
+        // 同一要求的历史连续排列，版本号来自已保存的 revision，不随筛选重算。
+        return $table->query(RequirementVersion::where('novel_id', $this->getRecord()->id))->defaultSort(fn (Builder $query): Builder => $query->orderBy('requirement_key')->orderByDesc('revision')->orderByDesc('id'))->columns([
+            TextColumn::make('requirement_key')->label('要求标识')->wrap(),
+            TextColumn::make('id')->label('记录编号'),
             TextColumn::make('source_quote')->label('要求原句')->wrap()->searchable(),
             TextColumn::make('description')->label('提炼内容')->wrap()->searchable(),
             TextColumn::make('category')->label('归类'),
             TextColumn::make('strength')->label('强度')->formatStateUsing(fn (string $state): string => $state === 'hard' ? '硬约束' : '软要求'),
             TextColumn::make('status')->label('覆盖状态')->formatStateUsing(fn (string $state): string => self::statuses()[$state]),
-            TextColumn::make('revision')->label('版本'),
+            TextColumn::make('revision')->label('要求版本')->formatStateUsing(fn ($state): string => 'V'.$state),
             TextColumn::make('outline_chapter_id')->label('承接计划编号')->placeholder('无'),
             TextColumn::make('created_at')->label('决定时间')->dateTime(),
         ])->filters([

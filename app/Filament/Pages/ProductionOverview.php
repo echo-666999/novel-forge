@@ -15,7 +15,7 @@ use Filament\Actions\Action;
 use Filament\Facades\Filament;
 use Filament\Infolists\Components\RepeatableEntry;
 use Filament\Infolists\Components\TextEntry;
-use Filament\Pages\Page;
+use Filament\Pages\Dashboard;
 use Filament\Schemas\Components\EmbeddedTable;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
@@ -25,8 +25,8 @@ use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 
-/** 汇总生产事实与完整入口清单，不触发生成、嵌入或自动恢复。 */
-class ProductionOverview extends Page implements HasTable
+/** 后台首页：汇总生产事实与完整入口清单，不触发生成、嵌入或自动恢复。 */
+class ProductionOverview extends Dashboard implements HasTable
 {
     use InteractsWithTable;
 

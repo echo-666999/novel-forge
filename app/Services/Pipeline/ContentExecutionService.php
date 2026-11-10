@@ -35,11 +35,14 @@ final class ContentExecutionService
         $config = $run->config;
         $initial = $config['initial_step'] ?? null;
         $manual = $initial === 'check' && isset($config['manual_edit']);
-        $base = $manual ? 1 : ($initial === 'fine' ? 3 : 2);
+        // 已认可对照稿是新分支独立来源，必须重新检查，不能借用旧版推进结论。
+        $imported = $initial === 'check' && isset($config['accepted_comparison']);
+        $endingRecheck = $initial === 'check' && isset($config['automated_ending_recheck']);
+        $base = ($manual || $imported || $endingRecheck) ? 1 : ($initial === 'fine' ? 3 : 2);
         $cap = $base + ($initial === 'revise' ? 0 : 2 * ($config['max_retries'] ?? 0));
         if (($config['version'] ?? null) !== ContentExecutionContract::VERSION || $run->request_limit !== ($config['request_cap'] ?? null)
             || ! in_array($config['max_retries'] ?? null, [0, 1], true) || $run->retry_count > $config['max_retries']
-            || ! in_array($initial, ['fine', 'draft', 'revise', 'check'], true) || ($initial === 'check' && (! $manual || $config['max_retries'] !== 0 || $run->parent_run_id === null)) || ($initial === 'fine' && ! $config['enable_fine_outline'])
+            || ! in_array($initial, ['fine', 'draft', 'revise', 'check'], true) || ($initial === 'check' && ((! $manual && ! $imported && ! $endingRecheck) || $config['max_retries'] !== 0 || (($manual || $endingRecheck) && $run->parent_run_id === null) || ($imported && $run->parent_run_id !== null))) || ($initial === 'fine' && ! $config['enable_fine_outline'])
             || $run->requests_used < 0 || $run->requests_used > $run->request_limit || $run->request_limit < $base || $run->request_limit > $cap || $run->length_repair_count !== 0
             || data_get($config, 'authorization.scope') !== 'bounded_content') {
             throw new InvalidArgumentException('正文协议或冻结额度无效');
@@ -79,6 +82,11 @@ final class ContentExecutionService
             throw new InvalidArgumentException('关闭细纲时必须直接沿用B03章计划');
         }
         $version = $this->candidate($run);
+        if ($endingRecheck && ($version === null || $version->id !== $run->source_version_id
+            || $version->id !== $config['automated_ending_recheck']['version_id'] || $version->body_hash !== $config['automated_ending_recheck']['body_hash']
+            || ContentExecutionContract::incompleteParagraphs($version->body) !== [])) {
+            throw new InvalidArgumentException('自动段尾复查来源无效');
+        }
         // 人工候选绑定独立来源阶段、作者及正文摘要，不复用旧模型评审。
         if ($manual) {
             $edit = $config['manual_edit'];
@@ -90,6 +98,23 @@ final class ContentExecutionService
                 || data_get($stage?->input, 'author_id') !== $config['author_id'] || data_get($stage?->output, 'mode') !== 'manual_edit'
                 || data_get($stage?->output, 'body_hash') !== $version->body_hash) {
                 throw new InvalidArgumentException('人工候选来源或正文不一致');
+            }
+        }
+        if ($imported) {
+            $lineage = $config['accepted_comparison'];
+            $stage = $version === null ? null : NovelStage::find($version->source_stage_id);
+            $source = ChapterVersion::find($lineage['source_version_id'] ?? 0);
+            if ($version === null || $version->run_id !== $run->id || $version->body_hash !== ($lineage['body_hash'] ?? null)
+                || hash('sha256', $version->body) !== $version->body_hash || $version->character_count !== ContentSchema::count($version->body)
+                || $source === null || $source->chapter->novel_id !== ($lineage['source_novel_id'] ?? null)
+                || $source->chapter->novel_id === $run->chapter->novel_id || $source->body_hash !== hash('sha256', $source->body)
+                || data_get($lineage, 'approval.body_sha256') !== $version->body_hash || data_get($lineage, 'approval.actor_id') !== $config['author_id']
+                || data_get($lineage, 'approval.decision') !== 'approve' || $run->chapter->number !== 1
+                || PlanningJson::hash($lineage) !== PlanningJson::hash(data_get($run->chapter->novel->generation_config, 'acceptance_branch'))
+                || $stage?->novel_id !== $run->chapter->novel_id || $stage?->stage !== Stage::Content || $stage?->status !== StageStatus::Completed
+                || data_get($stage?->input, 'run_id') !== $run->id || data_get($stage?->input, 'mode') !== 'accepted_comparison_import'
+                || data_get($stage?->output, 'body_hash') !== $version->body_hash) {
+                throw new InvalidArgumentException('验收分支正文来源或作者认可不一致');
             }
         }
         $result = $run->chapter->progression_result;
@@ -125,6 +150,9 @@ final class ContentExecutionService
     {
         $issues = $version === null ? [] : [...ContentQualityContract::issues($version->body, $run->snapshot['novel']['chapter_length_policy']), ...ContentReadingAudit::inspect($version->body)['issues']];
         foreach ($run->control_history as $control) {
+            if (($control['action'] ?? null) === 'automated_finding' && ($control['body_hash'] ?? null) === $version?->body_hash) {
+                $issues[] = ['type' => 'automated_finding', 'reason' => $control['reason'], 'quote' => $control['quote']];
+            }
             if (($control['action'] ?? null) === 'full_read_failed') {
                 foreach ($control['notes'] as $note) {
                     $issues[] = ['type' => 'full_read', 'reason' => $note];
@@ -150,6 +178,14 @@ final class ContentExecutionService
             $issue['source_body_hash'] = $version?->body_hash;
             $findings['finding-'.substr(PlanningJson::hash($issue), 0, 16)] = $issue;
         }
+        // 只从当前正文的复查结论移除已解决项目；旧运行配置与检查记录仍完整保留。
+        if ($version !== null && ($result['body_hash'] ?? null) === $version->body_hash) {
+            foreach ($result['reading_reviews'] ?? [] as $review) {
+                if (($review['fixed'] ?? false) && in_array($review['disposition'] ?? null, ['resolved', 'benign'], true)) {
+                    unset($findings[$review['id']]);
+                }
+            }
+        }
         if ($findings === []) {
             $findings['whole-chapter'] = ['type' => 'whole_chapter', 'reason' => '核对完整推进、连贯时序与章末钩子'];
         }
@@ -170,12 +206,19 @@ final class ContentExecutionService
         if ($budget !== null && FirstChapterRun::where('novel_id', $run->chapter->novel_id)->exists()) {
             $budget['complete_paragraphs'] = true;
         }
-        $context = ['chapter_number' => $run->chapter->number, 'anchors' => $version === null ? [] : ContentSchema::anchors($version->body), 'rules' => ContentQualityContract::rules($run->snapshot),
+        $context = ['chapter_number' => $run->chapter->number, 'accepted_branch_continuation' => $run->chapter->number > 1 && isset($run->snapshot['acceptance_branch']), 'anchors' => $version === null ? [] : ContentSchema::anchors($version->body), 'rules' => ContentQualityContract::rules($run->snapshot),
             'findings' => $this->findings($run, $version), 'budget' => $budget];
+        if (($step === 'draft' && isset($run->config['draft_max_output_tokens'])) || ($step === 'revise' && isset($run->config['revision_max_output_tokens'])) || ($step === 'check' && isset($run->config['check_max_output_tokens']))) {
+            $context['deepseek_reasoning_effort'] = 'low';
+        }
         // 原始创意保留具体时间、视角和限制；失败反馈只用于修复响应，不成为故事事实。
         $payload = ['chapter_number' => $run->chapter->number, 'prior_context' => $run->snapshot['prior_context'] ?? null, 'writing_requirements' => ['原始创意中的时间、人物称谓及具体限制不得被规划摘要覆盖。', '以可观察的具体行动、对白、阻力及结果推进，每段须有新信息；不反复宣告调查方向明确或决心坚定。', '不得输出故事将在后续展开、待续等写作说明。每段必须以完整句子的结束标点收束，不允许为满足字数而在句中截断或把半句拆到下一段。'], 'author_idea' => $run->snapshot['novel']['premise_raw'], 'previous_response_failure' => $run->config['recovery_validation_error'] ?? null, 'author_decisions' => $run->snapshot['decisions'], 'confirmed_setting' => $run->snapshot['confirmed_setting'], 'candidate_roadmap' => $run->snapshot['roadmap'],
             'rule_catalog' => $context['rules'], 'chapter_plan' => $run->plan_data ?? $run->snapshot['source_chapter'], 'word_policy' => $run->snapshot['novel']['chapter_length_policy'],
             'progression_points' => $run->snapshot['source_chapter']['progression_points'], 'findings' => $context['findings'], 'count_rule' => ContentSchema::COUNT_VERSION];
+        // 字数失败时提供原段和实际计数错误，避免后继请求看不到失败正文而盲目重写。
+        if ($step === 'draft' && isset($run->config['recovery_draft'])) {
+            $payload['previous_failed_draft'] = $run->config['recovery_draft'];
+        }
         if ($step === 'check') {
             // 复核同一证据不等于重演行动；疑问必须保留为张力，不能伪装成已确认缺陷。
             $payload['evaluation_guidance'] = ['逐项以当前evidence_catalog阅读全文判断，不复述前轮findings作为本轮事实。',
@@ -220,6 +263,43 @@ final class ContentExecutionService
         }
         if (array_key_exists('foreshadow_context', $run->snapshot)) {
             $payload['foreshadow_context'] = $run->snapshot['foreshadow_context'];
+        }
+
+        // 分支恢复按实测失败槽位逐段修复，其他段逐字保留，整章最终仍执行原契约。
+        if ($step === 'draft' && isset($run->snapshot['acceptance_branch'], $run->config['recovery_draft']['response']['paragraphs'])) {
+            $draft = $run->config['recovery_draft']['response'];
+            ContentSchema::keys($draft['paragraphs'], $budget['slots']);
+            foreach ($budget['slots'] as $slot) {
+                try {
+                    ContentExecutionContract::body(['title' => $draft['title'], 'paragraphs' => [$slot => $draft['paragraphs'][$slot]]], ContentExecutionContract::repairBudget($budget, $slot));
+                } catch (InvalidArgumentException) {
+                    // 单段修复默认低推理；供应商失败恢复时关闭推理，避免再次耗尽同一输出预算。
+                    $context['deepseek_reasoning_effort'] = isset($run->config['repair_max_output_tokens']) ? 'low' : (data_get($run->snapshot, 'recovery.parent_stop_reason') === 'provider_failed' ? 'none' : 'low');
+                    $context['draft_repair_slot'] = $slot;
+                    $context['full_draft_budget'] = $budget;
+                    $context['budget'] = ContentExecutionContract::repairBudget($budget, $slot);
+                    $payload['budget'] = $context['budget'];
+                    $payload['slot_plan'] = [$slot => $payload['slot_plan'][$slot]];
+                    $payload['draft_repair_slot'] = $slot;
+                    // 最近完整单段即使字数未达标也可继续压缩，避免每次从更长的初稿重做。
+                    $repairSource = $run->config['recovery_repair']['paragraphs'][$slot] ?? $draft['paragraphs'][$slot];
+                    $payload['repair_source'] = ['slot' => $slot, 'text' => $repairSource, 'instruction' => '只修复此处完整单段；其余段只作上下文，不得改写或复制。'];
+                    $payload['original_title'] = $draft['title'];
+                    $payload['surrounding_paragraphs'] = array_diff_key($draft['paragraphs'], [$slot => true]);
+                    $currentCount = ContentSchema::count($repairSource);
+                    $targetCount = intdiv($budget['min'] + $budget['max'], 2);
+                    $context['repair_current_count'] = $currentCount;
+                    $context['repair_direction'] = $currentCount > $budget['max'] ? 'shorten' : 'expand';
+                    $payload['repair_measurement'] = ['slot' => $slot, 'actual_characters' => $currentCount, 'target_characters' => $targetCount,
+                        'required_change' => $targetCount - $currentCount, 'direction' => $context['repair_direction'],
+                        'instruction' => $context['repair_direction'] === 'shorten' ? '本段超长，只做压缩，删除重复描述与非必要动作，保留当前段已有关键行动，不新增对话或把后段动作提前写入。' : '本段过短，补足当前动作的阻力与结果，不重复前后段事件。'];
+                    // 局部修复保留整份草稿作邻段上下文，不重复发送未来大纲、历史事件与全量设定。
+                    // 这些来源仍冻结在运行中，完成后整章检查会重新读取，不能借此跳过事实校验。
+                    $payload = array_intersect_key($payload, array_flip(['chapter_number', 'author_idea', 'writing_requirements', 'rule_catalog',
+                        'count_rule', 'previous_response_failure', 'original_title', 'surrounding_paragraphs', 'budget', 'slot_plan', 'draft_repair_slot', 'repair_source', 'repair_measurement']));
+                    break;
+                }
+            }
         }
 
         // 统一AI入口按此冻结预算组装并保存实际请求清单。
@@ -297,16 +377,33 @@ final class ContentExecutionService
         $failure = null;
         $error = null;
         $started = hrtime(true);
+        $repairedDraft = null;
         try {
-            $options = TextRequestOptions::executionChapter($step, $run->config['temperature'], $request['context'], $run->config['max_output_tokens']);
+            $tokens = isset($request['context']['draft_repair_slot']) ? ($run->config['repair_max_output_tokens'] ?? $run->config['max_output_tokens']) : $run->config['max_output_tokens'];
+            // 首次正文的推理容量只来自新运行冻结配置，单段修复仍使用独立预算。
+            if ($step === 'draft' && ! isset($request['context']['draft_repair_slot'])) {
+                $tokens = $run->config['draft_max_output_tokens'] ?? $tokens;
+            }
+            if ($step === 'revise') {
+                $tokens = $run->config['revision_max_output_tokens'] ?? $tokens;
+            }
+            if ($step === 'check') {
+                $tokens = $run->config['check_max_output_tokens'] ?? $tokens;
+            }
+            $options = TextRequestOptions::executionChapter($step, $run->config['temperature'], $request['context'], $tokens);
             $log = $ai->generate('本次步骤 '.$step.'；冻结输入：'.PlanningJson::encode($request['payload']), 'real', $run->config['model'], $novel->id, $stage->id, 'b04-'.$step.'-prompt-v14', $options);
             if (preg_match('/^'.preg_quote($run->config['model'], '/').'(-\d{4}-\d{2}-\d{2})?$/D', $log->model ?? '') !== 1) {
                 throw new InvalidArgumentException('响应模型与冻结模型不一致');
             }
             $response = ContentSchema::decode($log->response_text);
+            if ($step === 'draft' && isset($request['context']['draft_repair_slot'])) {
+                $repairedDraft = ContentExecutionContract::mergeParagraphRepair($run->config['recovery_draft']['response'], $response,
+                    $request['context']['full_draft_budget'], $request['context']['draft_repair_slot']);
+                $response = $repairedDraft;
+            }
             $data = match ($step) {
                 'fine' => ContentSchema::fine($response, array_column($run->snapshot['source_chapter']['progression_points'], 'id')),
-                'draft' => ContentExecutionContract::body($response, $request['context']['budget']),
+                'draft' => ContentExecutionContract::body($response, $request['context']['full_draft_budget'] ?? $request['context']['budget']),
                 'revise' => ContentSchema::body(['title' => $source->title, 'body' => ContentContinuationContract::revise($response, $source->body, $request['context']['findings'])]),
                 'check' => ContentContinuationContract::check($response, $source->body, array_column($run->snapshot['source_chapter']['progression_points'], 'id'), $request['context']['rules'], $request['context']['findings']),
             };
@@ -322,7 +419,7 @@ final class ContentExecutionService
             $error = $exception instanceof InvalidArgumentException ? $exception->getMessage() : '本地处理异常，保留证据后显式恢复';
         }
         try {
-            $next = DB::transaction(function () use ($id, $token, $stage, $source, $step, $data, $failure, $error, $log, $started): bool {
+            $next = DB::transaction(function () use ($id, $token, $stage, $source, $step, $data, $failure, $error, $log, $started, $repairedDraft): bool {
                 $reference = ChapterGenerationRun::findOrFail($id);
                 $novel = Novel::lockForUpdate()->findOrFail($reference->chapter->novel_id);
                 $run = ChapterGenerationRun::lockForUpdate()->findOrFail($id);
@@ -336,6 +433,9 @@ final class ContentExecutionService
                 }
                 $stop = $failure;
                 $output = ['step' => $step, 'cost_log_id' => $log?->id, 'result' => $data, 'validation_error' => $error];
+                if ($repairedDraft !== null) {
+                    $output['repaired_draft'] = ['response' => $repairedDraft, 'hash' => PlanningJson::hash($repairedDraft), 'source_input_hash' => $run->input_hash];
+                }
                 if ($stop === null && $step === 'fine') {
                     $run->plan_data = $data;
                     $run->fine_stage_id = $stage->id;
@@ -404,6 +504,27 @@ final class ContentExecutionService
         return $version !== null && count(ContentSchema::anchors($version->body)) >= 2
             && $run->retry_count < $run->config['max_retries'] && $run->request_limit - $run->requests_used >= 2
             && (! $includeNovelLimit || $run->chapter->novel->max_execution_count - $run->chapter->novel->execution_count >= 2);
+    }
+
+    /** 已授权自动验收可追加有原文依据的诊断，不能伪造人工阅读或直接改变通过状态。 */
+    public function recordAutomatedFinding(int $id, int $automationId, User $author, int $versionId, string $quote, string $reason): void
+    {
+        ContentSchema::text($quote);
+        ContentSchema::text($reason);
+        DB::transaction(function () use ($id, $automationId, $author, $versionId, $quote, $reason): void {
+            $run = ChapterGenerationRun::lockForUpdate()->findOrFail($id);
+            $automation = FirstChapterRun::findOrFail($automationId);
+            $automation->assertDelegation($run->chapter->novel_id, $author->id);
+            $version = ChapterVersion::where('chapter_id', $run->chapter_id)->findOrFail($versionId);
+            if (! in_array($run->status, ['paused', 'error', 'completed'], true) || $automation->status !== 'failed'
+                || $run->chapter->formal_version_id !== null || $run->chapter->current_candidate_version_id !== $versionId
+                || hash('sha256', $version->body) !== $version->body_hash || ! str_contains($version->body, $quote)) {
+                throw new InvalidArgumentException('自动验收诊断来源或运行边界无效');
+            }
+            $run->update(['control_history' => [...$run->control_history, ['action' => 'automated_finding', 'automation_id' => $automationId,
+                'operator_id' => $author->id, 'version_id' => $versionId, 'body_hash' => $version->body_hash, 'quote' => $quote,
+                'reason' => $reason, 'mode' => 'delegated_diagnostic_not_human_rating', 'at' => now()->toIso8601String()]]]);
+        });
     }
 
     /** 只记录全文结果；不通过不会投递模型请求或提高任何额度。 */

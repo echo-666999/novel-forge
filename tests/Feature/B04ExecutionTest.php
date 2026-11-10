@@ -105,6 +105,9 @@ class B04ExecutionTest extends TestCase
                     if ($this->scenario === 'meta' && $i === 0) {
                         $text = '此段约350字。'.mb_substr($text, 8);
                     }
+                    if ($this->scenario === 'complete') {
+                        $text = mb_substr($text, 0, -1).'。';
+                    }
                     $paragraphs[$slot] = $text;
                 }
                 $data = ['title' => '隔离首章候选', 'paragraphs' => array_reverse($paragraphs, true)];
@@ -271,6 +274,30 @@ class B04ExecutionTest extends TestCase
     public static function failureCases(): array
     {
         return [['schema', 'invalid_schema', 1], ['unknown', 'unknown', 1], ['provider', 'provider_failed', 1], ['model', 'invalid_schema', 1], ['blocked', 'blocked', 2], ['evidence', 'invalid_schema', 2], ['missing_review', 'invalid_schema', 2]];
+    }
+
+    /** 显式恢复字数失败时冻结原始输出与实测差额，并保留失败日志。 */
+    public function test_draft_recovery_carries_failed_paragraphs_and_measurements(): void
+    {
+        $this->scenario = 'schema';
+        $parent = $this->start(false);
+        $this->drain();
+        $failed = CostLog::sole();
+        $original = $failed->response_text;
+        $this->scenario = 'pass';
+        $child = app(ContentGenerationService::class)->recover($parent->id, User::firstOrFail(), '按原段实测字数恢复');
+        $this->assertSame($failed->id, $child->config['recovery_draft']['cost_log_id']);
+        $this->assertSame($failed->structured_output, $child->config['recovery_draft']['response']);
+        $this->assertStringContainsString('paragraph_1实际2字', $child->config['recovery_validation_error']);
+        $this->drain();
+        $next = CostLog::where('id', '>', $failed->id)->oldest('id')->firstOrFail();
+        $prompt = $next->request_parameters['prompt_audit']['user_prompt'];
+        $payload = json_decode(explode('冻结输入：', $prompt, 2)[1], true, flags: JSON_THROW_ON_ERROR);
+        $this->assertSame($failed->id, $payload['previous_failed_draft']['cost_log_id']);
+        $this->assertSame($original, $failed->fresh()->response_text);
+        $this->assertSame('invalid_schema', $parent->fresh()->stop_reason);
+        $this->assertSame('awaiting_review', $child->fresh()->stop_reason);
+        Http::assertSentCount(3);
     }
 
     /** 全文失败只保存意见，显式继续仍使用原授权剩余两次。 */

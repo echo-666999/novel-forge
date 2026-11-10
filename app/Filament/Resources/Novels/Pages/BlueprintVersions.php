@@ -72,7 +72,7 @@ class BlueprintVersions extends Page implements HasTable
     public function table(Table $table): Table
     {
         return $table->query(NovelSettingConfirmation::where('novel_id', $this->getRecord()->id))->defaultSort('id', 'desc')->columns([
-            TextColumn::make('id')->label('确认版本')->sortable(),
+            TextColumn::make('id')->label('确认记录编号')->sortable(),
             TextColumn::make('source_stage_id')->label('生成来源阶段'),
             TextColumn::make('confirmed_by')->label('确认账号'),
             TextColumn::make('confirmed_at')->label('确认时间')->dateTime(),
@@ -80,9 +80,9 @@ class BlueprintVersions extends Page implements HasTable
         ])->recordActions([
             Action::make('inspect')->label('查看完整设定')->modalSubmitAction(false)->schema(fn (NovelSettingConfirmation $record): array => [
                 TextEntry::make('body')->label('设定与作者决定')->state(self::describe($record))->formatStateUsing(fn (string $state): HtmlString => new HtmlString(nl2br(e($state)))),
-                TextEntry::make('plans')->label('引用此版本的大纲')->state(fn (): string => $this->getRecord()->outlinePlans()->where('setting_confirmation_id', $record->id)->pluck('id')->implode('、') ?: '尚无'),
+                TextEntry::make('plans')->label('引用此确认记录的大纲记录编号')->state(fn (): string => $this->getRecord()->outlinePlans()->where('setting_confirmation_id', $record->id)->orderByDesc('id')->pluck('id')->implode('、') ?: '尚无'),
             ]),
-            Action::make('compare')->label('与另一版本对照')->schema([Select::make('other')->label('旧版 / 对照版本')->options(fn (): array => $this->getRecord()->settingConfirmations()->pluck('id', 'id')->map(fn ($id): string => '版本#'.$id)->all())->required()])
+            Action::make('compare')->label('与另一版本对照')->schema([Select::make('other')->label('旧版 / 对照版本')->options(fn (): array => $this->getRecord()->settingConfirmations()->orderByDesc('id')->pluck('id', 'id')->map(fn ($id): string => '确认记录 #'.$id)->all())->required()])
                 ->action(function (NovelSettingConfirmation $record, array $data): void {
                     $old = NovelSettingConfirmation::where('novel_id', $this->getRecord()->id)->findOrFail((int) $data['other']);
                     $this->comparison = [$old->id, $record->id];

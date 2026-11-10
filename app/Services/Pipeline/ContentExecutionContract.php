@@ -10,6 +10,66 @@ final class ContentExecutionContract
 {
     public const VERSION = 'b04-content-v14';
 
+    /** 计数与JSON语法属于程序输出契约，冻结创作模板不能覆盖这些动态限制。 */
+    public static function outputInstructions(string $step, array $context): string
+    {
+        $instructions = "\n输出必须是单个完整JSON对象。字符串内的英文双引号和换行须转义；最后一个属性或数组元素后不得加逗号，不使用代码围栏。";
+        if ($step === 'revise') {
+            $count = count($context['anchors'] ?? []);
+            // 动态计数说明不改写既有运行冻结的固定指令。
+            $instructions .= 'character_budget的负数表示删减，不能当作扩写要求；以target_change为目标，最终净变化不得超过maximum_change。超长时删去重复解释与无后果的操作描述，保留关键费用构成、时序和因果。';
+            // 显式给出当前目录的合计覆盖上限，防止多个合法范围拼起来仍覆盖整章。
+            $instructions .= '当前正文共'.$count.'个原段；所有ranges覆盖的原段取并集后，最多覆盖'.max(0, $count - 1).'段。必须至少留下一个完整原段不在任何范围内。未涉及缺陷的段落不要输出，不能为凑总字数把所有段落都列入范围。';
+        }
+        if ($step !== 'draft') {
+            return $instructions;
+        }
+        $budget = $context['budget'];
+        $target = intdiv($budget['min'] + $budget['max'], 2);
+        if (isset($context['draft_repair_slot'])) {
+            // 修复目标取区间中点，为模型计数偏差保留双向余量，接受上下界不变。
+            $instructions .= ($context['repair_direction'] ?? null) === 'shorten' ? '当前指定段落已超长，本次只缩写不扩写。以约'.$target.'字为目标，写完后自检并删掉超额的非必要描述，不得用新增动作凑段。' : '';
+            if (($context['repair_direction'] ?? null) === 'shorten' && isset($context['repair_current_count'])) {
+                $instructions .= '原段实测'.$context['repair_current_count'].'字；必须净删'.($context['repair_current_count'] - $budget['max']).'至'.($context['repair_current_count'] - $budget['min']).'字。直接从原段删除非必要句子或从句，保留其余原文字句，不新增句子、不替换成长句。输出删除后的完整段落，确保结尾仍为完整句。';
+            }
+            // 短段修复只补实测差额，禁止逐句润色导致再次越过上限。
+            if (($context['repair_direction'] ?? null) === 'expand' && isset($context['repair_current_count'])) {
+                $instructions .= '原段实测'.$context['repair_current_count'].'字；只能净增'.($budget['min'] - $context['repair_current_count']).'至'.($budget['max'] - $context['repair_current_count']).'字，目标净增'.($target - $context['repair_current_count']).'字。保留原句，只补一至两句与当前行动直接相关的必要动作或后果；不逐句扩写修饰，不新增核心事实，不重复后段事件。';
+            }
+            $instructions .= '本次为失败草稿的单段修复，不重新生成整章。只返回title和paragraphs内指定的唯一字段'.$context['draft_repair_slot'].'；标题保持原值。其他段只作上下文，不得复制到本次输出。根据实测差额扩写或缩写当前段，承接上下文，不提前重复后文动作。';
+        }
+
+        return $instructions.' paragraphs中的每一个字段都必须有'.$budget['min'].'至'.$budget['max'].'个可见字符，建议每段约'.$target.'字；汉字、标点、数字均计数，空白不计数。这是每段的要求，不是每场景两段合计的要求。固定字段依次为：'.implode('、', $budget['slots']).'。每段推进不同动作或后果，同场景第二段承接第一段，不重新演一遍场景。不得报告自估字数或添加写作说明，直接输出完整正文。';
+    }
+
+    /** 单段恢复仍使用原预算；每次请求仅改变一个确定槽位，不放宽整章门禁。
+     * @return array<string, mixed>
+     */
+    public static function repairBudget(array $budget, string $slot): array
+    {
+        if (! in_array($slot, $budget['slots'], true)) {
+            throw new InvalidArgumentException('不能修复冻结目录以外的段落');
+        }
+
+        return [...$budget, 'slots' => [$slot], 'count' => 1];
+    }
+
+    /** 只接受原槽位的合格替换，原稿其他段逐字保留；调用方最后必须再验证整章。
+     * @return array<string, mixed>
+     */
+    public static function mergeParagraphRepair(array $draft, array $replacement, array $budget, string $slot): array
+    {
+        ContentSchema::keys($draft, ['title', 'paragraphs']);
+        ContentSchema::keys($draft['paragraphs'], $budget['slots']);
+        self::body($replacement, self::repairBudget($budget, $slot));
+        if ($replacement['title'] !== $draft['title']) {
+            throw new InvalidArgumentException('单段修复不得改变标题');
+        }
+        $draft['paragraphs'][$slot] = $replacement['paragraphs'][$slot];
+
+        return $draft;
+    }
+
     /** 指令固定，动态证据目录在实际发送前单独保存完整快照。 */
     public static function instructions(string $step): string
     {
@@ -76,7 +136,8 @@ final class ContentExecutionContract
             $pattern = ($context['budget']['complete_paragraphs'] ?? false)
                 ? '^[^\\s#*_`~>]{'.($context['budget']['min'] - 1).','.($context['budget']['max'] - 1).'}[。！？…；：”’」』）】]$'
                 : '^[^\\s#*_`~>]{'.$context['budget']['min'].','.$context['budget']['max'].'}$';
-            $fields[$slot] = $schema->string()->pattern($pattern)->required();
+            // 显式长度与正则使用同一预算，兼容供应商对JSON Schema长度关键字的支持。
+            $fields[$slot] = $schema->string()->description('本段单独满足'.$context['budget']['min'].'至'.$context['budget']['max'].'个可见字符；不与其他段合计。')->min($context['budget']['min'])->max($context['budget']['max'])->pattern($pattern)->required();
         }
 
         return ['title' => $schema->string()->required(), 'paragraphs' => $schema->object($fields)->withoutAdditionalProperties()->required()];
@@ -90,17 +151,22 @@ final class ContentExecutionContract
         ContentSchema::keys($data, ['title', 'paragraphs']);
         ContentSchema::keys($data['paragraphs'], $budget['slots']);
         $paragraphs = [];
+        $errors = [];
         foreach ($budget['slots'] as $slot) {
             $text = $data['paragraphs'][$slot];
             ContentSchema::text($text);
             $count = ContentSchema::count($text);
             if ($count < $budget['min'] || $count > $budget['max'] || preg_match('/[\s#*_`~>]/u', $text) === 1) {
-                throw new InvalidArgumentException('正文单段预算或格式无效');
+                $errors[] = $slot.'实际'.$count.'字，要求'.$budget['min'].'至'.$budget['max'].'字且不得含空白或Markdown';
             }
             if (($budget['complete_paragraphs'] ?? false) && ! self::hasCompleteEnding($text)) {
                 throw new InvalidArgumentException('自动首章正文段落未完整结束');
             }
             $paragraphs[] = $text;
+        }
+        // 一次列出所有失败段，恢复请求能按真实差额修正，不能只盲目重写首个失败段。
+        if ($errors !== []) {
+            throw new InvalidArgumentException('正文单段预算或格式无效：'.implode('；', $errors));
         }
 
         return ContentSchema::body(['title' => $data['title'], 'body' => implode("\n", $paragraphs)]);
@@ -110,5 +176,13 @@ final class ContentExecutionContract
     public static function hasCompleteEnding(string $paragraph): bool
     {
         return preg_match('/[。！？…；：][”’」』）】]*$/u', trim($paragraph)) === 1;
+    }
+
+    /** 空行是排版分隔，不是残句；保留原始行段号以免破坏已有证据锚点。
+     * @return list<array{paragraph: int, text: string}>
+     */
+    public static function incompleteParagraphs(string $body): array
+    {
+        return array_values(array_filter(ContentSchema::paragraphs($body), fn (array $paragraph): bool => trim($paragraph['text']) !== '' && ! self::hasCompleteEnding($paragraph['text'])));
     }
 }

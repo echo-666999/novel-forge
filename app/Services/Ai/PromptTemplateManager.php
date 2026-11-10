@@ -15,7 +15,7 @@ final class PromptTemplateManager
     /** 保存总是创建新草稿，历史正文从不原地更新。 */
     public function draft(string $scope, string $body, string $notes, int $actor): int
     {
-        validator(compact('scope', 'body', 'notes'), ['scope' => ['required', 'in:'.implode(',', array_keys(self::SCOPES))], 'body' => ['required', 'string', 'max:12000'], 'notes' => ['required', 'string', 'max:2000']])->validate();
+        validator(compact('scope', 'body', 'notes'), ['scope' => ['required', 'in:'.implode(',', array_keys([...self::SCOPES, ...BuiltinPromptTemplates::scopes()]))], 'body' => ['required', 'string', 'max:12000'], 'notes' => ['required', 'string', 'max:2000']])->validate();
 
         return DB::table('prompt_template_versions')->insertGetId(['scope' => $scope, 'body' => $body, 'notes' => $notes, 'language' => 'zh-CN', 'status' => 'draft', 'content_hash' => PlanningJson::hash([$scope, $body]), 'created_by' => $actor, 'created_at' => now()]);
     }
@@ -28,7 +28,7 @@ final class PromptTemplateManager
             if (! in_array($version->status, ['draft', 'tested'], true)) {
                 throw ValidationException::withMessages(['template' => '历史版本只读，请复制为新草稿。']);
             }
-            $rendered = $this->render($version->body, ['title' => '验收样例书名', 'genre' => '现实生活', 'stage' => $version->scope]);
+            $rendered = str_starts_with($version->scope, 'builtin_') ? $version->body : $this->render($version->body, ['title' => '验收样例书名', 'genre' => '现实生活', 'stage' => $version->scope]);
             $report = ['passed' => true, 'kind' => 'local-variable-render-regression', 'content_hash' => $version->content_hash, 'sample' => $rendered, 'real_ai_requests' => 0, 'tested_at' => now()->toIso8601String()];
             DB::table('prompt_template_versions')->where('id', $id)->update(['status' => 'tested', 'test_report' => json_encode($report, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)]);
 

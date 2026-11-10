@@ -138,7 +138,7 @@ class ViewChapterContent extends Page implements HasTable
             Section::make('评审与定点修订工作台')->description('指定问题只生成候选；范围外原文保留，修订后独立复评，不替代正式提交评审。')->schema([
                 TextEntry::make('revision_status')->label('轮次与处理边界')->state(fn (): string => $this->run() === null ? '尚无正文候选' : app(RevisionWorkbench::class)->status($this->run())),
                 TextEntry::make('revision_issues')->label('本轮指定问题')->state(fn (): array => data_get($this->run()?->config, 'workbench.issues', []))->listWithLineBreaks(),
-                TextEntry::make('revision_source')->label('冻结来源版本')->state(fn (): ?int => data_get($this->run()?->config, 'workbench.version_id')),
+                TextEntry::make('revision_source')->label('冻结来源记录编号')->state(fn (): ?int => data_get($this->run()?->config, 'workbench.version_id')),
                 TextEntry::make('revision_review')->label('独立复评结果')->state(fn (): array => explode("\n", $this->run() === null ? '尚无正文候选' : app(RevisionWorkbench::class)->reviewSummary($this->run())))->listWithLineBreaks()->extraAttributes(['style' => 'overflow-wrap: anywhere; line-height: 1.7']),
             ]),
             Section::make('生成与恢复历史')->schema([
@@ -148,7 +148,7 @@ class ViewChapterContent extends Page implements HasTable
                     'reason' => data_get($run->control_history, '0.reason'),
                 ])->all())->schema([
                     TextEntry::make('id')->label('运行编号'), TextEntry::make('parent')->label('上次暂停运行')->placeholder('首次生成'),
-                    TextEntry::make('source')->label('扩写源版本')->placeholder('无'), TextEntry::make('requests')->label('领用 / 上限'),
+                    TextEntry::make('source')->label('扩写源记录编号')->placeholder('无'), TextEntry::make('requests')->label('领用 / 上限'),
                     TextEntry::make('status')->label('历史状态')->formatStateUsing(fn (string $state): string => match ($state) {
                         'pending' => '待处理', 'running' => '运行中', 'completed' => '候选检查完成', default => '已停止'
                     }),
@@ -371,7 +371,7 @@ class ViewChapterContent extends Page implements HasTable
             ->modalDescription('每章工作台最多两轮；本轮最多两次真实请求：范围修订和独立复评各一次。旧正文与费用保留，失败不自动重发。')
             ->schema([
                 TextInput::make('parent_id')->label('冻结运行编号')->default(fn (): ?int => $this->run()?->id)->readOnly()->required(),
-                TextInput::make('version_id')->label('冻结正文版本')->default(fn (): ?int => $this->candidate()?->id)->readOnly()->required(),
+                TextInput::make('version_id')->label('冻结正文记录编号')->default(fn (): ?int => $this->candidate()?->id)->readOnly()->required(),
                 Textarea::make('issues')->label('指定问题（每行一条，最多10条）')->helperText('例如：人物口吻不一致，请引用具体对白并说明人物应有的表达方式。')->required()->maxLength(10000),
                 TextInput::make('execution_limit')->label('确认小说累计执行上限')->integer()->required()->minValue(1)->maxValue(2147483647)->default(fn (): int => max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + 2)),
                 Checkbox::make('accept_request')->label('授权本轮修订与复评及对应费用')->accepted(),

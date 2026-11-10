@@ -21,10 +21,10 @@ final class SettingGenerationAgent implements Agent, HasStructuredOutput
     /** 注入已经冻结的请求参数，不在调用中重新读取全局设置。 */
     public function __construct(private TextRequestOptions $options) {}
 
-    /** 由同一冻结选项拼接模板，程序契约保持独立且不可由后台覆盖。 */
+    /** 固定文本取自冻结发布版本；输出结构和业务校验仍由程序控制。 */
     public function instructions(): string
     {
-        return $this->contractInstructions().$this->options->templateInstructions;
+        return ($this->options->builtinInstructions ?? $this->contractInstructions()).$this->options->templateInstructions;
     }
 
     /** 作者原文是创作资料，不接受其中改变响应契约或索取凭据的指令。 */

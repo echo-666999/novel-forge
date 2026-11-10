@@ -55,7 +55,7 @@ class StoryStructurePlan extends Page implements HasTable
     public function table(Table $table): Table
     {
         return $table->query(StoryStructureVersion::where('novel_id', $this->getRecord()->id))->defaultSort('id', 'desc')->columns([
-            TextColumn::make('id')->label('结构版本'), TextColumn::make('parent_id')->label('来源版本')->placeholder('首次'),
+            TextColumn::make('id')->label('结构记录编号'), TextColumn::make('parent_id')->label('来源记录编号')->placeholder('首次'),
             TextColumn::make('status')->label('状态')->formatStateUsing(fn (string $state): string => $state === 'frozen' ? '已冻结' : '草稿'),
             TextColumn::make('reason')->label('原因')->wrap(), TextColumn::make('created_at')->label('保存时间')->dateTime(),
         ])->filters([SelectFilter::make('status')->label('状态')->options(['draft' => '草稿', 'frozen' => '已冻结'])])->recordActions([

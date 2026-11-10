@@ -35,6 +35,20 @@ class C09ReadingTest extends TestCase
         parent::tearDown();
     }
 
+    /** 全局记录编号与章内版本号不相等时，阅读器必须展示真实章内版本。 */
+    public function test_reader_displays_chapter_version_instead_of_global_id(): void
+    {
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        $this->actingAs(User::factory()->create());
+        $version = ChapterVersion::factory()->create(['version' => 7]);
+        $version->chapter->update(['current_candidate_version_id' => $version->id]);
+        $this->assertNotSame(7, $version->id);
+        Livewire::test(ReadChapter::class, ['record' => $version->chapter->novel_id])
+            ->assertSee('V7（记录 #'.$version->id.'）')
+            ->assertDontSee('版本#'.$version->id)
+            ->mountAction('versions')->assertSee('V7（记录 #'.$version->id.'）');
+    }
+
     /** 已读幂等且不污染新版本；问题摘录必须来自原文。 */
     public function test_read_and_issue_records_are_version_scoped(): void
     {

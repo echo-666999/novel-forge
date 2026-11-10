@@ -18,8 +18,8 @@ use Throwable;
 /** 文本调用统一入口；先保存意图，再调用供应商，最后保存结果和计量证据。 */
 final class AiTextGenerationService
 {
-    /** 注入两个互不污染的适配器，Fake 开关不会修改 SDK 全局状态。 */
-    public function __construct(private FakeTextProvider $fake, private OpenAiTextProvider $real, private CostEstimator $estimator) {}
+    /** 注入互不污染的固定供应商适配器，Fake 开关不会修改 SDK 全局状态。 */
+    public function __construct(private FakeTextProvider $fake, private OpenAiTextProvider $real, private CostEstimator $estimator, private DeepSeekTextProvider $deepSeek) {}
 
     /** 执行一次调用并返回持久化的统一结果；任何失败都不自动重试。 */
     public function generate(string $prompt, string $mode = 'fake', ?string $model = null, ?int $novelId = null, ?int $novelStageId = null, ?string $promptVersion = null, ?TextRequestOptions $options = null): CostLog
@@ -45,6 +45,8 @@ final class AiTextGenerationService
         if ($model === '' || strlen($model) > 128) {
             throw new InvalidArgumentException('模型标识不能为空且不能超过128字节。');
         }
+        // 供应商由冻结模型名决定，切换默认模型不会改变既有运行的供应商。
+        $provider = $mode === 'fake' ? 'fake' : (str_starts_with($model, 'deepseek-') ? 'deepseek' : 'openai');
         // 仅读取小说根运行的冻结模板；历史运行没有此字段时继续使用原程序指令。
         if ($novelId !== null && $options->isStructured()) {
             $config = Novel::findOrFail($novelId)->generation_config ?? [];
@@ -53,7 +55,7 @@ final class AiTextGenerationService
             }
         }
         // 费用审计记录最终模型参数，避免将已移除的温度误记为实际发送。
-        $parameters = SingleAttemptOpenAiGateway::modelParameters($options->toArray(), $model);
+        $parameters = $provider === 'deepseek' ? SingleAttemptDeepSeekGateway::modelParameters($options->toArray(), $options->executionContext['deepseek_reasoning_effort'] ?? $options->submissionContext['deepseek_reasoning_effort'] ?? 'none') : SingleAttemptOpenAiGateway::modelParameters($options->toArray(), $model);
         if ($options->templateSnapshot !== null) {
             $parameters['prompt_templates'] = $options->templateSnapshot;
         }
@@ -91,9 +93,9 @@ final class AiTextGenerationService
         }
         // 必须在调用前写入数据库；写入失败直接停止，避免产生没有本地记录的费用。
         $log = CostLog::query()->create([
-            'request_uuid' => (string) Str::uuid7(), 'mode' => $mode, 'requested_provider' => $mode === 'real' ? 'openai' : 'fake',
+            'request_uuid' => (string) Str::uuid7(), 'mode' => $mode, 'requested_provider' => $provider,
             'requested_model' => $model, 'novel_id' => $novelId, 'novel_stage_id' => $novelStageId,
-            'route_version' => $mode === 'real' ? ($options->submissionPurpose !== null ? 'submission-openai-'.$options->submissionPurpose.'-v1' : ($options->chapterStep !== null ? 'b04-openai-'.$options->chapterStep.'-'.Str::afterLast($options->chapterVersion(), '-') : ($options->outlineRange !== null ? 'b03-openai-outline-v1' : ($options->structuredSetting ? 'b02-openai-setting-v1' : 'a03-openai-v1')))) : 'a03-fake-v1', 'prompt_version' => $promptVersion,
+            'route_version' => $mode === 'real' ? ($options->submissionPurpose !== null ? 'submission-'.$provider.'-'.$options->submissionPurpose.'-v1' : ($options->chapterStep !== null ? 'b04-'.$provider.'-'.$options->chapterStep.'-'.Str::afterLast($options->chapterVersion(), '-') : ($options->outlineRange !== null ? 'b03-'.$provider.'-outline-v1' : ($options->structuredSetting ? 'b02-'.$provider.'-setting-v1' : 'a03-'.$provider.'-v1')))) : 'a03-fake-v1', 'prompt_version' => $promptVersion,
             'prompt_hash' => hash('sha256', $prompt), 'request_parameters' => $parameters,
             'status' => 'pending', 'billing_status' => $mode === 'fake' ? 'simulated' : 'unknown', 'started_at' => now(),
         ]);
@@ -101,7 +103,9 @@ final class AiTextGenerationService
         // 在外部调用前冻结整个价格集合，运行中配置变化不影响本次计价。
         $prices = config('ai.costs.prices', []);
         try {
-            $result = ($mode === 'fake' ? $this->fake : $this->real)->generate($prompt, $model, $options);
+            $result = (match ($provider) {
+                'fake' => $this->fake, 'deepseek' => $this->deepSeek, default => $this->real
+            })->generate($prompt, $model, $options);
             $log->fill($this->resultAttributes($result));
             $this->validateUsage($result);
             $price = $result->model !== null && is_array($prices[$result->model] ?? null) ? $prices[$result->model] : null;

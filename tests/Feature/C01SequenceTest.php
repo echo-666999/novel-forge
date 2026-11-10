@@ -20,6 +20,7 @@ use App\Services\Pipeline\LegacyContentSources;
 use App\Services\Pipeline\OutlineGenerationService;
 use App\Services\Pipeline\PlanningJson;
 use App\Services\Pipeline\StoryStateReplay;
+use App\Settings\GeneralSettings;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Http\Client\ConnectionException;
@@ -61,6 +62,10 @@ class C01SequenceTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // 此组验证Terra协议，显式设置测试默认模型，不依赖生产十章硬编码。
+        $settings = app(GeneralSettings::class);
+        $settings->default_model = 'gpt-6.1-terra';
+        $settings->save();
         Queue::fake();
         Http::preventStrayRequests();
         config(['ai.providers.openai.key' => 'sk-b10-isolated', 'ai.providers.openai.url' => 'https://api.openai.com/v1']);
@@ -247,6 +252,13 @@ class C01SequenceTest extends TestCase
         $before = $service->requestCount($run);
         $service->advance($run->id);
         $this->assertSame($before, $service->requestCount($run));
+        // 显式恢复必须先修正文，不能只重复评审直到碰巧通过。
+        $resumed = $service->retry($run->id, User::findOrFail($run->author_id));
+        $this->assertSame('content', $resumed->step);
+        $repair = ChapterGenerationRun::findOrFail($resumed->artifacts['body_run_id']);
+        $this->assertSame('revise', $repair->next_step);
+        $this->assertSame(Chapter::where('number', 5)->sole()->current_candidate_version_id, $repair->config['submission_review']['version_id']);
+        $this->assertSame($before, $service->requestCount($resumed));
     }
 
     /** 创建入口冻结十章范围，错误篇幅计划不能创建小说或调用模型。 */

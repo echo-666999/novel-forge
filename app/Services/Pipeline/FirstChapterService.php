@@ -37,8 +37,7 @@ final class FirstChapterService
         if (! $authorized) {
             throw new InvalidArgumentException('必须明确授权设定决策、新实体采纳及指定章节范围正式提交');
         }
-        // C01新授权默认使用用户指定的Terra；既有运行与首章默认模型不变。
-        $model ??= $chapterLimit === 10 ? 'gpt-6.1-terra' : null;
+        // 新运行统一使用通用设置的默认模型；显式覆盖及既有冻结运行保持不变。
         $novel = app(CreateNovelService::class)->createAndStart([...$input, 'generation_mode' => 'setting_real'], false, $model)->novel;
         $run = DB::transaction(function () use ($novel, $author, $chapterLimit): FirstChapterRun {
             // 总执行额度覆盖所有规划批次及授权章节，单个模型步骤仍有独立上限。
@@ -191,7 +190,7 @@ final class FirstChapterService
                 if ($body->stop_reason === 'awaiting_review') {
                     // 任何句中截断都必须先修复；独立模型通过不能豁免确定性完整性检查。
                     $version = ChapterVersion::findOrFail($body->chapter->current_candidate_version_id);
-                    $incomplete = array_values(array_filter(ContentSchema::paragraphs($version->body), fn (array $paragraph): bool => ! ContentExecutionContract::hasCompleteEnding($paragraph['text'])));
+                    $incomplete = ContentExecutionContract::incompleteParagraphs($version->body);
                     if ($incomplete !== []) {
                         app(ContentExecutionService::class)->recordReading($body->id, $author, false,
                             ['自动段落完整性检查未通过：第'.implode('、', array_column($incomplete, 'paragraph')).'段在句中截断。必须由模型补全或合理合并，不能删除残句或仅补标点冒充完整；不是人工阅读结论。'], $run->id);
@@ -208,7 +207,7 @@ final class FirstChapterService
                 }
                 break;
             case 'submission':
-                $submission = ChapterSubmissionRun::where('novel_id', $novel->id)->whereHas('chapter', fn ($query) => $query->where('number', $number))->latest('id')->first()
+                $submission = ChapterSubmissionRun::where('novel_id', $novel->id)->where('version_id', $artifacts['version_id'])->whereHas('chapter', fn ($query) => $query->where('number', $number))->latest('id')->first()
                     ?? app(ChapterSubmissionService::class)->prepare($artifacts['version_id'], $author, $number - 1, '第'.$number.'章自动授权评审与提取', dispatch: false, modelOverride: ChapterGenerationRun::findOrFail($artifacts['body_run_id'])->config['model']);
                 $artifacts['submission_run_id'] = $submission->id;
                 if ($submission->status === 'pending') {
@@ -337,7 +336,19 @@ final class FirstChapterService
         } elseif ($run->step === 'submission') {
             $submission = ChapterSubmissionRun::where('novel_id', $novel->id)->whereHas('chapter', fn ($query) => $query->where('number', $number))->latest('id')->first();
             if ($submission?->status === 'failed') {
-                app(ChapterSubmissionService::class)->prepare($submission->version_id, $author, $number - 1, '恢复自动首章提交准备', $recoveryLimit, false, $submission->id, $model ?? $submission->config['model']);
+                if ($submission->stop_reason === 'REVIEW_NOT_PASSED') {
+                    // 拒绝评审不能靠再次抽样变通过，必须绑定原评审另建定点修订。
+                    $review = ChapterReview::where('submission_run_id', $submission->id)->firstOrFail();
+                    $body = ChapterGenerationRun::where('chapter_id', $submission->chapter_id)->latest('id')->firstOrFail();
+                    $revised = app(ContentGenerationService::class)->recover($body->id, $author, '根据独立提交评审修订当前候选', executionLimit: $recoveryLimit, model: $model, submissionReviewId: $review->id);
+                    $run->step = 'content';
+                    $artifacts = $run->artifacts;
+                    $artifacts['body_run_id'] = $revised->id;
+                    unset($artifacts['version_id'], $artifacts['submission_run_id']);
+                    $run->artifacts = $artifacts;
+                } else {
+                    app(ChapterSubmissionService::class)->prepare($submission->version_id, $author, $number - 1, '恢复自动首章提交准备', $recoveryLimit, false, $submission->id, $model ?? $submission->config['model']);
+                }
             }
         }
         $run->update(['status' => 'pending', 'error' => null, 'history' => [...$run->history, ['action' => 'retry', 'operator_id' => $author->id, 'confirm_unknown' => $confirmUnknown, 'confirmed_unknown_log_ids' => $confirmUnknown ? CostLog::where('novel_id', $novel->id)->where('status', 'unknown')->pluck('id')->all() : [], 'rewrite' => $rewrite, 'model' => $model, 'at' => now()->toIso8601String()]]]);

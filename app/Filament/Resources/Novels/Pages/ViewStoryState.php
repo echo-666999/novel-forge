@@ -65,7 +65,7 @@ class ViewStoryState extends Page
             Section::make('截至本章的历史事件')->schema([
                 RepeatableEntry::make('events')->hiddenLabel()->state($replay['events'])->schema([
                     TextEntry::make('id')->label('事件编号'), TextEntry::make('chapter')->label('来源章号'),
-                    TextEntry::make('version_id')->label('正式正文版本'), TextEntry::make('category')->label('事实类别'),
+                    TextEntry::make('version_id')->label('正式正文记录编号'), TextEntry::make('category')->label('事实类别'),
                     TextEntry::make('time_scope')->label('时间范围'), TextEntry::make('summary')->label('事件')->columnSpanFull(),
                     RepeatableEntry::make('evidence')->label('正文证据')->schema([
                         TextEntry::make('paragraph')->label('段落'), TextEntry::make('quote')->label('原文')->columnSpanFull(),

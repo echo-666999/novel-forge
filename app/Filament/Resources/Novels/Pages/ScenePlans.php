@@ -55,14 +55,17 @@ class ScenePlans extends Page implements HasTable
     /** 章节大纲列表提供首版编辑，历史场景独立展示。 */
     public function table(Table $table): Table
     {
-        return $table->query(NovelOutlineChapter::whereHas('plan', fn ($q) => $q->where('novel_id', $this->getRecord()->id)))->defaultSort('chapter_number')->columns([
+        // 先集中同一大纲，再按章序展示，避免多个大纲的同章号交错。
+        return $table->query(NovelOutlineChapter::whereHas('plan', fn ($q) => $q->where('novel_id', $this->getRecord()->id)))->defaultSort(fn ($query) => $query->orderByDesc('outline_plan_id')->orderBy('chapter_number')->orderBy('id'))->columns([
+            // 相同章号可能来自不同大纲，始终展示来源记录以便区分。
+            TextColumn::make('outline_plan_id')->label('所属大纲记录编号'),
             TextColumn::make('chapter_number')->label('章号')->sortable(), TextColumn::make('title')->label('标题')->searchable()->wrap(),
             TextColumn::make('objective')->label('目标')->wrap(),
             TextColumn::make('scene_status')->label('最新场景状态')->state(fn (NovelOutlineChapter $record): string => $this->latest($record)?->status ?? '未规划'),
-        ])->filters([SelectFilter::make('outline_plan_id')->label('大纲版本')->options(fn (): array => $this->getRecord()->outlinePlans()->pluck('id', 'id')->all())])->recordActions([
+        ])->filters([SelectFilter::make('outline_plan_id')->label('大纲记录')->options(fn (): array => $this->getRecord()->outlinePlans()->orderByDesc('id')->pluck('id', 'id')->map(fn ($id): string => '大纲记录 #'.$id)->all())])->recordActions([
             Action::make('history')->label('版本与覆盖')->modalSubmitAction(false)->schema(fn (NovelOutlineChapter $record): array => [
                 TextEntry::make('points')->label('必须覆盖的推进点')->state(json_encode($record->progression_points, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT)),
-                TextEntry::make('versions')->label('全部版本及预检')->state(fn (): string => ScenePlanVersion::where('outline_chapter_id', $record->id)->latest('id')->get()->map(fn ($v): string => '#'.$v->id.' '.$v->status.' '.$v->reason."\n".implode('；', app(ScenePlanning::class)->issues($this->getRecord(), $record, $v->scenes))."\n".json_encode($v->scenes, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT))->implode("\n\n"))->prose(),
+                TextEntry::make('versions')->label('全部版本及预检')->state(fn (): string => ScenePlanVersion::where('outline_chapter_id', $record->id)->latest('id')->get()->map(fn ($v): string => '场景记录 #'.$v->id.' '.$v->status.' '.$v->reason."\n".implode('；', app(ScenePlanning::class)->issues($this->getRecord(), $record, $v->scenes))."\n".json_encode($v->scenes, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT))->implode("\n\n"))->prose(),
             ]),
             Action::make('edit')->label('编辑 / 拆分 / 合并')->visible(fn (NovelOutlineChapter $record): bool => ! $this->getRecord()->chapters()->where('number', $record->chapter_number)->exists())
                 ->fillForm(fn (NovelOutlineChapter $record): array => ['expected_id' => $this->latest($record)?->id, 'scenes' => $this->latest($record)?->scenes ?? [], 'freeze' => false, 'acknowledged' => false])

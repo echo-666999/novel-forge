@@ -118,6 +118,8 @@ class NovelResource extends Resource
             'foreshadows' => Pages\ViewForeshadows::route('/{record}/foreshadows'),
             'exports' => Pages\ExportCenter::route('/{record}/exports'),
             'acceptance' => Pages\AcceptanceWorkbench::route('/{record}/acceptance'),
+            // 逐章验收阅读：冻结正文与评分同屏，批次编号随路由校验归属。
+            'acceptanceReading' => Pages\AcceptanceReading::route('/{record}/acceptance/{batch}/read'),
             'knowledge' => Pages\ViewCharacterKnowledge::route('/{record}/knowledge'),
             'state' => Pages\ViewStoryState::route('/{record}/state'),
             'costs' => Pages\ViewNovelCosts::route('/{record}/costs'),

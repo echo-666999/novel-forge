@@ -21,10 +21,10 @@ final class OutlineGenerationAgent implements Agent, HasStructuredOutput
     /** 批次范围与参数来自已冻结计划。 */
     public function __construct(private TextRequestOptions $options) {}
 
-    /** 由同一冻结选项拼接模板，程序契约保持独立且不可由后台覆盖。 */
+    /** 固定文本取自冻结发布版本；输出结构和业务校验仍由程序控制。 */
     public function instructions(): string
     {
-        return $this->contractInstructions().$this->options->templateInstructions;
+        return ($this->options->builtinInstructions ?? $this->contractInstructions()).$this->options->templateInstructions;
     }
 
     /** 强制把行动造成的前后变化写清楚，资料中的指令不能改变契约。 */

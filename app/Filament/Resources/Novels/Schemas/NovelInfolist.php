@@ -61,7 +61,7 @@ class NovelInfolist
                         RepeatableEntry::make('confirmed_versions')->label('确认版本')->hiddenLabel()
                             ->state(fn (Novel $record): array => $record->settingConfirmations()->latest('id')->limit(1)->get()->map->toArray()->all())
                             ->columns(3)->schema([
-                                TextEntry::make('id')->label('确认版本编号'),
+                                TextEntry::make('id')->label('确认记录编号'),
                                 TextEntry::make('confirmed_by')->label('确认用户编号'),
                                 TextEntry::make('confirmed_at')->label('确认时间')->dateTime('Y-m-d H:i:s'),
                                 ...self::settingFields('setting.'),

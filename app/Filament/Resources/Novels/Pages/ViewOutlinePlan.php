@@ -59,7 +59,7 @@ class ViewOutlinePlan extends Page implements HasTable
         return $schema->components([
             Section::make('大纲计划')->description('此处是候选规划，不是已生成正文或正式故事事实。')->columns(3)->schema([
                 TextEntry::make('plan_status')->label('计划状态')->state(fn (): string => $this->plan()?->statusLabel() ?? '尚无计划'),
-                TextEntry::make('confirmation')->label('确认设定版本')->state(fn (): ?int => $this->plan()?->setting_confirmation_id),
+                TextEntry::make('confirmation')->label('确认设定记录编号')->state(fn (): ?int => $this->plan()?->setting_confirmation_id),
                 TextEntry::make('completed')->label('已接纳 / 目标章数')->state(fn (): string => ($this->plan() === null ? 0 : $this->plan()->next_chapter - 1).' / '.($this->plan()?->target_chapters ?? $this->getRecord()->target_chapters)),
                 TextEntry::make('model')->label('请求模型')->state(fn (): ?string => data_get($this->plan()?->config, 'model')),
                 TextEntry::make('next_chapter')->label('下批起始章')->state(fn (): string => $this->plan()?->status === 'completed' ? '无，全部完成' : (string) ($this->plan()?->next_chapter ?? '尚未开始')),

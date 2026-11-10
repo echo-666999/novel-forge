@@ -58,7 +58,8 @@ class EntityLibrary extends Page implements HasTable
     public function table(Table $table): Table
     {
         return $table->query(EntityDefinitionVersion::where('novel_id', $this->getRecord()->id))->defaultSort('id', 'desc')->columns([
-            TextColumn::make('id')->label('版本'), TextColumn::make('entity_id')->label('实体')->placeholder('新增候选'),
+            // 来源编号明确版本链，不以同名候选或空实体编号推断同一对象。
+            TextColumn::make('id')->label('设定记录编号'), TextColumn::make('parent_id')->label('来源记录编号')->placeholder('首次建立'), TextColumn::make('entity_id')->label('实体')->placeholder('新增候选'),
             TextColumn::make('definition.name')->label('名称')->searchable(), TextColumn::make('definition.type')->label('类型'),
             TextColumn::make('status')->label('状态')->formatStateUsing(fn (string $state): string => $state === 'approved' ? '已批准' : '候选'),
             TextColumn::make('effective_from')->label('生效起始章'), TextColumn::make('reason')->label('原因')->wrap(), TextColumn::make('created_at')->label('时间')->dateTime(),

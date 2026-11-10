@@ -6,6 +6,7 @@ use App\Enums\NovelStatus;
 use App\Jobs\PrepareChapterSubmissionJob;
 use App\Models\ChapterEventExtraction;
 use App\Models\ChapterGenerationRun;
+use App\Models\ChapterProgressionCheck;
 use App\Models\ChapterReview;
 use App\Models\ChapterSubmissionRun;
 use App\Models\ChapterSubmissionValidation;
@@ -13,6 +14,7 @@ use App\Models\ChapterVersion;
 use App\Models\CostLog;
 use App\Models\Novel;
 use App\Models\NovelSettingConfirmation;
+use App\Models\NovelStage;
 use App\Models\StoryEntity;
 use App\Models\StoryStateProjection;
 use App\Models\User;
@@ -62,7 +64,7 @@ final class ChapterSubmissionService
 
                 return [$existing, false];
             }
-            $bodyRun = ChapterGenerationRun::findOrFail($version->run_id);
+            $bodyRun = $this->acceptedBodyRun($version);
             app(ContentGenerationService::class)->assertFrozenSources($bodyRun);
             $confirmation = NovelSettingConfirmation::findOrFail($bodyRun->snapshot['confirmation_id']);
             if ($confirmation->confirmed_by !== $operator->id || $bodyRun->stop_reason !== 'b04_accepted') {
@@ -98,6 +100,10 @@ final class ChapterSubmissionService
             }
             $config = ['version' => SubmissionContract::VERSION, 'model' => $model, 'temperature' => 0, 'request_limit' => 2,
                 'operator_id' => $operator->id, 'reason' => $reason, 'protocol' => ['review' => hash('sha256', SubmissionContract::instructions('review')), 'extract' => hash('sha256', SubmissionContract::instructions('extract'))]];
+            if (isset($novel->generation_config['acceptance_branch']) && str_starts_with($model, 'deepseek')) {
+                // 新验收分支独立评审使用低推理，避免将文本提示直接复制成阻塞结论。
+                $config['review_reasoning_effort'] = 'low';
+            }
             if ($predecessor !== null) {
                 $config['predecessor'] = ['id' => $predecessor->id, 'input_hash' => $predecessor->input_hash, 'stop_reason' => $predecessor->stop_reason];
                 $config['repair_feedback'] = $this->repairFeedback($predecessor);
@@ -149,7 +155,7 @@ final class ChapterSubmissionService
         $version->refresh();
         $chapter = $version->chapter->fresh();
         $novel = $chapter->novel->fresh();
-        $bodyRun = ChapterGenerationRun::findOrFail($version->run_id);
+        $bodyRun = $this->acceptedBodyRun($version);
         if ($novel->status !== NovelStatus::Paused) {
             throw new InvalidArgumentException('NOVEL_NOT_PAUSED');
         }
@@ -173,6 +179,27 @@ final class ChapterSubmissionService
             'body_plan' => $bodyRun->plan_data ?? $bodyRun->snapshot['source_chapter'], 'content_sources' => $bodyRun->snapshot,
             'progression_hash' => PlanningJson::hash($chapter->progression_result), 'expected_state_version' => $expectedState,
             'entity_catalog' => $this->catalog($novel->id), 'state' => $projection?->state ?? ['entities' => []], 'state_hash' => $projection?->state_hash ?? PlanningJson::hash(['entities' => []])];
+    }
+
+    /** 原文复查不复制版本；仅允许当前检查指向已通过且摘要一致的受控复查运行。 */
+    private function acceptedBodyRun(ChapterVersion $version): ChapterGenerationRun
+    {
+        $original = ChapterGenerationRun::findOrFail($version->run_id);
+        if ($original->stop_reason === 'b04_accepted') {
+            return $original;
+        }
+        $check = ChapterProgressionCheck::find($version->chapter->progression_result['check_id'] ?? 0);
+        $stage = $check === null ? null : NovelStage::find($check->source_stage_id);
+        $recheck = $stage === null ? null : ChapterGenerationRun::find(data_get($stage->input, 'run_id'));
+        if ($check?->version_id !== $version->id || $check?->body_hash !== $version->body_hash || $check?->verdict !== 'pass'
+            || $recheck?->chapter_id !== $version->chapter_id || $recheck?->source_version_id !== $version->id
+            || $recheck?->stop_reason !== 'b04_accepted' || $recheck?->status !== 'completed'
+            || data_get($recheck?->config, 'automated_ending_recheck.body_hash') !== $version->body_hash) {
+            return $original;
+        }
+        app(ContentExecutionService::class)->validate($recheck);
+
+        return $recheck;
     }
 
     /** 每次发送及提交前重验冻结来源，正文或实体改变即失效。 */
@@ -239,6 +266,9 @@ final class ChapterSubmissionService
         try {
             $anchors = ContentSchema::anchors($version->body);
             $context = ['anchors' => $anchors, 'entity_catalog' => $run->snapshot['entity_catalog'], 'run_id' => $run->id, 'version_id' => $version->id, 'body_hash' => $version->body_hash];
+            if ($purpose === 'review' && isset($run->config['review_reasoning_effort'])) {
+                $context['deepseek_reasoning_effort'] = $run->config['review_reasoning_effort'];
+            }
             // 评审与提取继承正文冻结预算，并保留各自提交来源摘要。
             if (isset($run->snapshot['content_sources']['context_policy'])) {
                 $context['context_policy'] = $run->snapshot['content_sources']['context_policy'];

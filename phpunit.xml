@@ -18,6 +18,8 @@
         </include>
     </source>
     <php>
+        <!-- 全量回归含大量 Livewire 渲染，CLI 默认128M会在中途耗尽内存导致进程退出。 -->
+        <ini name="memory_limit" value="1G"/>
         <env name="APP_ENV" value="testing"/>
         <env name="APP_MAINTENANCE_DRIVER" value="file"/>
         <env name="BCRYPT_ROUNDS" value="4"/>

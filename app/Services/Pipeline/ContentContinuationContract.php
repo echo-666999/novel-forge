@@ -114,8 +114,9 @@ final class ContentContinuationContract
                 }
                 $covered[$number] = true;
             }
-            // 部分范围保持原文不影响其他合法范围；全份响应仍必须产生真实变化。
-            $changed = $changed || implode("\n", array_slice($lines, $start - 1, $end - $start + 1)) !== $range['text'];
+            // 仅增删空白或不可见字符不能冒充内容修订；其他范围仍可提供真实变化。
+            $original = implode("\n", array_slice($lines, $start - 1, $end - $start + 1));
+            $changed = $changed || preg_replace('/[\s\p{Z}\p{Cf}]/u', '', $original) !== preg_replace('/[\s\p{Z}\p{Cf}]/u', '', $range['text']);
             $ranges[] = ['start' => $start, 'end' => $end, 'text' => $range['text']];
         }
         if (! $changed) {

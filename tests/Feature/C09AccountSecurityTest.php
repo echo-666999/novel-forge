@@ -37,6 +37,6 @@ class C09AccountSecurityTest extends TestCase
         $this->assertTrue(Hash::check('test-password', $user->fresh()->password));
         // 模拟旧设备已通过认证但仍保存旧密码散列的下一次请求。
         $this->actingAs($user->fresh())->withSession(['password_hash_web' => $oldHash])
-            ->get('/admin/production-overview')->assertRedirect('/admin/login');
+            ->get('/admin')->assertRedirect('/admin/login');
     }
 }
