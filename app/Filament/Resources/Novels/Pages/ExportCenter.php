@@ -26,6 +26,7 @@ use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use InvalidArgumentException;
 use Symfony\Component\HttpFoundation\StreamedResponse;
+use UnitEnum;
 
 /** 私有导出中心，队列文件与现有同步下载并存，任务按账号隔离。 */
 class ExportCenter extends Page implements HasTable
@@ -35,6 +36,15 @@ class ExportCenter extends Page implements HasTable
 
     /** 小说资源的访问权限入口。 */
     protected static string $resource = NovelResource::class;
+
+    /** 单本小说子导航中的名称。 */
+    protected static ?string $navigationLabel = '导出中心';
+
+    /** 子导航排序。 */
+    protected static ?int $navigationSort = 16;
+
+    /** 子导航分组。 */
+    protected static string|UnitEnum|null $navigationGroup = '交付';
 
     /** 中文页面名称。 */
     protected static ?string $title = '正式导出中心';

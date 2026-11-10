@@ -7,6 +7,7 @@ use App\Services\Search\HybridSearch;
 use Filament\Resources\Pages\Concerns\InteractsWithRecord;
 use Filament\Resources\Pages\Page;
 use Illuminate\Validation\Rule;
+use UnitEnum;
 
 /** 作者检索实验室，显式操作才查询，刷新页面不自动产生嵌入费用。 */
 class SearchLab extends Page
@@ -15,6 +16,15 @@ class SearchLab extends Page
 
     /** 沿用小说资源访问权限。 */
     protected static string $resource = NovelResource::class;
+
+    /** 单本小说子导航中的名称。 */
+    protected static ?string $navigationLabel = '检索实验室';
+
+    /** 子导航排序。 */
+    protected static ?int $navigationSort = 14;
+
+    /** 子导航分组。 */
+    protected static string|UnitEnum|null $navigationGroup = '生产';
 
     /** 后台标题。 */
     protected static ?string $title = '中文检索实验室';

@@ -8,6 +8,7 @@ use App\Enums\Stage;
 use App\Filament\Resources\Novels\NovelResource;
 use App\Models\Novel;
 use App\Services\Pipeline\NovelArchiveService;
+use App\Services\Pipeline\NovelProgressQuery;
 use Filament\Actions\Action;
 use Filament\Actions\ViewAction;
 use Filament\Facades\Filament;
@@ -28,17 +29,17 @@ class NovelsTable
             ->emptyStateHeading('还没有小说')->emptyStateDescription('点击“创建小说”，保存你的第一条创意。')
             ->columns([
                 TextColumn::make('title')->label('书名')->searchable()->limit(35),
-                TextColumn::make('generation_mode')->label('生成模式')->formatStateUsing(fn (GenerationMode $state): string => $state->label()),
+                TextColumn::make('generation_mode')->label('生成模式')->formatStateUsing(fn (GenerationMode $state): string => $state->label())->toggleable(isToggledHiddenByDefault: true),
                 TextColumn::make('genre')->label('题材')->searchable()->placeholder('未填写'),
-                TextColumn::make('chapters_done')->label('正式章数')->sortable(),
-                TextColumn::make('archived_at')->label('归档时间')->dateTime('Y-m-d H:i')->placeholder('未归档'),
-                TextColumn::make('target_chapters')->label('目标章数')->suffix('章'),
+                TextColumn::make('chapters_done')->label('正式章数')->formatStateUsing(fn (Novel $record): string => $record->chapters_done.' / '.$record->target_chapters)->sortable(),
+                TextColumn::make('archived_at')->label('归档时间')->dateTime('Y-m-d H:i')->placeholder('未归档')->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('progress')->label('当前进度')->state(fn (Novel $record): string => app(NovelProgressQuery::class)->for($record)['headline'])->wrap(),
                 TextColumn::make('status')->label('状态')->badge()
                     ->formatStateUsing(fn (NovelStatus $state, Novel $record): string => NovelResource::statusLabel($state, $record))
                     ->color(fn (NovelStatus $state): string => NovelResource::statusColor($state)),
                 TextColumn::make('current_stage')->label('当前阶段')->placeholder('尚未开始')
                     ->formatStateUsing(fn (?Stage $state): ?string => $state?->label()),
-                TextColumn::make('execution_count')->label('执行次数 / 上限')
+                TextColumn::make('execution_count')->label('执行次数 / 上限')->toggleable(isToggledHiddenByDefault: true)
                     ->formatStateUsing(fn (Novel $record): string => $record->execution_count.' / '.$record->max_execution_count),
                 TextColumn::make('updated_at')->label('最近活动')->dateTime('Y-m-d H:i:s')->sortable(),
             ])
@@ -48,7 +49,7 @@ class NovelsTable
                     ->options(collect(NovelStatus::cases())->mapWithKeys(fn (NovelStatus $status): array => [$status->value => NovelResource::statusLabel($status)])->all()),
             ])
             ->recordActions([
-                ViewAction::make()->label('查看'),
+                ViewAction::make()->label('打开工作台'),
                 Action::make('copyInput')->label('复制创作输入')->url(fn (Novel $record): string => NovelResource::getUrl('create', ['copy_from' => $record->id])),
                 // 归档只是分类；弹窗明确不改变队列运行，避免作者误以为已经暂停。
                 Action::make('archive')->label(fn (Novel $record): string => $record->archived_at ? '恢复到书架' : '归档')

@@ -446,7 +446,7 @@ class B04ExecutionTest extends TestCase
             'tokens' => 8192, 'request_limit' => 5, 'execution_limit' => 20, 'reason' => '隔离后台启动', 'accept_request' => true])->assertHasNoActionErrors();
         $this->drain();
         $run = ChapterGenerationRun::sole();
-        Livewire::test(ViewChapterContent::class, ['record' => $novel->id])->assertSee('记录B04全文核对')
+        Livewire::test(ViewChapterContent::class, ['record' => $novel->id])->assertSee('记录全文核对')
             ->assertDontSee('持续推进B04')->assertDontSee('按段落预算恢复')->assertDontSee('修复锚点协议并继续')
             ->callAction('fullReading', ['accepted' => true, 'notes' => '隔离实现核对通过'])->assertHasNoActionErrors();
         $this->assertSame('b04_accepted', $run->fresh()->stop_reason);

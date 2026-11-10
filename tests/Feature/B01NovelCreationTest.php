@@ -2,12 +2,14 @@
 
 namespace Tests\Feature;
 
+use App\Enums\GenerationMode;
 use App\Enums\NovelStatus;
 use App\Filament\Resources\Novels\NovelResource;
 use App\Filament\Resources\Novels\Pages\CreateNovel;
 use App\Filament\Resources\Novels\Pages\ListNovels;
 use App\Filament\Resources\Novels\Pages\ViewNovel;
 use App\Jobs\RunNovelPipelineJob;
+use App\Jobs\RunSettingJob;
 use App\Models\Novel;
 use App\Models\User;
 use App\Services\Pipeline\CreateNovelService;
@@ -54,6 +56,9 @@ class B01NovelCreationTest extends TestCase
     protected function tearDown(): void
     {
         Http::assertNothingSent();
+        // 向导默认创建真实设定小说；仅在内存库中还原模式，以便迁移回滚的保护不拦截夹具清理。
+        $this->assertSame(':memory:', DB::connection()->getDatabaseName());
+        DB::table('novels')->update(['generation_mode' => 'simulation']);
         parent::tearDown();
     }
 
@@ -65,28 +70,28 @@ class B01NovelCreationTest extends TestCase
         return ['title' => '归舟录', 'genre' => '悬疑', 'premise_raw' => "守灯人每晚收到未来的来信。\n她必须找到十年前失踪的师父。", 'target_chapters' => 10, 'chapter_length_policy' => ['min_characters' => 2500, 'max_characters' => 3500]];
     }
 
-    /** 表单保存完整原文后只入队，返回可轮询列表，不在 HTTP 内运行阶段。 */
+    /** 向导默认“逐章确认”：保存完整原文后只入队真实设定，进入工作台，不在 HTTP 内运行阶段，也不再提供模拟流程。 */
     public function test_form_creates_one_pending_novel_and_queues_start_after_commit(): void
     {
-        $page = Livewire::test(CreateNovel::class)->assertSuccessful()->assertSee('创建并启动');
-        // 首屏按钮必须提交原表单，不能绕过校验或另建一条创建流程。
-        $action = $page->instance()->getCachedHeaderActions()[0];
-        $this->assertSame('form', $action->getFormId());
-        $this->assertSame('create', $action->getFormToSubmit());
+        $page = Livewire::test(CreateNovel::class)->assertSuccessful()->assertSee('创意输入')->assertSee('生产方式')->assertSee('确认启动')
+            ->assertSet('data.production_mode', 'manual');
         $page->fillForm($this->input())->call('create')
-            ->assertHasNoFormErrors()->assertRedirect(NovelResource::getUrl('index'))
+            ->assertHasNoFormErrors()
             ->assertNotified('小说已创建，已提交启动请求');
         $novel = Novel::query()->sole();
+        $page->assertRedirect(NovelResource::getUrl('view', ['record' => $novel]));
+        $this->assertSame(GenerationMode::SettingReal, $novel->generation_mode);
         $this->assertSame($this->input()['premise_raw'], $novel->premise_raw);
         $this->assertSame($this->input()['chapter_length_policy'], $novel->chapter_length_policy);
         $this->assertSame(NovelStatus::Pending, $novel->status);
         $this->assertSame(0, $novel->execution_count);
         $this->assertSame(0, $novel->stages()->count());
-        Queue::assertPushed(RunNovelPipelineJob::class, fn (RunNovelPipelineJob $job): bool => $job->novelId === $novel->id && $job->connection === 'redis' && $job->enableFineOutline);
+        Queue::assertPushed(RunSettingJob::class, fn (RunSettingJob $job): bool => $job->novelId === $novel->id && $job->connection === 'redis');
+        Queue::assertNotPushed(RunNovelPipelineJob::class);
         // Filament 提交锁在跳转前阻止同一组件再次创建，禁用“创建并继续”。
         $page->call('create');
         $this->assertSame(1, Novel::query()->count());
-        Queue::assertPushed(RunNovelPipelineJob::class, 1);
+        Queue::assertPushed(RunSettingJob::class, 1);
         $this->assertFalse($page->instance()->canCreateAnother());
     }
 
@@ -156,9 +161,9 @@ class B01NovelCreationTest extends TestCase
     public function test_dispatch_failure_preserves_novel_and_warns_on_form(): void
     {
         Bus::shouldReceive('dispatch')->once()->andThrow(new RuntimeException('secret-不能回显'));
-        Livewire::test(CreateNovel::class)->fillForm($this->input())->call('create')
-            ->assertRedirect(NovelResource::getUrl('index'))->assertNotified('小说已保存，启动投递未确认');
+        $page = Livewire::test(CreateNovel::class)->fillForm($this->input())->call('create')->assertNotified('小说已保存，启动投递未确认');
         $novel = Novel::query()->sole();
+        $page->assertRedirect(NovelResource::getUrl('view', ['record' => $novel]));
         $this->assertSame(NovelStatus::Error, $novel->status);
         $this->assertSame($this->input()['premise_raw'], $novel->premise_raw);
         $this->assertSame(0, $novel->stages()->count());

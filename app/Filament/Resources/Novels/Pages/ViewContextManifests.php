@@ -20,6 +20,7 @@ use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Livewire\Attributes\Locked;
+use UnitEnum;
 
 /** 只读上下文检查器：展示当时冻结清单，不使用当前状态重建历史请求。 */
 class ViewContextManifests extends Page implements HasTable
@@ -29,6 +30,15 @@ class ViewContextManifests extends Page implements HasTable
 
     /** 使用小说资源的后台权限。 */
     protected static string $resource = NovelResource::class;
+
+    /** 单本小说子导航中的名称。 */
+    protected static ?string $navigationLabel = '上下文检查器';
+
+    /** 子导航排序。 */
+    protected static ?int $navigationSort = 13;
+
+    /** 子导航分组。 */
+    protected static string|UnitEnum|null $navigationGroup = '生产';
 
     /** 作者可见标题。 */
     protected static ?string $title = '上下文检查器';

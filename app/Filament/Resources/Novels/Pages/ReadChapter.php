@@ -22,6 +22,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\HtmlString;
 use Illuminate\Validation\ValidationException;
 use Livewire\Attributes\Locked;
+use UnitEnum;
 
 /** 按书及不可变版本隔离的阅读页，作者阅读标记不替代提交评审。 */
 class ReadChapter extends Page
@@ -30,6 +31,15 @@ class ReadChapter extends Page
 
     /** 所属小说资源。 */
     protected static string $resource = NovelResource::class;
+
+    /** 单本小说子导航中的名称。 */
+    protected static ?string $navigationLabel = '阅读器';
+
+    /** 子导航排序。 */
+    protected static ?int $navigationSort = 11;
+
+    /** 子导航分组。 */
+    protected static string|UnitEnum|null $navigationGroup = '正文';
 
     /** 阅读页标题。 */
     protected static ?string $title = '正文阅读';

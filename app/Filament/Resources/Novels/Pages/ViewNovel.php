@@ -14,6 +14,7 @@ use App\Services\Ai\ModelProfiles;
 use App\Services\Pipeline\ConfirmSettingService;
 use App\Services\Pipeline\ContentGenerationService;
 use App\Services\Pipeline\FormalChapterExport;
+use App\Services\Pipeline\NovelProgressQuery;
 use App\Services\Pipeline\OutlineGenerationService;
 use App\Services\Pipeline\ProductionRunService;
 use App\Settings\GeneralSettings;
@@ -34,6 +35,12 @@ class ViewNovel extends ViewRecord
 {
     protected static string $resource = NovelResource::class;
 
+    /** 单本小说子导航中的名称。 */
+    protected static ?string $navigationLabel = '概览';
+
+    /** 子导航排序。 */
+    protected static ?int $navigationSort = 0;
+
     /** 请求预算由已冻结的细纲开关和当前修订设置共同决定。 */
     private function contentRequestCap(): int
     {
@@ -48,17 +55,6 @@ class ViewNovel extends ViewRecord
     protected function getHeaderActions(): array
     {
         $actions = [
-            // 作者规划入口在手动与自动小说中均可达，不自动修改正式状态。
-            Action::make('requirements')->label('覆盖矩阵')->url(fn (): string => NovelResource::getUrl('requirements', ['record' => $this->getRecord()])),
-            Action::make('blueprints')->label('蓝图版本')->url(fn (): string => NovelResource::getUrl('blueprints', ['record' => $this->getRecord()])),
-            Action::make('exports')->label('导出中心')->url(fn (): string => NovelResource::getUrl('exports', ['record' => $this->getRecord()])),
-            Action::make('acceptance')->label('验收工作台')->url(fn (): string => NovelResource::getUrl('acceptance', ['record' => $this->getRecord()])),
-            Action::make('knowledge')->label('角色知识与时序')->url(fn (): string => NovelResource::getUrl('knowledge', ['record' => $this->getRecord()])),
-            Action::make('entities')->label('人物与实体库')->url(fn (): string => NovelResource::getUrl('entities', ['record' => $this->getRecord()])),
-            Action::make('scenes')->label('场景规划')->url(fn (): string => NovelResource::getUrl('scenes', ['record' => $this->getRecord()])),
-            Action::make('structure')->label('卷弧规划')->url(fn (): string => NovelResource::getUrl('structure', ['record' => $this->getRecord()])),
-            // 章节目录在自动和手动小说中均可达。
-            Action::make('chapters')->label('章节目录')->url(fn (): string => NovelResource::getUrl('chapters', ['record' => $this->getRecord()])),
             // 正式导出对手动和自动生成小说均开放，只导出从第一章开始的连续正式版本。
             Action::make('exportFormal')->label('导出正式章节')->visible(fn (): bool => $this->getRecord()->chapters_done > 0)
                 ->modalHeading('导出 TXT / Markdown')->modalDescription('从第1章导出至指定章，包含目录。仅使用正式提交版本，缺章或来源损坏时拒绝导出。不调用AI。')
@@ -79,16 +75,9 @@ class ViewNovel extends ViewRecord
                         echo $export['content'];
                     }, $export['filename'], ['Content-Type' => $export['mime'], 'Cache-Control' => 'private, no-store']);
                 }),
-            // 状态回放仅查询正式历史，自动编排小说也保留入口。
-            // 自动运行小说同样允许查看和维护伏笔账本。
-            // 上下文清单同样向自动生成小说开放只读查看。
-            // 作者检索只查正式来源，外部嵌入由实验室显式启用。
-            Action::make('searchLab')->label('中文检索实验室')->url(fn (): string => NovelResource::getUrl('search', ['record' => $this->getRecord()])),
-            Action::make('viewContexts')->label('上下文检查器')->url(fn (): string => NovelResource::getUrl('contexts', ['record' => $this->getRecord()])),
-            Action::make('viewForeshadows')->label('伏笔账本')->url(fn (): string => NovelResource::getUrl('foreshadows', ['record' => $this->getRecord()])),
-            Action::make('viewState')->label('故事状态回放')->url(fn (): string => NovelResource::getUrl('state', ['record' => $this->getRecord()])),
-            Action::make('viewCosts')->label('调用成本明细')->url(fn (): string => NovelResource::getUrl('costs', ['record' => $this->getRecord()])),
-            Action::make('viewRun')->label('运行详情与恢复')->url(fn (): string => NovelResource::getUrl('run', ['record' => $this->getRecord()])),
+            // 其他页面入口在左侧子导航；有在途运行时额外给出进度入口。
+            Action::make('viewRun')->label('查看运行进度')->url(fn (): string => NovelResource::getUrl('run', ['record' => $this->getRecord()]))
+                ->visible(fn (): bool => ProductionRun::activeFor($this->getRecord()->id) !== null),
             Action::make('generateFirstChapter')->label('生成第1章')->modalHeading('生成首章候选并独立检查推进')
                 ->visible(fn (): bool => $this->getRecord()->outlinePlans()->where('status', 'completed')->exists() && ! $this->getRecord()->chapters()->exists())
                 ->modalDescription(fn (): string => '仅生成首章候选，不代表正式稿。模型'.app(GeneralSettings::class)->default_model.'，启动时冻结；本小说剩余执行额度'.max(0, $this->getRecord()->max_execution_count - $this->getRecord()->execution_count).'次。启用细纲时依次调用细纲、正文、独立推进检查；细纲和检查各4096输出Token、正文默认8192。请求总上限以下方数值为准，默认开启细纲最多5次、关闭最多4次，最多修订一次；全局设置为0时不修订。技术失败或额度不足立即停止。通用设置保持不变，金额未知不代表免费。')
@@ -180,8 +169,6 @@ class ViewNovel extends ViewRecord
                     Notification::make()->title('计划状态：'.$plan->statusLabel())->body('每批最多10章；投递未确认时请检查状态，不要重复创建。')->send();
                     $this->redirect(NovelResource::getUrl('outline', ['record' => $this->getRecord()]));
                 }),
-            Action::make('viewOutline')->label('查看大纲')->url(fn (): string => NovelResource::getUrl('outline', ['record' => $this->getRecord()]))
-                ->visible(fn (): bool => $this->getRecord()->outlinePlans()->exists()),
             Action::make('continueOutline')->label('继续大纲')->modalHeading('显式继续现有大纲')
                 ->visible(fn (): bool => $this->getRecord()->outlinePlans()->whereIn('status', ['paused', 'error'])->exists())
                 ->modalDescription('已成功章节不会重跑。未知结果须先核查费用；提高上限仅作用于本小说并记录原因。')
@@ -199,7 +186,21 @@ class ViewNovel extends ViewRecord
         ];
         // 自动小说同样保留检索实验室及只读产物入口，推进与恢复仍经独占编排器。
         if (ProductionRun::activeFor($this->getRecord()->id) !== null) {
-            return array_values(array_filter($actions, fn (Action $action): bool => in_array($action->getName(), ['entities', 'scenes', 'exports', 'acceptance', 'knowledge', 'requirements', 'blueprints', 'structure', 'chapters', 'exportFormal', 'searchLab', 'viewContexts', 'viewForeshadows', 'viewState', 'viewCosts', 'viewRun', 'viewContent', 'refreshStatus', 'viewOutline'], true)));
+            return $this->highlight(array_values(array_filter($actions, fn (Action $action): bool => in_array($action->getName(), ['exportFormal', 'viewRun', 'viewContent', 'refreshStatus'], true))));
+        }
+
+        return $this->highlight($actions);
+    }
+
+    /** 只把“下一步”对应的动作标为主色，其余为灰色，避免作者在多个按钮间猜测。
+     * @param  list<Action>  $actions
+     * @return list<Action>
+     */
+    private function highlight(array $actions): array
+    {
+        $primary = app(NovelProgressQuery::class)->for($this->getRecord())['action'];
+        foreach ($actions as $action) {
+            $action->color(in_array($action->getName(), [$primary, $primary === 'extendProduction' ? 'generateNextChapter' : null, 'viewRun'], true) ? 'primary' : 'gray');
         }
 
         return $actions;

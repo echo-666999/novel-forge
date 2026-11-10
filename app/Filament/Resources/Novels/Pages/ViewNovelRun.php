@@ -36,6 +36,7 @@ use Filament\Tables\Concerns\InteractsWithTable;
 use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Table;
 use InvalidArgumentException;
+use UnitEnum;
 
 /** 集中查看流水线与失败尝试，恢复动作复用原服务，不改写已有产物。 */
 class ViewNovelRun extends Page implements HasTable
@@ -45,6 +46,15 @@ class ViewNovelRun extends Page implements HasTable
 
     /** 页面所属小说资源。 */
     protected static string $resource = NovelResource::class;
+
+    /** 单本小说子导航中的名称。 */
+    protected static ?string $navigationLabel = '运行与恢复';
+
+    /** 子导航排序。 */
+    protected static ?int $navigationSort = 12;
+
+    /** 子导航分组。 */
+    protected static string|UnitEnum|null $navigationGroup = '生产';
 
     /** 面向作者的运行入口标题。 */
     protected static ?string $title = '运行详情与恢复台';
@@ -60,13 +70,16 @@ class ViewNovelRun extends Page implements HasTable
     public function content(Schema $schema): Schema
     {
         return $schema->components([
-            Section::make('当前运行')->columns(3)->schema([
-                TextEntry::make('novel_title')->label('小说')->state(fn (): string => $this->getRecord()->title),
-                TextEntry::make('run_status')->label('状态')->state(fn (): string => NovelResource::statusLabel($this->getRecord()->status, $this->getRecord())),
-                TextEntry::make('pause_state')->label('暂停请求')->state(fn (): string => $this->getRecord()->pause_requested ? '已请求：在途调用完成后不再启动下一步' : '未请求'),
-                TextEntry::make('count')->label('执行次数 / 上限')->state(fn (): string => $this->getRecord()->execution_count.' / '.$this->getRecord()->max_execution_count),
-                TextEntry::make('formal')->label('正式章数 / 故事版本')->state(fn (): string => $this->getRecord()->chapters_done.' / '.$this->getRecord()->state_version),
-            ]),
+            Section::make('当前运行')->columns(3)
+                // 有在途运行时每5秒刷新，离开后回来也显示真实进度。
+                ->extraAttributes(fn (): array => in_array($this->automation()?->status, ['pending', 'running', 'recovering', 'reconciling'], true) ? ['wire:poll.5s' => ''] : [])
+                ->schema([
+                    TextEntry::make('novel_title')->label('小说')->state(fn (): string => $this->getRecord()->title),
+                    TextEntry::make('run_status')->label('状态')->state(fn (): string => NovelResource::statusLabel($this->getRecord()->status, $this->getRecord())),
+                    TextEntry::make('pause_state')->label('暂停请求')->state(fn (): string => $this->getRecord()->pause_requested ? '已请求：在途调用完成后不再启动下一步' : '未请求'),
+                    TextEntry::make('count')->label('执行次数 / 上限')->state(fn (): string => $this->getRecord()->execution_count.' / '.$this->getRecord()->max_execution_count),
+                    TextEntry::make('formal')->label('正式章数 / 故事版本')->state(fn (): string => $this->getRecord()->chapters_done.' / '.$this->getRecord()->state_version),
+                ]),
             Section::make('自动生产运行与进度')->visible(fn (): bool => $this->automation() !== null)->columns(2)->schema([
                 TextEntry::make('automation_chapters')->label('授权范围 / 当前章')->state(fn (): string => '第'.$this->automation()?->start_chapter.'～'.$this->automation()?->chapter_limit.'章 / 第'.($this->automation()?->artifacts['chapter_number'] ?? $this->automation()?->start_chapter).'章'),
                 TextEntry::make('automation_state')->label('当前步骤')->state(fn (): string => self::stepLabel($this->automation()?->step).' · '.self::statusLabel($this->automation()?->status)),
@@ -91,7 +104,7 @@ class ViewNovelRun extends Page implements HasTable
             Section::make('已有生成与提交产物')->description('保留独立运行的停止原因；正文修复和评审重跑请进入“正文产物 / AI修复”。')->schema([
                 RepeatableEntry::make('runs')->label('运行记录')->hiddenLabel()->state(fn (): array => $this->runSummary())->columns(3)->schema([
                     TextEntry::make('kind')->label('类型'), TextEntry::make('id')->label('编号'), TextEntry::make('status')->label('状态'),
-                    TextEntry::make('reason')->label('停止原因 / 错误码')->placeholder('无'), TextEntry::make('requests')->label('已用 / 授权请求数')->placeholder('按小说执行额度'),
+                    TextEntry::make('reason')->label('停止原因')->placeholder('无'), TextEntry::make('requests')->label('已用 / 授权请求数')->placeholder('按小说执行额度'),
                 ]),
             ]),
             EmbeddedTable::make(),
@@ -117,7 +130,8 @@ class ViewNovelRun extends Page implements HasTable
     {
         return match ($status) {
             'pending' => '排队中', 'running' => '运行中', 'failed' => '已停止，等你处理', 'recovering' => '正在准备恢复',
-            'reconciling' => '正在对账', 'completed' => '已完成', default => $status ?? '无',
+            'reconciling' => '正在对账', 'completed' => '已完成', 'paused' => '已暂停', 'error' => '异常', 'ready' => '可正式提交',
+            'awaiting_approval' => '等待批准新实体', 'committed' => '已正式提交', default => $status ?? '无',
         };
     }
 
@@ -202,12 +216,12 @@ class ViewNovelRun extends Page implements HasTable
     private function runSummary(): array
     {
         $novel = $this->getRecord();
-        $plans = $novel->outlinePlans()->latest('id')->limit(10)->get()->map(fn ($plan): array => ['kind' => '大纲', 'id' => $plan->id, 'status' => $plan->statusLabel(), 'reason' => $plan->stop_reason, 'requests' => null])->all();
+        $plans = $novel->outlinePlans()->latest('id')->limit(10)->get()->map(fn ($plan): array => ['kind' => '大纲', 'id' => $plan->id, 'status' => $plan->statusLabel(), 'reason' => ProductionFailure::detailLabel($plan->stop_reason), 'requests' => null])->all();
         $runs = ChapterGenerationRun::whereHas('chapter', fn ($query) => $query->where('novel_id', $novel->id))->latest('id')->limit(10)->get();
         $submissions = ChapterSubmissionRun::where('novel_id', $novel->id)->latest('id')->limit(10)->get();
         foreach (['正文' => $runs, '评审与事件提取' => $submissions] as $kind => $items) {
             foreach ($items as $run) {
-                $plans[] = ['kind' => $kind, 'id' => $run->id, 'status' => $run->status, 'reason' => $run->stop_reason, 'requests' => $run->requests_used.' / '.$run->request_limit];
+                $plans[] = ['kind' => $kind, 'id' => $run->id, 'status' => self::statusLabel($run->status), 'reason' => ProductionFailure::detailLabel($run->stop_reason), 'requests' => $run->requests_used.' / '.$run->request_limit];
             }
         }
 

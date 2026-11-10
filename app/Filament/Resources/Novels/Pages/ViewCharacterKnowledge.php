@@ -17,6 +17,7 @@ use Filament\Schemas\Schema;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use InvalidArgumentException;
 use Livewire\Attributes\Url;
+use UnitEnum;
 
 /** 按章查看明确的角色认知和叙述事件，不将事件参与自动视为知情。 */
 class ViewCharacterKnowledge extends Page
@@ -25,6 +26,15 @@ class ViewCharacterKnowledge extends Page
 
     /** 所属小说资源。 */
     protected static string $resource = NovelResource::class;
+
+    /** 单本小说子导航中的名称。 */
+    protected static ?string $navigationLabel = '角色知识与时序';
+
+    /** 子导航排序。 */
+    protected static ?int $navigationSort = 7;
+
+    /** 子导航分组。 */
+    protected static string|UnitEnum|null $navigationGroup = '人物与世界';
 
     /** 中文页面标题。 */
     protected static ?string $title = '角色知识与事件时序';

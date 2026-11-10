@@ -17,6 +17,7 @@ use Filament\Tables\Table;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
 use Livewire\Attributes\Locked;
+use UnitEnum;
 
 /** 提示词版本后台；复制编辑永远产生新草稿，历史只读。 */
 class ManagePromptTemplates extends Page implements HasTable
@@ -25,6 +26,9 @@ class ManagePromptTemplates extends Page implements HasTable
 
     /** 导航和页面名称。 */
     protected static ?string $title = 'Prompt 模板管理';
+
+    /** 侧栏分组。 */
+    protected static string|UnitEnum|null $navigationGroup = '配置与运维';
 
     /** 模板编辑与历史视图。 */
     protected string $view = 'filament.pages.manage-prompt-templates';

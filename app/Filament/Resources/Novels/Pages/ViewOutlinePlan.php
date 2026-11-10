@@ -19,6 +19,7 @@ use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Concerns\InteractsWithTable;
 use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Table;
+use UnitEnum;
 
 /** 按小说隔离、按章分页阅读大纲候选和完整推进点，不编辑成功产物。 */
 class ViewOutlinePlan extends Page implements HasTable
@@ -27,6 +28,15 @@ class ViewOutlinePlan extends Page implements HasTable
     use InteractsWithTable;
 
     protected static string $resource = NovelResource::class;
+
+    /** 单本小说子导航中的名称。 */
+    protected static ?string $navigationLabel = '章节大纲';
+
+    /** 子导航排序。 */
+    protected static ?int $navigationSort = 4;
+
+    /** 子导航分组。 */
+    protected static string|UnitEnum|null $navigationGroup = '规划';
 
     protected static ?string $title = '大纲候选';
 

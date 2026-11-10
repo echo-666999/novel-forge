@@ -69,9 +69,7 @@ class C09NovelManagementTest extends TestCase
         Livewire::withQueryParams(['copy_from' => $novel->id])->test(CreateNovel::class)
             ->assertSet('data.title', '原书（副本）')
             ->assertSet('data.premise_raw', $novel->premise_raw)
-            ->assertSet('data.generation_mode', 'simulation')
-            ->assertSet('data.automatic_first_ten', false)
-            ->assertSet('data.automatic_first_chapter', false);
+            ->assertSet('data.production_mode', 'manual');
         $this->assertSame(1, Novel::count());
         Bus::assertNothingDispatched();
         Http::assertNothingSent();

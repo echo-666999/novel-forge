@@ -24,6 +24,7 @@ use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Filters\TernaryFilter;
 use Filament\Tables\Table;
 use Illuminate\Validation\ValidationException;
+use UnitEnum;
 
 /** 按书隔离的章节目录，手动与自动流程均可直达指定章节阅读页。 */
 class ChapterDirectory extends Page implements HasTable
@@ -33,6 +34,15 @@ class ChapterDirectory extends Page implements HasTable
 
     /** 沿用小说资源的访问规则。 */
     protected static string $resource = NovelResource::class;
+
+    /** 单本小说子导航中的名称。 */
+    protected static ?string $navigationLabel = '章节目录';
+
+    /** 子导航排序。 */
+    protected static ?int $navigationSort = 9;
+
+    /** 子导航分组。 */
+    protected static string|UnitEnum|null $navigationGroup = '正文';
 
     /** 导航与面包屑标题。 */
     protected static ?string $title = '章节目录';

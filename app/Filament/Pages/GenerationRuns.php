@@ -18,6 +18,7 @@ use Filament\Tables\Filters\Filter;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
+use UnitEnum;
 
 /** 跨小说章节运行索引，恢复入口回到原书并沿用其冻结输入和授权。 */
 class GenerationRuns extends Page implements HasTable
@@ -26,6 +27,9 @@ class GenerationRuns extends Page implements HasTable
 
     /** 侧栏与页面标题明确只包含章节生成运行。 */
     protected static ?string $title = '章节生成运行中心';
+
+    /** 侧栏分组。 */
+    protected static string|UnitEnum|null $navigationGroup = '生产与质量';
 
     /** 在小说管理之后展示跨书运行索引。 */
     protected static ?int $navigationSort = 2;

@@ -25,6 +25,7 @@ use Filament\Tables\Concerns\InteractsWithTable;
 use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
+use UnitEnum;
 
 /** 作者卷弧规划编辑入口，草稿与生成可用冻结版本分开。 */
 class StoryStructurePlan extends Page implements HasTable
@@ -34,6 +35,15 @@ class StoryStructurePlan extends Page implements HasTable
 
     /** 小说资源权限及面包屑。 */
     protected static string $resource = NovelResource::class;
+
+    /** 单本小说子导航中的名称。 */
+    protected static ?string $navigationLabel = '卷与故事弧';
+
+    /** 子导航排序。 */
+    protected static ?int $navigationSort = 3;
+
+    /** 子导航分组。 */
+    protected static string|UnitEnum|null $navigationGroup = '规划';
 
     /** 页面名称。 */
     protected static ?string $title = '卷与故事弧规划';

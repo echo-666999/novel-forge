@@ -25,6 +25,7 @@ use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Table;
 use Illuminate\Support\HtmlString;
 use Livewire\Attributes\Locked;
+use UnitEnum;
 
 /** 已确认蓝图的来源、完整内容与版本对照，所有批准沿用既有确认契约。 */
 class BlueprintVersions extends Page implements HasTable
@@ -34,6 +35,15 @@ class BlueprintVersions extends Page implements HasTable
 
     /** 归属于小说的权限与导航。 */
     protected static string $resource = NovelResource::class;
+
+    /** 单本小说子导航中的名称。 */
+    protected static ?string $navigationLabel = '设定与蓝图';
+
+    /** 子导航排序。 */
+    protected static ?int $navigationSort = 2;
+
+    /** 子导航分组。 */
+    protected static string|UnitEnum|null $navigationGroup = '规划';
 
     /** 中文页面标题。 */
     protected static ?string $title = '蓝图与设定版本';

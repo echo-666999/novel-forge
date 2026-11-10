@@ -48,7 +48,7 @@ class AdminLoginTest extends TestCase
             ->assertRedirect(Filament::getUrl());
 
         $this->assertAuthenticatedAs($user);
-        $this->get('/admin')->assertOk()->assertSee('生产总览与功能导航');
+        $this->get('/admin')->assertOk()->assertSee('生产总览');
     }
 
     public function test_incorrect_password_does_not_authenticate_the_user(): void

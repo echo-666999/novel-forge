@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Novels\Pages;
 
+use App\Enums\ProductionFailure;
 use App\Filament\Resources\Novels\NovelResource;
 use App\Models\CanonicalCommit;
 use App\Models\ChapterEventExtraction;
@@ -21,6 +22,7 @@ use App\Services\Pipeline\ContentGenerationService;
 use App\Services\Pipeline\ContentPromptAudit;
 use App\Services\Pipeline\ContentReadingAudit;
 use App\Services\Pipeline\ContentSchema;
+use App\Services\Pipeline\NovelProgressQuery;
 use App\Services\Pipeline\PlanningJson;
 use App\Services\Pipeline\RevisionWorkbench;
 use App\Settings\GeneralSettings;
@@ -38,6 +40,8 @@ use Filament\Resources\Pages\Concerns\InteractsWithRecord;
 use Filament\Resources\Pages\Page;
 use Filament\Schemas\Components\EmbeddedTable;
 use Filament\Schemas\Components\Section;
+use Filament\Schemas\Components\Tabs;
+use Filament\Schemas\Components\Tabs\Tab;
 use Filament\Schemas\Schema;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Concerns\InteractsWithTable;
@@ -47,6 +51,7 @@ use Illuminate\Support\Facades\Schema as DatabaseSchema;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 use Livewire\Attributes\Url;
+use UnitEnum;
 
 /** 按章节阅读及证据页面，失败正文和每版历史始终可见。 */
 class ViewChapterContent extends Page implements HasTable
@@ -55,6 +60,15 @@ class ViewChapterContent extends Page implements HasTable
     use InteractsWithTable;
 
     protected static string $resource = NovelResource::class;
+
+    /** 单本小说子导航中的名称。 */
+    protected static ?string $navigationLabel = '正文工作台';
+
+    /** 子导航排序。 */
+    protected static ?int $navigationSort = 10;
+
+    /** 子导航分组。 */
+    protected static string|UnitEnum|null $navigationGroup = '正文';
 
     protected static ?string $title = '章节候选与推进检查';
 
@@ -72,6 +86,23 @@ class ViewChapterContent extends Page implements HasTable
         abort_unless(NovelResource::canView($this->getRecord()), 403);
     }
 
+    /** 本章一行结论：已提交、或按当前步骤给出下一步（与工作台进度卡同一规则）。
+     * @return array{headline: string, detail: string, running: bool}
+     */
+    public function verdict(): array
+    {
+        $chapter = $this->getRecord()->chapters()->where('number', $this->chapterNumber)->first();
+        if ($chapter === null) {
+            return ['headline' => '本章尚未生成', 'detail' => '回到工作台按进度提示生成本章。', 'running' => false];
+        }
+        if ($chapter->formal_version_id !== null) {
+            return ['headline' => '✅ 已正式提交', 'detail' => '正式稿只读；需要修改时请走历史修订流程。可以在阅读器中阅读本章。', 'running' => false];
+        }
+        $state = app(NovelProgressQuery::class)->forChapter($this->getRecord(), $chapter);
+
+        return ['headline' => $state['headline'], 'detail' => $state['detail'], 'running' => $state['running']];
+    }
+
     /** 同一请求缓存读取，刷新动作明确失效缓存。 */
     public function run(): ?ChapterGenerationRun
     {
@@ -82,7 +113,7 @@ class ViewChapterContent extends Page implements HasTable
     public function stopLabel(): string
     {
         return match ($this->run()?->stop_reason) {
-            'b04_accepted' => ProductionRun::coveringChapter($this->getRecord()->id, $this->chapterNumber) !== null ? '自动授权下的推进检查已通过；不代表人工全文阅读，正式状态以提交回执为准' : 'B04正文、独立检查及全文核对已通过；候选仍待后续评审及正式提交',
+            'b04_accepted' => ProductionRun::coveringChapter($this->getRecord()->id, $this->chapterNumber) !== null ? '自动授权下的推进检查已通过；不代表人工全文阅读，正式状态以提交回执为准' : '正文、独立检查及全文核对已通过；候选仍待评审及正式提交',
             'awaiting_review' => '推进检查通过，等待后续评审；尚未正式提交',
             'execution_limit' => '请求或小说执行额度耗尽，已停止；继续须显式调整额度并填写原因',
             'user_paused' => '作者已暂停，可在原额度内继续未执行步骤',
@@ -106,106 +137,119 @@ class ViewChapterContent extends Page implements HasTable
     public function content(Schema $schema): Schema
     {
         return $schema->components([
-            Section::make('章节运行')->description(fn (): string => $this->candidate()?->id !== null && $this->run()?->chapter->formal_version_id === $this->candidate()->id ? '该版本已正式提交，事件与状态已原子保存。' : '这里是正文候选，须通过提交准备与作者批准后才成为正式稿。')->columns(3)->schema([
-                TextEntry::make('run_status')->label('运行状态')->state(fn (): string => match ($this->run()?->status) {
-                    'pending' => '待处理', 'running' => '运行中', 'completed' => '候选检查完成', 'paused' => '已暂停', 'error' => '异常', default => '尚未启动'
-                }),
-                TextEntry::make('step')->label('当前步骤')->state(fn (): string => match ($this->run()?->next_step) {
-                    'fine' => '章节细纲', 'draft' => '正文生成', 'check' => '独立推进检查', 'revise' => '推进点修订', 'length_repair' => '定点扩写', default => '无'
-                }),
-                TextEntry::make('requests')->label('已领用 / 请求上限')->state(fn (): string => ($this->run()?->requests_used ?? 0).' / '.($this->run()?->request_limit ?? 0)),
-                TextEntry::make('continuous_scope')->label('持续验收范围')->state(fn (): string => ($this->run()?->config['version'] ?? null) === ContentExecutionContract::VERSION ? '本授权内最多一次修订，请求上限不可通过继续操作扩大' : '历史协议，只读保留；恢复会创建有限运行'),
-                TextEntry::make('repair_mode')->label('本轮修复方式')->state(fn (): string => data_get($this->run()?->config, 'repair_mode') === 'rewrite' ? '已授权的整章候选重写' : '局部修订'),
-                TextEntry::make('shared_requests')->label('本轮质量修复合计请求')->state(fn (): string => data_get($this->run()?->config, 'shared_request_limit') === null ? '按上方本运行额度执行' : ((int) data_get($this->run()?->config, 'parent_requests_used') + $this->run()->requests_used).' / '.data_get($this->run()?->config, 'shared_request_limit')),
-                TextEntry::make('model')->label('冻结模型')->state(fn (): ?string => data_get($this->run()?->config, 'model')),
-                TextEntry::make('tokens')->label('正文输出Token上限')->state(fn (): ?int => data_get($this->run()?->config, 'max_output_tokens')),
-                TextEntry::make('budget')->label('冻结段落预算')->state(fn (): string => $this->budgetDescription()),
-                TextEntry::make('reused_fine')->label('细纲来源')->state(fn (): string => $this->fineSourceLabel()),
-                TextEntry::make('stop')->label('停止原因与下一步')->state(fn (): string => $this->stopLabel())->columnSpanFull(),
+            // 一行结论：本章现在能做什么；有在途步骤时每5秒刷新。
+            Section::make(fn (): string => '第'.$this->chapterNumber.'章')->extraAttributes(fn (): array => ($this->verdict()['running'] ?? false) ? ['wire:poll.5s' => ''] : [])->schema([
+                TextEntry::make('verdict_headline')->hiddenLabel()->weight('bold')->size('lg')->state(fn (): string => $this->verdict()['headline']),
+                TextEntry::make('verdict_detail')->hiddenLabel()->state(fn (): string => $this->verdict()['detail']),
             ]),
-            Section::make('评审、事件提取与正式提交')->schema([
-                TextEntry::make('submission_state')->label('提交状态')->state(fn (): string => match ($this->submission()?->status) {
-                    'pending' => '准备已授权，等待执行', 'running' => '正在评审或提取', 'failed' => '准备失败，已停止且未自动重试',
-                    'awaiting_approval' => '硬检查通过，等待作者批准新实体', 'ready' => '准备通过，可正式提交', 'committed' => '已正式提交', default => '尚未准备',
-                }),
-                TextEntry::make('submission_reason')->label('停止原因')->state(fn (): ?string => $this->submission()?->stop_reason),
-                TextEntry::make('submission_requests')->label('准备请求')->state(fn (): string => ($this->submission()?->requests_used ?? 0).' / 2'),
-                TextEntry::make('review_details')->label('基础评审及原文证据')->state(fn (): string => $this->submissionDetails('review'))->extraAttributes(['style' => 'white-space: pre-wrap']),
-                TextEntry::make('extraction_details')->label('实体定义、事件及状态差异')->state(fn (): string => $this->submissionDetails('extract'))->extraAttributes(['style' => 'white-space: pre-wrap']),
-                TextEntry::make('validation_details')->label('确定性验证与待批准实体')->state(fn (): string => $this->submissionDetails('validation'))->extraAttributes(['style' => 'white-space: pre-wrap']),
-                TextEntry::make('commit_details')->label('正式提交回执')->state(fn (): string => $this->submissionDetails('commit'))->extraAttributes(['style' => 'white-space: pre-wrap']),
-            ]),
-            Section::make('评审与定点修订工作台')->description('指定问题只生成候选；范围外原文保留，修订后独立复评，不替代正式提交评审。')->schema([
-                TextEntry::make('revision_status')->label('轮次与处理边界')->state(fn (): string => $this->run() === null ? '尚无正文候选' : app(RevisionWorkbench::class)->status($this->run())),
-                TextEntry::make('revision_issues')->label('本轮指定问题')->state(fn (): array => data_get($this->run()?->config, 'workbench.issues', []))->listWithLineBreaks(),
-                TextEntry::make('revision_source')->label('冻结来源记录编号')->state(fn (): ?int => data_get($this->run()?->config, 'workbench.version_id')),
-                TextEntry::make('revision_review')->label('独立复评结果')->state(fn (): array => explode("\n", $this->run() === null ? '尚无正文候选' : app(RevisionWorkbench::class)->reviewSummary($this->run())))->listWithLineBreaks()->extraAttributes(['style' => 'overflow-wrap: anywhere; line-height: 1.7']),
-            ]),
-            Section::make('生成与恢复历史')->schema([
-                RepeatableEntry::make('runs')->label('保留全部运行')->state(fn (): array => $this->run() === null ? [] : ChapterGenerationRun::query()->where('chapter_id', $this->run()->chapter_id)->orderBy('id')->get()->map(fn (ChapterGenerationRun $run): array => [
-                    'id' => $run->id, 'parent' => $run->parent_run_id, 'source' => $run->source_version_id, 'status' => $run->status,
-                    'requests' => $run->requests_used.' / '.$run->request_limit, 'hook' => data_get($run->plan_data, 'hook'),
-                    'reason' => data_get($run->control_history, '0.reason'),
-                ])->all())->schema([
-                    TextEntry::make('id')->label('运行编号'), TextEntry::make('parent')->label('上次暂停运行')->placeholder('首次生成'),
-                    TextEntry::make('source')->label('扩写源记录编号')->placeholder('无'), TextEntry::make('requests')->label('领用 / 上限'),
-                    TextEntry::make('status')->label('历史状态')->formatStateUsing(fn (string $state): string => match ($state) {
-                        'pending' => '待处理', 'running' => '运行中', 'completed' => '候选检查完成', default => '已停止'
-                    }),
-                    TextEntry::make('hook')->label('该运行细纲钩子')->placeholder('尚未生成'), TextEntry::make('reason')->label('操作原因'),
+            Tabs::make('chapter-workbench')->persistTabInQueryString()->tabs([
+                Tab::make('正文')->schema([
+                    Section::make('当前正文候选')->schema([
+                        TextEntry::make('origin')->label('正文来源')->state(fn (): string => $this->candidate()?->run_id === $this->run()?->id ? '本运行已保存的候选版本' : '保留的源版本；新扩写候选保存后才切换'),
+                        TextEntry::make('body')->label('正文')->state(fn (): ?string => $this->candidate()?->body)->extraAttributes(['style' => 'white-space: pre-wrap; line-height: 1.9']),
+                        TextEntry::make('count')->label('正文可见非空白字符数')->state(fn (): ?int => $this->candidate()?->character_count),
+                        TextEntry::make('verdict')->label('推进检查结论')->state(fn (): string => match (data_get($this->run()?->chapter->progression_result, 'verdict')) {
+                            'pass' => '通过，仍待后续评审', 'insufficient' => '推进不足', 'blocked' => '存在核心设定冲突', default => '尚无可信检查结果'
+                        }),
+                        TextEntry::make('reading_status')->label('本地全文复核提示')->state(fn (): string => $this->candidate() !== null && ContentReadingAudit::inspect($this->candidate()->body)['requires_review'] ? '发现重复或时序风险，须人工复核；模型通过不能视为全文验收通过。' : '未命中有限规则；仍须阅读全文，不能据此认定没有问题。'),
+                        RepeatableEntry::make('reading_issues')->label('可定位的阅读线索')->state(fn (): array => $this->candidate() === null ? [] : ContentReadingAudit::inspect($this->candidate()->body)['issues'])->schema([
+                            TextEntry::make('type')->label('线索类型')->formatStateUsing(fn (string $state): string => $state === 'repeated_text' ? '重复原文' : '可能的时序倒退'), TextEntry::make('reason')->label('复核说明'),
+                            RepeatableEntry::make('evidence')->label('原文位置')->schema([TextEntry::make('paragraph')->label('段号'), TextEntry::make('quote')->label('重复片段或时序原文')]),
+                        ]),
+                        RepeatableEntry::make('points')->label('逐点检查')->state(fn (): array => data_get($this->run()?->chapter->progression_result, 'points', []))->schema([
+                            TextEntry::make('id')->label('推进点'), TextEntry::make('met')->label('是否完成')->formatStateUsing(fn (bool $state): string => $state ? '完成' : '不足'), TextEntry::make('reason')->label('判断理由'),
+                            RepeatableEntry::make('evidence')->label('正文证据')->schema([TextEntry::make('paragraph')->label('段号'), TextEntry::make('quote')->label('原文引文')]),
+                        ]),
+                        TextEntry::make('hook_result')->label('章末钩子检查')->state(fn (): ?string => data_get($this->run()?->chapter->progression_result, 'hook.reason')),
+                        RepeatableEntry::make('reading_reviews')->label('逐项全文复核结果')->state(fn (): array => data_get($this->run()?->chapter->progression_result, 'reading_reviews', []))->schema([
+                            TextEntry::make('id')->label('复核编号'), TextEntry::make('fixed')->label('是否消除')->formatStateUsing(fn (bool $state): string => $state ? '已消除' : '仍存在'), TextEntry::make('reason')->label('复核理由'),
+                            RepeatableEntry::make('evidence')->label('当前正文证据')->schema([TextEntry::make('paragraph')->label('段号'), TextEntry::make('quote')->label('原文')]),
+                        ]),
+                        RepeatableEntry::make('continuity')->label('连贯性问题')->state(fn (): array => data_get($this->run()?->chapter->progression_result, 'continuity_issues', []))->schema([
+                            TextEntry::make('type')->label('问题类型'), TextEntry::make('reason')->label('问题说明'),
+                            RepeatableEntry::make('evidence')->label('精确原文证据')->schema([TextEntry::make('paragraph')->label('段号'), TextEntry::make('quote')->label('原文')]),
+                        ]),
+                        TextEntry::make('tensions')->label('正常剧情矛盾（不阻塞）')->state(fn (): array => data_get($this->run()?->chapter->progression_result, 'story_tensions', []))->listWithLineBreaks(),
+                        RepeatableEntry::make('conflicts')->label('核心冲突')->state(fn (): array => data_get($this->run()?->chapter->progression_result, 'conflicts', []))->schema([
+                            TextEntry::make('reason')->label('冲突说明'), RepeatableEntry::make('evidence')->label('正文证据')->schema([TextEntry::make('paragraph')->label('段号'), TextEntry::make('quote')->label('原文引文')]),
+                        ]),
+                    ]),
+                    Section::make('本章细纲候选')->schema([
+                        RepeatableEntry::make('scenes')->label('场景安排')->state(fn (): array => data_get($this->run()?->plan_data, 'scenes', []))->schema([
+                            TextEntry::make('time')->label('时间'), TextEntry::make('place')->label('地点'), TextEntry::make('action')->label('具体行动'), TextEntry::make('change')->label('状态变化'), TextEntry::make('point_ids')->label('对应推进点')->listWithLineBreaks(),
+                        ]),
+                        TextEntry::make('hook')->label('衔接后的章末钩子')->state(fn (): ?string => data_get($this->run()?->plan_data, 'hook')),
+                        TextEntry::make('completed_state')->label('钩子承接的已完成状态')->state(fn (): ?string => data_get($this->run()?->plan_data, 'hook_transition.completed_state')),
+                        TextEntry::make('hook_trigger')->label('结尾触发事件')->state(fn (): ?string => data_get($this->run()?->plan_data, 'hook_transition.trigger')),
+                        TextEntry::make('next_question')->label('下一章悬念')->state(fn (): ?string => data_get($this->run()?->plan_data, 'hook_transition.next_question')),
+                        TextEntry::make('adjustments')->label('规划衔接调整')->state(fn (): array => data_get($this->run()?->plan_data, 'adjustments', []))->listWithLineBreaks(),
+                    ]),
+                ]),
+                Tab::make('检查、评审与提交')->schema([
+                    Section::make('评审、事件提取与正式提交')->schema([
+                        TextEntry::make('submission_state')->label('提交状态')->state(fn (): string => match ($this->submission()?->status) {
+                            'pending' => '准备已授权，等待执行', 'running' => '正在评审或提取', 'failed' => '准备失败，已停止且未自动重试',
+                            'awaiting_approval' => '硬检查通过，等待作者批准新实体', 'ready' => '准备通过，可正式提交', 'committed' => '已正式提交', default => '尚未准备',
+                        }),
+                        TextEntry::make('submission_reason')->label('停止原因')->state(fn (): ?string => ProductionFailure::detailLabel($this->submission()?->stop_reason))->placeholder('无'),
+                        TextEntry::make('submission_requests')->label('准备请求')->state(fn (): string => ($this->submission()?->requests_used ?? 0).' / 2'),
+                        TextEntry::make('review_details')->label('基础评审及原文证据')->state(fn (): string => $this->submissionDetails('review'))->extraAttributes(['style' => 'white-space: pre-wrap']),
+                        TextEntry::make('extraction_details')->label('实体定义、事件及状态差异')->state(fn (): string => $this->submissionDetails('extract'))->extraAttributes(['style' => 'white-space: pre-wrap']),
+                        TextEntry::make('validation_details')->label('确定性验证与待批准实体')->state(fn (): string => $this->submissionDetails('validation'))->extraAttributes(['style' => 'white-space: pre-wrap']),
+                        TextEntry::make('commit_details')->label('正式提交回执')->state(fn (): string => $this->submissionDetails('commit'))->extraAttributes(['style' => 'white-space: pre-wrap']),
+                    ]),
+                    Section::make('评审与定点修订工作台')->description('指定问题只生成候选；范围外原文保留，修订后独立复评，不替代正式提交评审。')->schema([
+                        TextEntry::make('revision_status')->label('轮次与处理边界')->state(fn (): string => $this->run() === null ? '尚无正文候选' : app(RevisionWorkbench::class)->status($this->run())),
+                        TextEntry::make('revision_issues')->label('本轮指定问题')->state(fn (): array => data_get($this->run()?->config, 'workbench.issues', []))->listWithLineBreaks(),
+                        TextEntry::make('revision_source')->label('冻结来源记录编号')->state(fn (): ?int => data_get($this->run()?->config, 'workbench.version_id')),
+                        TextEntry::make('revision_review')->label('独立复评结果')->state(fn (): array => explode("\n", $this->run() === null ? '尚无正文候选' : app(RevisionWorkbench::class)->reviewSummary($this->run())))->listWithLineBreaks()->extraAttributes(['style' => 'overflow-wrap: anywhere; line-height: 1.7']),
+                    ]),
+                ]),
+                Tab::make('运行与历史')->schema([
+                    Section::make('章节运行')->description(fn (): string => $this->candidate()?->id !== null && $this->run()?->chapter->formal_version_id === $this->candidate()->id ? '该版本已正式提交，事件与状态已原子保存。' : '这里是正文候选，须通过提交准备与作者批准后才成为正式稿。')->columns(3)->schema([
+                        TextEntry::make('run_status')->label('运行状态')->state(fn (): string => match ($this->run()?->status) {
+                            'pending' => '待处理', 'running' => '运行中', 'completed' => '候选检查完成', 'paused' => '已暂停', 'error' => '异常', default => '尚未启动'
+                        }),
+                        TextEntry::make('step')->label('当前步骤')->state(fn (): string => match ($this->run()?->next_step) {
+                            'fine' => '章节细纲', 'draft' => '正文生成', 'check' => '独立推进检查', 'revise' => '推进点修订', 'length_repair' => '定点扩写', default => '无'
+                        }),
+                        TextEntry::make('requests')->label('已领用 / 请求上限')->state(fn (): string => ($this->run()?->requests_used ?? 0).' / '.($this->run()?->request_limit ?? 0)),
+                        TextEntry::make('continuous_scope')->label('持续验收范围')->state(fn (): string => ($this->run()?->config['version'] ?? null) === ContentExecutionContract::VERSION ? '本授权内最多一次修订，请求上限不可通过继续操作扩大' : '历史协议，只读保留；恢复会创建有限运行'),
+                        TextEntry::make('repair_mode')->label('本轮修复方式')->state(fn (): string => data_get($this->run()?->config, 'repair_mode') === 'rewrite' ? '已授权的整章候选重写' : '局部修订'),
+                        TextEntry::make('shared_requests')->label('本轮质量修复合计请求')->state(fn (): string => data_get($this->run()?->config, 'shared_request_limit') === null ? '按上方本运行额度执行' : ((int) data_get($this->run()?->config, 'parent_requests_used') + $this->run()->requests_used).' / '.data_get($this->run()?->config, 'shared_request_limit')),
+                        TextEntry::make('model')->label('冻结模型')->state(fn (): ?string => data_get($this->run()?->config, 'model')),
+                        TextEntry::make('tokens')->label('正文输出Token上限')->state(fn (): ?int => data_get($this->run()?->config, 'max_output_tokens')),
+                        TextEntry::make('budget')->label('冻结段落预算')->state(fn (): string => $this->budgetDescription()),
+                        TextEntry::make('reused_fine')->label('细纲来源')->state(fn (): string => $this->fineSourceLabel()),
+                        TextEntry::make('stop')->label('停止原因与下一步')->state(fn (): string => $this->stopLabel())->columnSpanFull(),
+                    ]),
+                    Section::make('生成与恢复历史')->schema([
+                        RepeatableEntry::make('runs')->label('保留全部运行')->state(fn (): array => $this->run() === null ? [] : ChapterGenerationRun::query()->where('chapter_id', $this->run()->chapter_id)->orderBy('id')->get()->map(fn (ChapterGenerationRun $run): array => [
+                            'id' => $run->id, 'parent' => $run->parent_run_id, 'source' => $run->source_version_id, 'status' => $run->status,
+                            'requests' => $run->requests_used.' / '.$run->request_limit, 'hook' => data_get($run->plan_data, 'hook'),
+                            'reason' => data_get($run->control_history, '0.reason'),
+                        ])->all())->schema([
+                            TextEntry::make('id')->label('运行编号'), TextEntry::make('parent')->label('上次暂停运行')->placeholder('首次生成'),
+                            TextEntry::make('source')->label('扩写源记录编号')->placeholder('无'), TextEntry::make('requests')->label('领用 / 上限'),
+                            TextEntry::make('status')->label('历史状态')->formatStateUsing(fn (string $state): string => match ($state) {
+                                'pending' => '待处理', 'running' => '运行中', 'completed' => '候选检查完成', default => '已停止'
+                            }),
+                            TextEntry::make('hook')->label('该运行细纲钩子')->placeholder('尚未生成'), TextEntry::make('reason')->label('操作原因'),
+                        ]),
+                    ]),
+                    Section::make('尝试与费用')->key('content-attempts')->headerActions([
+                        Action::make('viewPrompts')->label('查看完整Prompt')->modalHeading('完整Prompt与请求契约')->modalSubmitAction(false)->modalCancelActionLabel('关闭')->modalWidth('7xl')->schema(fn (): array => [
+                            TextEntry::make('prompts')->label('调用前快照与已验证历史还原')->state(fn (): string => json_encode(CostLog::where('novel_id', $this->getRecord()->id)->whereHas('novelStage', fn ($query) => $query->whereNotNull('input->run_id'))->orderBy('id')->get()->map(fn (CostLog $log): array => ['cost_log_id' => $log->id, ...app(ContentPromptAudit::class)->read($log)])->all(), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES))->extraAttributes(['style' => 'white-space: pre-wrap; overflow-wrap: anywhere;']),
+                        ]),
+                    ])->schema([
+                        RepeatableEntry::make('attempts')->label('请求历史')->state(fn (): array => $this->attempts())->schema([
+                            TextEntry::make('id')->label('阶段编号'), TextEntry::make('step')->label('步骤'), TextEntry::make('status')->label('执行状态'), TextEntry::make('log_id')->label('费用日志编号'), TextEntry::make('cost')->label('费用'), TextEntry::make('error')->label('失败原因')->placeholder('无'), TextEntry::make('validation_error')->label('具体校验原因')->placeholder('无'),
+                            TextEntry::make('quality_issues')->label('本地正文质量问题')->placeholder('无'),
+                        ]),
+                    ]),
+                    EmbeddedTable::make(),
                 ]),
             ]),
-            Section::make('首章细纲候选')->schema([
-                RepeatableEntry::make('scenes')->label('场景安排')->state(fn (): array => data_get($this->run()?->plan_data, 'scenes', []))->schema([
-                    TextEntry::make('time')->label('时间'), TextEntry::make('place')->label('地点'), TextEntry::make('action')->label('具体行动'), TextEntry::make('change')->label('状态变化'), TextEntry::make('point_ids')->label('对应推进点')->listWithLineBreaks(),
-                ]),
-                TextEntry::make('hook')->label('衔接后的章末钩子')->state(fn (): ?string => data_get($this->run()?->plan_data, 'hook')),
-                TextEntry::make('completed_state')->label('钩子承接的已完成状态')->state(fn (): ?string => data_get($this->run()?->plan_data, 'hook_transition.completed_state')),
-                TextEntry::make('hook_trigger')->label('结尾触发事件')->state(fn (): ?string => data_get($this->run()?->plan_data, 'hook_transition.trigger')),
-                TextEntry::make('next_question')->label('下一章悬念')->state(fn (): ?string => data_get($this->run()?->plan_data, 'hook_transition.next_question')),
-                TextEntry::make('adjustments')->label('规划衔接调整')->state(fn (): array => data_get($this->run()?->plan_data, 'adjustments', []))->listWithLineBreaks(),
-            ]),
-            Section::make('当前正文候选')->schema([
-                TextEntry::make('origin')->label('正文来源')->state(fn (): string => $this->candidate()?->run_id === $this->run()?->id ? '本运行已保存的候选版本' : '保留的源版本；新扩写候选保存后才切换'),
-                TextEntry::make('body')->label('正文')->state(fn (): ?string => $this->candidate()?->body)->extraAttributes(['style' => 'white-space: pre-wrap; line-height: 1.9']),
-                TextEntry::make('count')->label('正文可见非空白字符数')->state(fn (): ?int => $this->candidate()?->character_count),
-                TextEntry::make('verdict')->label('推进检查结论')->state(fn (): string => match (data_get($this->run()?->chapter->progression_result, 'verdict')) {
-                    'pass' => '通过，仍待后续评审', 'insufficient' => '推进不足', 'blocked' => '存在核心设定冲突', default => '尚无可信检查结果'
-                }),
-                TextEntry::make('reading_status')->label('本地全文复核提示')->state(fn (): string => $this->candidate() !== null && ContentReadingAudit::inspect($this->candidate()->body)['requires_review'] ? '发现重复或时序风险，须人工复核；模型通过不能视为全文验收通过。' : '未命中有限规则；仍须阅读全文，不能据此认定没有问题。'),
-                RepeatableEntry::make('reading_issues')->label('可定位的阅读线索')->state(fn (): array => $this->candidate() === null ? [] : ContentReadingAudit::inspect($this->candidate()->body)['issues'])->schema([
-                    TextEntry::make('type')->label('线索类型')->formatStateUsing(fn (string $state): string => $state === 'repeated_text' ? '重复原文' : '可能的时序倒退'), TextEntry::make('reason')->label('复核说明'),
-                    RepeatableEntry::make('evidence')->label('原文位置')->schema([TextEntry::make('paragraph')->label('段号'), TextEntry::make('quote')->label('重复片段或时序原文')]),
-                ]),
-                RepeatableEntry::make('points')->label('逐点检查')->state(fn (): array => data_get($this->run()?->chapter->progression_result, 'points', []))->schema([
-                    TextEntry::make('id')->label('推进点'), TextEntry::make('met')->label('是否完成')->formatStateUsing(fn (bool $state): string => $state ? '完成' : '不足'), TextEntry::make('reason')->label('判断理由'),
-                    RepeatableEntry::make('evidence')->label('正文证据')->schema([TextEntry::make('paragraph')->label('段号'), TextEntry::make('quote')->label('原文引文')]),
-                ]),
-                TextEntry::make('hook_result')->label('章末钩子检查')->state(fn (): ?string => data_get($this->run()?->chapter->progression_result, 'hook.reason')),
-                RepeatableEntry::make('reading_reviews')->label('逐项全文复核结果')->state(fn (): array => data_get($this->run()?->chapter->progression_result, 'reading_reviews', []))->schema([
-                    TextEntry::make('id')->label('复核编号'), TextEntry::make('fixed')->label('是否消除')->formatStateUsing(fn (bool $state): string => $state ? '已消除' : '仍存在'), TextEntry::make('reason')->label('复核理由'),
-                    RepeatableEntry::make('evidence')->label('当前正文证据')->schema([TextEntry::make('paragraph')->label('段号'), TextEntry::make('quote')->label('原文')]),
-                ]),
-                RepeatableEntry::make('continuity')->label('连贯性问题')->state(fn (): array => data_get($this->run()?->chapter->progression_result, 'continuity_issues', []))->schema([
-                    TextEntry::make('type')->label('问题类型'), TextEntry::make('reason')->label('问题说明'),
-                    RepeatableEntry::make('evidence')->label('精确原文证据')->schema([TextEntry::make('paragraph')->label('段号'), TextEntry::make('quote')->label('原文')]),
-                ]),
-                TextEntry::make('tensions')->label('正常剧情矛盾（不阻塞）')->state(fn (): array => data_get($this->run()?->chapter->progression_result, 'story_tensions', []))->listWithLineBreaks(),
-                RepeatableEntry::make('conflicts')->label('核心冲突')->state(fn (): array => data_get($this->run()?->chapter->progression_result, 'conflicts', []))->schema([
-                    TextEntry::make('reason')->label('冲突说明'), RepeatableEntry::make('evidence')->label('正文证据')->schema([TextEntry::make('paragraph')->label('段号'), TextEntry::make('quote')->label('原文引文')]),
-                ]),
-            ]),
-            Section::make('尝试与费用')->key('content-attempts')->headerActions([
-                Action::make('viewPrompts')->label('查看完整Prompt')->modalHeading('完整Prompt与请求契约')->modalSubmitAction(false)->modalCancelActionLabel('关闭')->modalWidth('7xl')->schema(fn (): array => [
-                    TextEntry::make('prompts')->label('调用前快照与已验证历史还原')->state(fn (): string => json_encode(CostLog::where('novel_id', $this->getRecord()->id)->whereHas('novelStage', fn ($query) => $query->whereNotNull('input->run_id'))->orderBy('id')->get()->map(fn (CostLog $log): array => ['cost_log_id' => $log->id, ...app(ContentPromptAudit::class)->read($log)])->all(), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES))->extraAttributes(['style' => 'white-space: pre-wrap; overflow-wrap: anywhere;']),
-                ]),
-            ])->schema([
-                RepeatableEntry::make('attempts')->label('请求历史')->state(fn (): array => $this->attempts())->schema([
-                    TextEntry::make('id')->label('阶段编号'), TextEntry::make('step')->label('步骤'), TextEntry::make('status')->label('执行状态'), TextEntry::make('log_id')->label('费用日志编号'), TextEntry::make('cost')->label('费用'), TextEntry::make('error')->label('失败原因')->placeholder('无'), TextEntry::make('validation_error')->label('具体校验原因')->placeholder('无'),
-                    TextEntry::make('quality_issues')->label('本地正文质量问题')->placeholder('无'),
-                ]),
-            ]),
-            EmbeddedTable::make(),
         ]);
     }
 
@@ -276,7 +320,7 @@ class ViewChapterContent extends Page implements HasTable
     private function fineSourceLabel(): string
     {
         if (! ($this->run()?->config['enable_fine_outline'] ?? false)) {
-            return '未启用细纲，直接使用B03章计划';
+            return '未启用细纲，直接使用大纲中的章计划';
         }
         $id = data_get($this->run()?->snapshot, 'recovery.reused_fine_stage_id') ?? data_get($this->run()?->snapshot, 'recovery.fine_stage_id');
 
@@ -382,7 +426,7 @@ class ViewChapterContent extends Page implements HasTable
                         throw new InvalidArgumentException('正文已变化，请刷新后重新指定问题');
                     }
                     $issues = array_values(array_filter(array_map('trim', explode("\n", $data['issues'])), fn (string $issue): bool => $issue !== ''));
-                    app(ContentGenerationService::class)->recover($this->run()->id, Filament::auth()->user(), 'C07作者指定问题修订', 2,
+                    app(ContentGenerationService::class)->recover($this->run()->id, Filament::auth()->user(), '作者指定问题修订', 2,
                         (int) $data['execution_limit'], issues: $issues, expectedVersionId: (int) $data['version_id']);
                 });
                 $this->resolvedRun = null;
@@ -449,7 +493,7 @@ class ViewChapterContent extends Page implements HasTable
                 $this->performContentAction(fn () => app(ContentGenerationService::class)->recover($this->run()->id, Filament::auth()->user(), $data['reason'], (int) $data['request_limit'], (int) $data['execution_limit'], (bool) ($data['confirm_unknown'] ?? false), (bool) ($data['rewrite'] ?? false), $data['model']));
                 $this->resolvedRun = null;
                 $this->getRecord()->refresh();
-            }), Action::make('fullReading')->label('记录B04全文核对')->modalHeading('核对当前正文与独立检查')
+            }), Action::make('fullReading')->label('记录全文核对')->modalHeading('核对当前正文与独立检查')
             ->visible(fn (): bool => $this->run()?->status === 'completed' && $this->run()?->stop_reason === 'awaiting_review')
             ->modalDescription('仅记录全文核对。未通过只保存意见并暂停，不自动发送模型请求；实现验收不代表作者批准或正式提交。')
             ->schema([Checkbox::make('accepted')->label('已阅读全文，推进、钩子与时序基本完成，未发现待解决问题'), Textarea::make('notes')->label('全文核对结论或待解决问题（每行一条）')->required()])

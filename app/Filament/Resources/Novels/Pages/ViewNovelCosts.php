@@ -22,6 +22,7 @@ use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Symfony\Component\HttpFoundation\StreamedResponse;
+use UnitEnum;
 
 /** 逐次成本明细只读页面，不重发请求、不修订账单、不影响流水线。 */
 class ViewNovelCosts extends Page implements HasTable
@@ -31,6 +32,15 @@ class ViewNovelCosts extends Page implements HasTable
 
     /** 所属资源用于权限和路由。 */
     protected static string $resource = NovelResource::class;
+
+    /** 单本小说子导航中的名称。 */
+    protected static ?string $navigationLabel = '费用明细';
+
+    /** 子导航排序。 */
+    protected static ?int $navigationSort = 17;
+
+    /** 子导航分组。 */
+    protected static string|UnitEnum|null $navigationGroup = '交付';
 
     /** 作者可见的页面名称。 */
     protected static ?string $title = '调用成本明细';

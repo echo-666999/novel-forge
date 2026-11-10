@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Filament\Pages\ProductionOverview;
+use App\Filament\Pages\SystemHealth;
 use App\Filament\Resources\Novels\NovelResource;
 use App\Models\Novel;
 use App\Models\User;
@@ -59,7 +60,9 @@ class C09NavigationTest extends TestCase
         $this->assertFalse((new User)->canAccessPanel(Filament::getPanel('admin')));
         $this->assertFalse($user->canAccessPanel(Panel::make()->id('other')));
         $this->actingAs($user);
-        $this->get(ProductionOverview::getUrl())->assertOk()->assertSee('UI01')->assertSee('UI32')->assertSee('尚无有效消费者观测');
+        $this->get(ProductionOverview::getUrl())->assertOk()->assertSee('待我处理')->assertSee('正在运行')->assertSee('尚无有效消费者观测');
+        // UI01～UI32 覆盖清单已移到系统健康页，仅供开发验收查看。
+        $this->get(SystemHealth::getUrl())->assertOk()->assertSee('UI01')->assertSee('UI32');
         $novel = Novel::factory()->create();
         $this->get(ProductionOverview::getUrl())->assertOk()->assertSee('打开工作台')->assertSee(NovelResource::getUrl('chapters', ['record' => $novel]), false);
     }
@@ -69,7 +72,7 @@ class C09NavigationTest extends TestCase
     {
         $this->actingAs(User::factory()->create());
         Novel::factory()->create();
-        $rows = app(ProductionOverview::class)->capabilities();
+        $rows = app(SystemHealth::class)->capabilities();
         $this->assertSame(array_map(fn (int $number): string => sprintf('UI%02d', $number), range(1, 32)), array_column($rows, 'id'));
         foreach ($rows as $row) {
             $this->assertNotEmpty($row['url'], $row['id'].'缺少实际入口');

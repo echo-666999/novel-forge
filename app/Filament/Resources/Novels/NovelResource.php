@@ -10,21 +10,28 @@ use App\Filament\Resources\Novels\Pages\ListNovels;
 use App\Filament\Resources\Novels\Pages\ViewChapterContent;
 use App\Filament\Resources\Novels\Pages\ViewNovel;
 use App\Filament\Resources\Novels\Pages\ViewOutlinePlan;
-use App\Filament\Resources\Novels\Schemas\NovelForm;
 use App\Filament\Resources\Novels\Schemas\NovelInfolist;
 use App\Filament\Resources\Novels\Tables\NovelsTable;
 use App\Models\Novel;
 use BackedEnum;
+use Filament\Navigation\NavigationGroup;
+use Filament\Navigation\NavigationItem;
+use Filament\Pages\Enums\SubNavigationPosition;
+use Filament\Resources\Pages\Page;
 use Filament\Resources\Pages\PageRegistration;
 use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Table;
+use UnitEnum;
 
 /** 私有工作台的小说入口，仅允许创建和只读查看，通过独立运行台控制恢复。 */
 class NovelResource extends Resource
 {
     protected static ?string $model = Novel::class;
+
+    /** 侧栏分组。 */
+    protected static string|UnitEnum|null $navigationGroup = '创作工作台';
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedBookOpen;
 
@@ -32,16 +39,16 @@ class NovelResource extends Resource
 
     protected static ?string $pluralModelLabel = '小说';
 
-    protected static ?string $navigationLabel = '小说管理';
+    protected static ?string $navigationLabel = '小说书架';
 
     protected static ?int $navigationSort = 1;
 
     protected static ?string $recordTitleAttribute = 'title';
 
-    /** 复用创建表单结构，运行字段不进入可编辑表单。 */
+    /** 创建页使用向导步骤（NovelForm::steps），小说创建后不提供编辑表单。 */
     public static function form(Schema $schema): Schema
     {
-        return NovelForm::configure($schema);
+        return $schema;
     }
 
     /** 完整展示保存的创意、篇幅与运行状态。 */
@@ -90,6 +97,24 @@ class NovelResource extends Resource
             NovelStatus::Completed => 'success',
             NovelStatus::Error => 'danger',
         };
+    }
+
+    /** 单本小说页面的子导航放在左侧，按规划、人物与世界、正文、生产、交付分组。 */
+    protected static ?SubNavigationPosition $subNavigationPosition = SubNavigationPosition::Start;
+
+    /** 进入任意一本书后显示的子导航；需要额外参数的页面（编辑草稿、验收阅读）从对应页面进入。
+     * @return array<NavigationItem|NavigationGroup>
+     */
+    public static function getRecordSubNavigation(Page $page): array
+    {
+        return $page->generateNavigationItems([
+            ViewNovel::class,
+            Pages\Requirements::class, Pages\BlueprintVersions::class, Pages\StoryStructurePlan::class, ViewOutlinePlan::class, Pages\ScenePlans::class,
+            Pages\EntityLibrary::class, Pages\ViewCharacterKnowledge::class, Pages\ViewForeshadows::class,
+            Pages\ChapterDirectory::class, ViewChapterContent::class, Pages\ReadChapter::class,
+            Pages\ViewNovelRun::class, Pages\ViewContextManifests::class, Pages\SearchLab::class,
+            Pages\AcceptanceWorkbench::class, Pages\ExportCenter::class, Pages\ViewNovelCosts::class, Pages\ViewStoryState::class,
+        ]);
     }
 
     /** 只注册列表、创建与详情路由，不暴露编辑或删除入口。

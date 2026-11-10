@@ -61,6 +61,12 @@ enum ProductionFailure: string
         'INVALID_RESPONSE' => '评审或提取响应无效', 'UNKNOWN_RESPONSE' => '评审或提取结果未知，可能已计费',
     ];
 
+    /** 单个停止原因码的中文说明；未登记的码原样返回，空值返回空。 */
+    public static function detailLabel(?string $code): ?string
+    {
+        return $code === null || $code === '' ? null : (self::DETAILS[$code] ?? $code);
+    }
+
     /** 由运行保存的错误串识别类别；带冒号的错误按前缀归类。 */
     public static function fromError(?string $error): ?self
     {

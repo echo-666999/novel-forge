@@ -12,6 +12,7 @@ use Filament\Pages\SettingsPage;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
+use UnitEnum;
 
 /** 维护新运行默认参数，供应商由模型名称识别，密钥仅保存在本机环境。 */
 class ManageGeneralSettings extends SettingsPage
@@ -21,6 +22,9 @@ class ManageGeneralSettings extends SettingsPage
     protected static string $settings = GeneralSettings::class;
 
     protected static ?string $title = '通用设置';
+
+    /** 侧栏分组。 */
+    protected static string|UnitEnum|null $navigationGroup = '配置与运维';
 
     protected static ?string $navigationLabel = '通用设置';
 

@@ -6,11 +6,15 @@ use App\Enums\GenerationMode;
 use App\Enums\NovelStatus;
 use App\Enums\Stage;
 use App\Filament\Resources\Novels\NovelResource;
+use App\Models\Chapter;
+use App\Models\ChapterVersion;
 use App\Models\CostLog;
 use App\Models\Novel;
 use App\Models\NovelStage;
 use App\Services\Ai\NovelCostSummary;
+use App\Services\Pipeline\NovelProgressQuery;
 use Filament\Infolists\Components\RepeatableEntry;
+use Filament\Infolists\Components\RepeatableEntry\TableColumn;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Schemas\Components\Component;
 use Filament\Schemas\Components\Section;
@@ -24,7 +28,27 @@ class NovelInfolist
     {
         return $schema
             ->components([
-                Section::make('创作信息')->columns(2)->columnSpanFull()
+                // 进度卡片：在哪一步、为什么停、下一步做什么；有在途任务时每5秒刷新。
+                Section::make('当前进度')->columnSpanFull()
+                    ->extraAttributes(fn (Novel $record): array => app(NovelProgressQuery::class)->for($record)['running'] ? ['wire:poll.5s' => ''] : [])
+                    ->schema([
+                        TextEntry::make('progress_steps')->hiddenLabel()->state(fn (Novel $record): string => app(NovelProgressQuery::class)->stepBar(app(NovelProgressQuery::class)->for($record)['step'])),
+                        TextEntry::make('progress_headline')->hiddenLabel()->weight('bold')->size('lg')->state(fn (Novel $record): string => app(NovelProgressQuery::class)->for($record)['headline']),
+                        TextEntry::make('progress_detail')->hiddenLabel()->state(fn (Novel $record): string => app(NovelProgressQuery::class)->for($record)['detail']),
+                        TextEntry::make('progress_link')->hiddenLabel()->visible(fn (Novel $record): bool => app(NovelProgressQuery::class)->for($record)['url'] !== null)
+                            ->state('打开处理页面 →')->url(fn (Novel $record): ?string => app(NovelProgressQuery::class)->for($record)['url']),
+                    ]),
+                Section::make('近期章节')->columnSpanFull()->visible(fn (Novel $record): bool => $record->chapters()->exists())
+                    ->description('显示最近10章；完整列表见左侧“章节目录”。')
+                    ->schema([
+                        RepeatableEntry::make('recent_chapters')->hiddenLabel()->state(fn (Novel $record): array => self::recentChapters($record))
+                            ->table([TableColumn::make('章'), TableColumn::make('标题'), TableColumn::make('状态'), TableColumn::make('字数'), TableColumn::make('入口')])
+                            ->schema([
+                                TextEntry::make('number'), TextEntry::make('title'), TextEntry::make('status'), TextEntry::make('characters'),
+                                TextEntry::make('url')->url(fn (?string $state): ?string => $state)->formatStateUsing(fn (): string => '打开'),
+                            ]),
+                    ]),
+                Section::make('创作信息')->collapsible()->columns(2)->columnSpanFull()
                     ->description(fn (Novel $record): string => $record->generation_mode === GenerationMode::SettingReal ? '原始生成结果始终保留为候选；作者确认另存版本，只有显式启动才生成大纲。' : '当前为模拟流程。模拟完成不代表小说作品已生成。')
                     ->schema([
                         TextEntry::make('generation_mode')->label('生成模式')->formatStateUsing(fn (GenerationMode $state): string => $state->label())->columnSpanFull(),
@@ -35,7 +59,7 @@ class NovelInfolist
                 Section::make('累计调用费用')->description('费用仅供查看，不参与停止判断；金额未知不等于免费。')->columnSpanFull()->schema([
                     TextEntry::make('cost_summary')->label('小说全部调用')->state(fn (Novel $record): string => app(NovelCostSummary::class)->describe(app(NovelCostSummary::class)->forNovel($record->id))),
                 ]),
-                Section::make('篇幅计划')->columns(3)->columnSpanFull()->schema([
+                Section::make('篇幅计划')->collapsible()->collapsed()->columns(3)->columnSpanFull()->schema([
                     TextEntry::make('target_chapters')->label('目标章数')->suffix('章'),
                     TextEntry::make('chapter_length_policy.min_characters')->label('每章字数下限')->suffix('字')->placeholder('未设置'),
                     TextEntry::make('chapter_length_policy.max_characters')->label('每章字数上限')->suffix('字')->placeholder('未设置'),
@@ -71,7 +95,7 @@ class NovelInfolist
                                 ]),
                             ]),
                     ]),
-                Section::make('设定执行记录')->columnSpanFull()
+                Section::make('设定执行记录')->collapsible()->collapsed()->columnSpanFull()
                     ->visible(fn (Novel $record): bool => $record->generation_mode === GenerationMode::SettingReal)
                     ->description('保留每次尝试。只有结构校验通过的结果才显示为设定候选，未知费用不代表免费。')
                     ->schema([
@@ -117,6 +141,21 @@ class NovelInfolist
                 TextEntry::make('blocking')->label('是否阻塞后续规划')->formatStateUsing(fn (bool $state): string => $state ? '是' : '否'),
             ]),
         ];
+    }
+
+    /** 最近10章的状态、字数与入口；正式章打开阅读器，未提交章打开正文工作台。
+     * @return list<array{number: string, title: string, status: string, characters: string, url: string}>
+     */
+    private static function recentChapters(Novel $novel): array
+    {
+        return $novel->chapters()->orderByDesc('number')->limit(10)->get()->map(function (Chapter $chapter) use ($novel): array {
+            $formal = $chapter->formal_version_id !== null;
+            $version = ChapterVersion::find($chapter->formal_version_id ?? $chapter->current_candidate_version_id);
+
+            return ['number' => '第'.$chapter->number.'章', 'title' => (string) ($version?->title ?? $chapter->title), 'status' => $formal ? '已正式提交' : ($version === null ? '生成中' : '候选，未提交'),
+                'characters' => $version === null ? '-' : (string) mb_strlen(preg_replace('/\s+/u', '', $version->body)),
+                'url' => $formal ? NovelResource::getUrl('reader', ['record' => $novel, 'chapter' => $chapter->number]) : NovelResource::getUrl('content', ['record' => $novel, 'chapter' => $chapter->number])];
+        })->all();
     }
 
     /** 一次性读取有序尝试并投影可展示字段，认证信息和原始供应商响应不进入页面。

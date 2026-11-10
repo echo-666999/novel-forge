@@ -26,6 +26,7 @@ use Filament\Tables\Concerns\InteractsWithTable;
 use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
+use UnitEnum;
 
 /** 场景草稿编辑、覆盖预检及明确冻结，正式正文没有编辑入口。 */
 class ScenePlans extends Page implements HasTable
@@ -35,6 +36,15 @@ class ScenePlans extends Page implements HasTable
 
     /** 沿用小说资源权限。 */
     protected static string $resource = NovelResource::class;
+
+    /** 单本小说子导航中的名称。 */
+    protected static ?string $navigationLabel = '场景规划';
+
+    /** 子导航排序。 */
+    protected static ?int $navigationSort = 5;
+
+    /** 子导航分组。 */
+    protected static string|UnitEnum|null $navigationGroup = '规划';
 
     /** 中文页面标题。 */
     protected static ?string $title = '章节与场景规划';

@@ -4,6 +4,7 @@ namespace App\Filament\Resources\Novels\Pages;
 
 use App\Enums\GenerationMode;
 use App\Filament\Resources\Novels\NovelResource;
+use App\Filament\Resources\Novels\Schemas\NovelForm;
 use App\Models\Novel;
 use App\Models\ProductionRun;
 use App\Services\Pipeline\CreateNovelService;
@@ -12,12 +13,16 @@ use Filament\Actions\Action;
 use Filament\Facades\Filament;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\CreateRecord;
+use Filament\Resources\Pages\CreateRecord\Concerns\HasWizard;
+use Filament\Schemas\Components\Wizard\Step;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Validation\ValidationException;
 
 /** 创建页只保存并入队，HTTP 内不执行阶段，也不允许连续重复建书。 */
 class CreateNovel extends CreateRecord
 {
+    use HasWizard;
+
     protected static string $resource = NovelResource::class;
 
     /** 应用服务自行提交事务后投递，禁止页面再包装外层事务。 */
@@ -43,9 +48,7 @@ class CreateNovel extends CreateRecord
             'premise_raw' => $source->premise_raw,
             'target_chapters' => $source->target_chapters,
             'chapter_length_policy' => $source->chapter_length_policy,
-            'generation_mode' => GenerationMode::Simulation->value,
-            'automatic_first_chapter' => false,
-            'automatic_first_ten' => false,
+            'production_mode' => 'manual',
         ]);
     }
 
@@ -54,17 +57,21 @@ class CreateNovel extends CreateRecord
      */
     protected function handleRecordCreation(array $data): Model
     {
+        $mode = $data['production_mode'] ?? 'manual';
+        $model = filled($data['automatic_model'] ?? null) ? $data['automatic_model'] : null;
+        unset($data['production_mode'], $data['automatic_model']);
         // 创建小说前返回字段错误，防止十章授权搭配不足十章计划产生半成品。
-        if (($data['automatic_first_ten'] ?? false) && (int) ($data['target_chapters'] ?? 0) < 10) {
+        if ($mode === 'auto_ten' && (int) ($data['target_chapters'] ?? 0) < 10) {
             throw ValidationException::withMessages(['data.target_chapters' => '生成前10章要求目标章数至少为10。']);
         }
-        if (($data['automatic_first_chapter'] ?? false) || ($data['automatic_first_ten'] ?? false)) {
-            $run = app(ProductionRunService::class)->start($data, Filament::auth()->user(), true, model: filled($data['automatic_model'] ?? null) ? $data['automatic_model'] : null, chapterLimit: ($data['automatic_first_ten'] ?? false) ? 10 : 1);
+        if (in_array($mode, ['auto_first', 'auto_ten'], true)) {
+            $run = app(ProductionRunService::class)->start($data, Filament::auth()->user(), true, model: $model, chapterLimit: $mode === 'auto_ten' ? 10 : 1);
             $this->startupConfirmed = $run->status === 'pending';
 
             return Novel::findOrFail($run->novel_id);
         }
-        $result = app(CreateNovelService::class)->createAndStart($data);
+        // 逐章确认：只生成真实设定候选，之后每一步由作者在工作台确认；模拟流程仅保留给命令行自检。
+        $result = app(CreateNovelService::class)->createAndStart([...$data, 'generation_mode' => GenerationMode::SettingReal->value], modelOverride: $model);
         $this->startupConfirmed = $result->startupConfirmed;
 
         return $result->novel;
@@ -84,28 +91,23 @@ class CreateNovel extends CreateRecord
         return Notification::make()->success()->title('小说已创建，已提交启动请求')->body($this->record->generation_mode === GenerationMode::SettingReal ? '真实设定已入队，将产生模型调用费用；完成后暂停等待大纲阶段。' : '当前运行模拟流程，不生成正文或产生模型费用。');
     }
 
-    /** 创建后返回带状态轮询的列表。 */
+    /** 创建后直接进入这本书的工作台，进度卡片会自动刷新。 */
     protected function getRedirectUrl(): string
     {
-        return NovelResource::getUrl('index');
+        return NovelResource::getUrl('view', ['record' => $this->record]);
+    }
+
+    /** 建书向导步骤。
+     * @return list<Step>
+     */
+    public function getSteps(): array
+    {
+        return NovelForm::steps();
     }
 
     /** 提交按钮使用作者可理解的动作名称。 */
     protected function getCreateFormAction(): Action
     {
         return parent::getCreateFormAction()->label('创建并启动');
-    }
-
-    /** 首屏提供明确提交入口，关联原表单，保留必填校验、提交锁及唯一创建流程。
-     * @return array<Action>
-     */
-    protected function getHeaderActions(): array
-    {
-        return [
-            Action::make('submitNovel')
-                ->label('创建并启动')
-                ->submit('create')
-                ->formId('form'),
-        ];
     }
 }

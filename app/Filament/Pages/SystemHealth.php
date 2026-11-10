@@ -5,10 +5,14 @@ namespace App\Filament\Pages;
 use App\Filament\Resources\Novels\NovelResource;
 use App\Models\Novel;
 use App\Models\StoryOutboxEvent;
+use App\Services\Pipeline\BackendCapabilities;
 use App\Services\Pipeline\PlanningJson;
 use App\Services\Pipeline\WorkerHeartbeat;
 use App\Services\Search\SearchIndexStatus;
 use Filament\Actions\Action;
+use Filament\Facades\Filament;
+use Filament\Infolists\Components\RepeatableEntry;
+use Filament\Infolists\Components\RepeatableEntry\TableColumn;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Pages\Page;
 use Filament\Schemas\Components\EmbeddedTable;
@@ -22,6 +26,7 @@ use Filament\Tables\Filters\TernaryFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Symfony\Component\HttpFoundation\StreamedResponse;
+use UnitEnum;
 
 /** 消费者观测与事务通知审计，只读检查不会重发提交或删除历史。 */
 class SystemHealth extends Page implements HasTable
@@ -31,7 +36,10 @@ class SystemHealth extends Page implements HasTable
     /** 系统观测页面中文标题。 */
     protected static ?string $title = '系统健康与事务通知';
 
-    /** 位于业务运行入口之后。 */
+    /** 侧栏分组。 */
+    protected static string|UnitEnum|null $navigationGroup = '配置与运维';
+
+    /** 分组内排序。 */
     protected static ?int $navigationSort = 3;
 
     /** 仅报告实际观测和积压，不给出没有依据的健康绿灯。 */
@@ -42,7 +50,37 @@ class SystemHealth extends Page implements HasTable
             TextEntry::make('index')->label('检索投影覆盖')->state(fn (): string => app(SearchIndexStatus::class)->summary()),
             TextEntry::make('outbox')->label('未标记投递的事务通知')->state(fn (): int => StoryOutboxEvent::whereNull('published_at')->count()),
             TextEntry::make('oldest')->label('最早未标记投递时间')->state(fn (): ?string => StoryOutboxEvent::whereNull('published_at')->min('created_at'))->placeholder('没有待投递通知'),
-        ]), EmbeddedTable::make()]);
+        ]), EmbeddedTable::make(),
+            Section::make('功能覆盖（UI01～UI32）')->description('开发验收用：PRD 后台页面的入口与当前开放范围。小说相关入口打开最近活动的小说。')->collapsed()->schema([
+                RepeatableEntry::make('capabilities')->hiddenLabel()->state(fn (): array => $this->capabilities())
+                    ->table([TableColumn::make('需求编号'), TableColumn::make('功能'), TableColumn::make('入口'), TableColumn::make('当前范围')])
+                    ->schema([
+                        TextEntry::make('id'), TextEntry::make('name'),
+                        TextEntry::make('url')->url(fn (?string $state): ?string => $state)->formatStateUsing(fn (): string => '打开页面')->placeholder('尚无小说'),
+                        TextEntry::make('scope'),
+                    ]),
+            ]),
+        ]);
+    }
+
+    /** 只生成已注册的实际路由，缺少小说时不伪造记录编号。
+     * @return list<array<string, mixed>>
+     */
+    public function capabilities(): array
+    {
+        $novel = Novel::latest('updated_at')->first();
+
+        return array_map(function (array $row) use ($novel): array {
+            $url = match ($row['page']) {
+                'profile' => Filament::getProfileUrl(), 'overview' => ProductionOverview::getUrl(),
+                'templates' => ManagePromptTemplates::getUrl(), 'settings' => ManageGeneralSettings::getUrl(),
+                'runs' => GenerationRuns::getUrl(), 'health' => static::getUrl(),
+                'index' => NovelResource::getUrl('index'), null => null,
+                default => $novel === null ? null : NovelResource::getUrl($row['page'], ['record' => $novel]),
+            };
+
+            return [...$row, 'url' => $url];
+        }, BackendCapabilities::all());
     }
 
     /** 事务通知绑定原提交，筛选只影响展示和脱敏下载。 */

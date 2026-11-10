@@ -33,6 +33,8 @@ class AdminPanelProvider extends PanelProvider
             ->colors([
                 'primary' => Color::Amber,
             ])
+            // PRD 22.1 导航分组：创作 → 生产与质量 → 配置与运维。
+            ->navigationGroups(['创作工作台', '生产与质量', '配置与运维'])
             ->discoverResources(in: app_path('Filament/Resources'), for: 'App\Filament\Resources')
             ->discoverPages(in: app_path('Filament/Pages'), for: 'App\Filament\Pages')
             ->discoverWidgets(in: app_path('Filament/Widgets'), for: 'App\Filament\Widgets')

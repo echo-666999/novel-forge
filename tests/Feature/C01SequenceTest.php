@@ -22,6 +22,7 @@ use App\Services\Pipeline\ContentExecutionService;
 use App\Services\Pipeline\ContentGenerationService;
 use App\Services\Pipeline\ForeshadowLedger;
 use App\Services\Pipeline\LegacyContentSources;
+use App\Services\Pipeline\NovelProgressQuery;
 use App\Services\Pipeline\OutlineGenerationService;
 use App\Services\Pipeline\PlanningJson;
 use App\Services\Pipeline\ProductionRunService;
@@ -365,6 +366,72 @@ class C01SequenceTest extends TestCase
         Livewire::test(ViewNovel::class, ['record' => $run->novel_id])->assertActionDoesNotExist('generateNextChapter')->assertActionDoesNotExist('extendProduction');
     }
 
+    /** 已执行过的假队列任务，避免重复处理同一消息。
+     * @var list<object>
+     */
+    private array $handledJobs = [];
+
+    /** 依次执行假队列中尚未处理的任务，任务内新投递的消息继续执行，直到队列为空。 */
+    private function runQueuedJobs(): void
+    {
+        for ($round = 0; $round < 60; $round++) {
+            $ran = false;
+            foreach (Queue::pushedJobs() as $entries) {
+                foreach ($entries as $entry) {
+                    if (in_array($entry['job'], $this->handledJobs, true)) {
+                        continue;
+                    }
+                    $this->handledJobs[] = $entry['job'];
+                    app()->call([$entry['job'], 'handle']);
+                    $ran = true;
+                }
+            }
+            if (! $ran) {
+                return;
+            }
+        }
+    }
+
+    /** 工作台进度卡片的当前标题。 */
+    private function progressHeadline(Novel $novel): string
+    {
+        return app(NovelProgressQuery::class)->for($novel->fresh())['headline'];
+    }
+
+    /** O3 退出标准：新用户只按工作台提示和页面按钮，就能从建书走到第1章正式提交。 */
+    public function test_new_user_reaches_first_formal_chapter_through_workbench(): void
+    {
+        $author = User::factory()->create();
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        $this->actingAs($author);
+        Livewire::test(CreateNovel::class)->fillForm([...B02SettingTest::input(), 'chapter_length_policy' => ['min_characters' => 20, 'max_characters' => 300], 'production_mode' => 'manual'])
+            ->call('create')->assertHasNoFormErrors();
+        $novel = Novel::sole();
+        $this->runQueuedJobs();
+        $this->assertSame('等你确认设定', $this->progressHeadline($novel));
+        Livewire::test(ViewNovel::class, ['record' => $novel->id])->assertSee('● 设定确认')
+            ->callAction('confirmSetting', ['answers' => [['answer' => '来信不能改变已经发生的过去。']], 'acknowledged' => true])->assertHasNoActionErrors();
+        $this->assertSame('可以生成大纲', $this->progressHeadline($novel));
+        Livewire::test(ViewNovel::class, ['record' => $novel->id])
+            ->callAction('generateOutline', ['confirmation_id' => $novel->settingConfirmations()->max('id'), 'accept_request' => true])->assertHasNoActionErrors();
+        $this->runQueuedJobs();
+        $this->assertSame('可以开始写作', $this->progressHeadline($novel));
+        Livewire::test(ViewNovel::class, ['record' => $novel->id])->callAction('generateFirstChapter', ['accept_request' => true])->assertHasNoActionErrors();
+        $this->runQueuedJobs();
+        $this->assertSame('第1章：等你核对全文', $this->progressHeadline($novel));
+        Livewire::test(ViewChapterContent::class, ['record' => $novel->id])->assertSee('第1章：等你核对全文')
+            ->callAction('fullReading', ['accepted' => true, 'notes' => '全文核对通过'])->assertHasNoActionErrors();
+        $this->assertSame('第1章：可以准备正式提交', $this->progressHeadline($novel));
+        Livewire::test(ViewChapterContent::class, ['record' => $novel->id])->callAction('prepareSubmission', ['reason' => '准备提交第1章', 'accept_request' => true])->assertHasNoActionErrors();
+        $this->runQueuedJobs();
+        $this->assertContains($this->progressHeadline($novel), ['第1章：可以正式提交', '第1章：等你批准新实体并正式提交']);
+        Livewire::test(ViewChapterContent::class, ['record' => $novel->id])->callAction('commitChapter', ['approved_entities' => [], 'reason' => '作者批准第1章', 'acknowledge' => true])->assertHasNoActionErrors();
+        $this->assertSame(1, $novel->fresh()->chapters_done);
+        $this->assertSame('已正式提交1/10章，可以继续写', $this->progressHeadline($novel));
+        Livewire::test(ViewNovel::class, ['record' => $novel->id])->assertActionVisible('generateNextChapter')->assertActionVisible('extendProduction')
+            ->assertSee('原始要求与覆盖')->assertSee('成品验收')->assertDontSee('B04');
+    }
+
     /** 旧首章授权不能派生第二章提交密钥。 */
     public function test_single_chapter_authorization_cannot_expand(): void
     {
@@ -404,10 +471,10 @@ class C01SequenceTest extends TestCase
     {
         Filament::setCurrentPanel(Filament::getPanel('admin'));
         $this->actingAs(User::factory()->create());
-        Livewire::test(CreateNovel::class)->fillForm([...B02SettingTest::input(), 'target_chapters' => 5, 'automatic_first_ten' => true])
+        Livewire::test(CreateNovel::class)->fillForm([...B02SettingTest::input(), 'target_chapters' => 5, 'production_mode' => 'auto_ten'])
             ->call('create')->assertHasFormErrors(['target_chapters']);
         $this->assertSame(0, Novel::count());
-        Livewire::test(CreateNovel::class)->fillForm([...B02SettingTest::input(), 'automatic_first_ten' => true])
+        Livewire::test(CreateNovel::class)->fillForm([...B02SettingTest::input(), 'production_mode' => 'auto_ten'])
             ->call('create')->assertHasNoFormErrors();
         $this->assertSame(10, ProductionRun::sole()->chapter_limit);
         $this->assertSame('c01-v1', ProductionRun::sole()->policy['version']);

@@ -12,7 +12,7 @@ class ListNovels extends ListRecords
 {
     protected static string $resource = NovelResource::class;
 
-    /** 仅提供创建动作，运行恢复不在 B01 范围。
+    /** 仅提供创建动作，运行恢复在小说的运行详情页处理。
      * @return array<Action>
      */
     protected function getHeaderActions(): array

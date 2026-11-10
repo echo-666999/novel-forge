@@ -16,6 +16,7 @@ use Filament\Schemas\Schema;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use InvalidArgumentException;
 use Livewire\Attributes\Url;
+use UnitEnum;
 
 /** 按正式章节回放状态并展示正文证据，不开放任何历史写入。 */
 class ViewStoryState extends Page
@@ -24,6 +25,15 @@ class ViewStoryState extends Page
 
     /** 资源负责小说访问权限。 */
     protected static string $resource = NovelResource::class;
+
+    /** 单本小说子导航中的名称。 */
+    protected static ?string $navigationLabel = '故事状态回放';
+
+    /** 子导航排序。 */
+    protected static ?int $navigationSort = 18;
+
+    /** 子导航分组。 */
+    protected static string|UnitEnum|null $navigationGroup = '交付';
 
     /** 后台中文标题。 */
     protected static ?string $title = '故事状态回放';

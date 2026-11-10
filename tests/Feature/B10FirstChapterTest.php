@@ -230,7 +230,7 @@ class B10FirstChapterTest extends TestCase
         Filament::setCurrentPanel(Filament::getPanel('admin'));
         $this->actingAs(User::factory()->create());
         Livewire::test(CreateNovel::class)
-            ->fillForm([...B02SettingTest::input(), 'automatic_first_chapter' => true])->call('create')->assertHasNoFormErrors();
+            ->fillForm([...B02SettingTest::input(), 'production_mode' => 'auto_first'])->call('create')->assertHasNoFormErrors();
         $run = ProductionRun::sole();
         Queue::assertPushed(AdvanceProductionRunJob::class);
         Http::assertNothingSent();

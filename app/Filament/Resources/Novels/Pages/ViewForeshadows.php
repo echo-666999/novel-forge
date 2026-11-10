@@ -25,6 +25,7 @@ use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Table;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
+use UnitEnum;
 
 /** 伏笔计划与正式证据维护入口，状态只能经追加证据推进。 */
 class ViewForeshadows extends Page implements HasTable
@@ -34,6 +35,15 @@ class ViewForeshadows extends Page implements HasTable
 
     /** 复用小说私有后台权限。 */
     protected static string $resource = NovelResource::class;
+
+    /** 单本小说子导航中的名称。 */
+    protected static ?string $navigationLabel = '伏笔账本';
+
+    /** 子导航排序。 */
+    protected static ?int $navigationSort = 8;
+
+    /** 子导航分组。 */
+    protected static string|UnitEnum|null $navigationGroup = '人物与世界';
 
     /** 中文页面标题。 */
     protected static ?string $title = '伏笔账本';

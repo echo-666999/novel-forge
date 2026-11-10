@@ -26,6 +26,7 @@ use Filament\Tables\Concerns\InteractsWithTable;
 use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
+use UnitEnum;
 
 /** 作者设定、别名候选及关系版本管理，与正式动态状态分离。 */
 class EntityLibrary extends Page implements HasTable
@@ -35,6 +36,15 @@ class EntityLibrary extends Page implements HasTable
 
     /** 沿用小说权限。 */
     protected static string $resource = NovelResource::class;
+
+    /** 单本小说子导航中的名称。 */
+    protected static ?string $navigationLabel = '人物与实体库';
+
+    /** 子导航排序。 */
+    protected static ?int $navigationSort = 6;
+
+    /** 子导航分组。 */
+    protected static string|UnitEnum|null $navigationGroup = '人物与世界';
 
     /** 页面中文名称。 */
     protected static ?string $title = '人物、关系与世界实体库';

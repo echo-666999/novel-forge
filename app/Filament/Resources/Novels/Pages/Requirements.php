@@ -25,6 +25,7 @@ use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
+use UnitEnum;
 
 /** 原始创意只读，提炼和覆盖决定通过独立不可变版本保存。 */
 class Requirements extends Page implements HasTable
@@ -34,6 +35,15 @@ class Requirements extends Page implements HasTable
 
     /** 使用小说的私有权限和面包屑。 */
     protected static string $resource = NovelResource::class;
+
+    /** 单本小说子导航中的名称。 */
+    protected static ?string $navigationLabel = '原始要求与覆盖';
+
+    /** 子导航排序。 */
+    protected static ?int $navigationSort = 1;
+
+    /** 子导航分组。 */
+    protected static string|UnitEnum|null $navigationGroup = '规划';
 
     /** 页面中文名称。 */
     protected static ?string $title = '原始要求与覆盖矩阵';

@@ -31,6 +31,7 @@ use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use Symfony\Component\HttpFoundation\StreamedResponse;
+use UnitEnum;
 
 /** 验收批次入口，机器核验、作者评分和明确认可分开操作。 */
 class AcceptanceWorkbench extends Page implements HasTable
@@ -40,6 +41,15 @@ class AcceptanceWorkbench extends Page implements HasTable
 
     /** 小说权限入口。 */
     protected static string $resource = NovelResource::class;
+
+    /** 单本小说子导航中的名称。 */
+    protected static ?string $navigationLabel = '成品验收';
+
+    /** 子导航排序。 */
+    protected static ?int $navigationSort = 15;
+
+    /** 子导航分组。 */
+    protected static string|UnitEnum|null $navigationGroup = '交付';
 
     /** 中文后台标题。 */
     protected static ?string $title = '验收工作台';

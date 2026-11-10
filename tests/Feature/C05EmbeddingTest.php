@@ -60,7 +60,7 @@ class C05EmbeddingTest extends TestCase
             }
             $url = NovelResource::getUrl('search', ['record' => $novel->id]);
             Livewire::test(ViewNovel::class, ['record' => $novel->id])
-                ->assertSee('中文检索实验室')->assertSee($url, false);
+                ->assertSee('检索实验室')->assertSee($url, false);
             Livewire::test(SearchLab::class, ['record' => $novel->id])->assertSee('检索正式正文');
         }
         Http::assertNothingSent();
