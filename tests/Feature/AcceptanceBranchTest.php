@@ -6,8 +6,8 @@ use App\Models\Chapter;
 use App\Models\ChapterGenerationRun;
 use App\Models\ChapterVersion;
 use App\Models\CostLog;
-use App\Models\FirstChapterRun;
 use App\Models\Novel;
+use App\Models\ProductionRun;
 use App\Models\User;
 use App\Services\Ai\AiTextGenerationService;
 use App\Services\Ai\ChapterGenerationAgent;
@@ -32,7 +32,7 @@ class AcceptanceBranchTest extends B04ExecutionTest
     protected function tearDown(): void
     {
         $this->assertSame(':memory:', DB::connection()->getDatabaseName());
-        DB::table('first_chapter_runs')->delete();
+        DB::table('production_runs')->delete();
         parent::tearDown();
     }
 
@@ -96,7 +96,7 @@ class AcceptanceBranchTest extends B04ExecutionTest
             $this->fail('未授权不应成功');
         } catch (InvalidArgumentException) {
             $this->assertSame($count, Novel::count());
-            $this->assertSame(0, FirstChapterRun::count());
+            $this->assertSame(0, ProductionRun::count());
         }
     }
 

@@ -4,7 +4,7 @@ namespace App\Services\Pipeline;
 
 use App\Models\ChapterGenerationRun;
 use App\Models\ChapterSubmissionRun;
-use App\Models\FirstChapterRun;
+use App\Models\ProductionRun;
 use App\Models\User;
 use InvalidArgumentException;
 
@@ -32,7 +32,7 @@ final class RevisionWorkbench
             || $chapter->novel->state_version !== $chapter->number - 1
             || $chapter->current_candidate_version_id !== $versionId
             || ChapterGenerationRun::where('chapter_id', $chapter->id)->latest('id')->value('id') !== $parent->id
-            || FirstChapterRun::where('novel_id', $chapter->novel_id)->exists()
+            || ProductionRun::coveringChapter($chapter->novel_id, $chapter->number, true) !== null
             || ChapterSubmissionRun::where('chapter_id', $chapter->id)->whereIn('status', ['pending', 'running'])->exists()) {
             throw new InvalidArgumentException('当前正文、作者或运行边界已变化，不能启动工作台修订');
         }

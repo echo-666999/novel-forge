@@ -8,7 +8,7 @@ use App\Models\User;
 use App\Services\Ai\AiGenerationException;
 use App\Services\Ai\AiTextGenerationService;
 use App\Services\Ai\TextRequestOptions;
-use App\Services\Pipeline\FirstChapterService;
+use App\Services\Pipeline\ProductionRunService;
 use App\Settings\GeneralSettings;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Http\Client\Request;
@@ -43,7 +43,7 @@ class DeepSeekAiGenerationTest extends TestCase
     protected function tearDown(): void
     {
         $this->assertSame(':memory:', DB::connection()->getDatabaseName());
-        DB::table('first_chapter_runs')->delete();
+        DB::table('production_runs')->delete();
         B04ContentTest::clearFixtures();
         parent::tearDown();
     }
@@ -183,7 +183,7 @@ class DeepSeekAiGenerationTest extends TestCase
         $settings = app(GeneralSettings::class);
         $settings->default_model = 'deepseek-flash';
         $settings->save();
-        $run = app(FirstChapterService::class)->start(B02SettingTest::input(), User::factory()->create(), true, false, chapterLimit: 10);
+        $run = app(ProductionRunService::class)->start(B02SettingTest::input(), User::factory()->create(), true, false, chapterLimit: 10);
         $settings->default_model = 'gpt-4.1-mini';
         $settings->save();
         $this->assertSame('deepseek-flash', Novel::findOrFail($run->novel_id)->generation_config['model']);

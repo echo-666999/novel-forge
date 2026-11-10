@@ -2,20 +2,18 @@
 
 namespace App\Services\Pipeline;
 
-use App\Jobs\AdvanceFirstChapterJob;
+use App\Enums\GenerationMode;
+use App\Enums\NovelStatus;
+use App\Enums\ProductionFailure;
+use App\Jobs\AdvanceProductionRunJob;
 use App\Jobs\RunSettingJob;
-use App\Models\ChapterEventExtraction;
-use App\Models\ChapterGenerationRun;
-use App\Models\ChapterReview;
-use App\Models\ChapterSubmissionRun;
-use App\Models\ChapterSubmissionValidation;
-use App\Models\ChapterVersion;
 use App\Models\CostLog;
-use App\Models\FirstChapterRun;
 use App\Models\Novel;
+use App\Models\ProductionRun;
 use App\Models\User;
 use App\Services\Ai\AiGenerationException;
 use App\Services\Ai\AiTextGenerationService;
+use App\Services\Ai\ModelProfiles;
 use App\Services\Ai\TextRequestOptions;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
@@ -23,13 +21,18 @@ use Illuminate\Support\Str;
 use InvalidArgumentException;
 use Throwable;
 
-/** 新创意到授权范围逐章正式提交的持久化编排；每次领取至多发送一次模型请求。 */
-final class FirstChapterService
+/** 章节范围生产运行的持久化编排：新书从设定到授权范围逐章正式提交，已有书可续写下一段章节。每次领取至多发送一次模型请求。 */
+final class ProductionRunService
 {
+    /** 全书规划步骤；章节步骤由 ChapterProductionStepper 负责。 */
+    public const PLANNING_STEPS = ['setting', 'decision', 'outline'];
+
+    public function __construct(private ChapterProductionStepper $stepper) {}
+
     /** 创建时一次性显式授权，不能把已有小说悄悄接入自动提交。
      * @param  array<string, mixed>  $input
      */
-    public function start(array $input, User $author, bool $authorized, bool $dispatch = true, ?string $model = null, int $chapterLimit = 1): FirstChapterRun
+    public function start(array $input, User $author, bool $authorized, bool $dispatch = true, ?string $model = null, int $chapterLimit = 1): ProductionRun
     {
         if (! in_array($chapterLimit, [1, 10], true) || ($chapterLimit === 10 && (int) ($input['target_chapters'] ?? 0) < 10)) {
             throw new InvalidArgumentException('连续生成要求至少十章规划，授权范围仅支持一章或十章');
@@ -39,12 +42,12 @@ final class FirstChapterService
         }
         // 新运行统一使用通用设置的默认模型；显式覆盖及既有冻结运行保持不变。
         $novel = app(CreateNovelService::class)->createAndStart([...$input, 'generation_mode' => 'setting_real'], false, $model)->novel;
-        $run = DB::transaction(function () use ($novel, $author, $chapterLimit): FirstChapterRun {
+        $run = DB::transaction(function () use ($novel, $author, $chapterLimit): ProductionRun {
             // 总执行额度覆盖所有规划批次及授权章节，单个模型步骤仍有独立上限。
             $novel->update(['max_execution_count' => max($novel->max_execution_count, (int) ceil($novel->target_chapters / 10) + 20 * $chapterLimit)]);
 
-            return FirstChapterRun::create(['novel_id' => $novel->id, 'author_id' => $author->id, 'chapter_limit' => $chapterLimit, 'policy' => FirstChapterRun::policy($chapterLimit === 10 ? 3 : 2),
-                'policy_hash' => PlanningJson::hash(FirstChapterRun::policy($chapterLimit === 10 ? 3 : 2)), 'commit_key' => (string) Str::uuid7(), 'status' => 'pending', 'step' => 'setting',
+            return ProductionRun::create(['novel_id' => $novel->id, 'author_id' => $author->id, 'start_chapter' => 1, 'chapter_limit' => $chapterLimit, 'policy' => ProductionRun::policy($chapterLimit === 10 ? 3 : 2),
+                'policy_hash' => PlanningJson::hash(ProductionRun::policy($chapterLimit === 10 ? 3 : 2)), 'commit_key' => (string) Str::uuid7(), 'status' => 'pending', 'step' => 'setting',
                 'artifacts' => [], 'history' => [['action' => 'authorized', 'operator_id' => $author->id, 'at' => now()->toIso8601String()]]]);
         });
         if ($dispatch) {
@@ -54,12 +57,59 @@ final class FirstChapterService
         return $run->refresh();
     }
 
+    /** 续写授权：从下一章起最多授权十章，冻结范围与模型。要求前序运行全部完成、大纲覆盖范围且没有在途章节。 */
+    public function extend(int $novelId, User $author, int $count, ?string $model, string $reason, bool $dispatch = true): ProductionRun
+    {
+        ContentSchema::text($reason);
+        if ($count < 1 || $count > ProductionRun::MAX_RANGE) {
+            throw new InvalidArgumentException('单次续写授权为1至'.ProductionRun::MAX_RANGE.'章');
+        }
+        if ($model !== null && ! array_key_exists($model, ModelProfiles::options())) {
+            throw new InvalidArgumentException('模型不在可选模型列表中');
+        }
+        $run = DB::transaction(function () use ($novelId, $author, $count, $model, $reason): ProductionRun {
+            $novel = Novel::lockForUpdate()->findOrFail($novelId);
+            $start = $novel->chapters_done + 1;
+            $end = $start + $count - 1;
+            $plan = $novel->outlinePlans()->where('status', 'completed')->latest('id')->first();
+            if ($novel->generation_mode !== GenerationMode::SettingReal || $novel->archived_at !== null) {
+                throw new InvalidArgumentException('仅未归档的真实生成小说可以续写');
+            }
+            if ($novel->status !== NovelStatus::Paused || $novel->pause_requested || $novel->state_version !== $novel->chapters_done) {
+                throw new InvalidArgumentException('小说当前不在可续写的暂停边界，请先处理在途运行');
+            }
+            if ($novel->chapters_done < 1 || $end > $novel->target_chapters || $plan === null || $plan->chapters()->whereBetween('chapter_number', [$start, $end])->count() !== $count) {
+                throw new InvalidArgumentException('续写范围必须在目标章数和已完成大纲之内，且已至少正式提交一章');
+            }
+            if (ProductionRun::where('novel_id', $novel->id)->where('status', '!=', 'completed')->exists()) {
+                throw new InvalidArgumentException('本书还有未完成的生产运行，请先恢复或完成它');
+            }
+            if ($novel->chapters()->where('number', '>=', $start)->exists()) {
+                throw new InvalidArgumentException('第'.$start.'章已有候选，请先在正文工作台处理后再授权续写');
+            }
+            $predecessor = ProductionRun::latestFor($novel->id);
+            // 执行额度按章预留，与十章授权的计算方式一致；不降低已有额度。
+            $novel->update(['max_execution_count' => max($novel->max_execution_count, $novel->execution_count + 20 * $count)]);
+            $policy = ProductionRun::rangePolicy($start, $end, $model);
+
+            return ProductionRun::create(['novel_id' => $novel->id, 'author_id' => $author->id, 'start_chapter' => $start, 'chapter_limit' => $end, 'predecessor_id' => $predecessor?->id,
+                'policy' => $policy, 'policy_hash' => PlanningJson::hash($policy), 'commit_key' => (string) Str::uuid7(), 'status' => 'pending', 'step' => 'content',
+                'artifacts' => ['chapter_number' => $start, 'cost_log_baseline' => (int) (CostLog::where('novel_id', $novel->id)->max('id') ?? 0)],
+                'history' => [['action' => 'authorized', 'operator_id' => $author->id, 'range' => [$start, $end], 'model' => $model, 'reason' => $reason, 'at' => now()->toIso8601String()]]]);
+        });
+        if ($dispatch) {
+            $this->dispatch($run);
+        }
+
+        return $run->refresh();
+    }
+
     /** 持久化独占领取；运行超时不会自动重发未知请求，须显式恢复。 */
-    public function advance(int $id): FirstChapterRun
+    public function advance(int $id): ProductionRun
     {
         $token = (string) Str::uuid7();
-        $claimed = FirstChapterRun::whereKey($id)->where('status', 'pending')->update(['status' => 'running', 'lease_token' => $token, 'lease_expires_at' => now()->addMinutes(5)]);
-        $run = FirstChapterRun::findOrFail($id);
+        $claimed = ProductionRun::whereKey($id)->where('status', 'pending')->update(['status' => 'running', 'lease_token' => $token, 'lease_expires_at' => now()->addMinutes(5)]);
+        $run = ProductionRun::findOrFail($id);
         if (! $claimed) {
             return $run;
         }
@@ -70,7 +120,7 @@ final class FirstChapterService
                 throw new InvalidArgumentException('USER_PAUSED');
             }
             $step = $run->step;
-            $number = $run->artifacts['chapter_number'] ?? 1;
+            $number = $run->artifacts['chapter_number'] ?? $run->start_chapter;
             $this->perform($run, $novel, User::findOrFail($run->author_id));
             $run->history = [...$run->history, ['action' => 'advanced', 'chapter' => $number, 'step' => $step, 'next_step' => $run->step, 'requests' => $this->requestCount($run), 'at' => now()->toIso8601String()]];
             $run->status = $run->step === 'completed' ? 'completed' : 'pending';
@@ -85,7 +135,7 @@ final class FirstChapterService
         $run->lease_token = null;
         $run->lease_expires_at = null;
         DB::transaction(function () use ($run, $token): void {
-            $current = FirstChapterRun::lockForUpdate()->findOrFail($run->id);
+            $current = ProductionRun::lockForUpdate()->findOrFail($run->id);
             if ($current->lease_token !== $token || $current->status !== 'running') {
                 throw new InvalidArgumentException('自动流程领取令牌已失效');
             }
@@ -95,20 +145,16 @@ final class FirstChapterService
         return $this->recoverKnownFailure($run->refresh());
     }
 
-    /** 已授权的新流程对明确失败自动创建后继；未知请求与重复错误仍保留断点。 */
-    private function recoverKnownFailure(FirstChapterRun $run): FirstChapterRun
+    /** 已授权的流程对明确失败自动创建后继；未知请求与重复错误仍保留断点。 */
+    private function recoverKnownFailure(ProductionRun $run): ProductionRun
     {
         if ($run->status !== 'failed' || ($run->policy['automatic_recovery'] ?? null) !== 'distinct_failure_once'
             || CostLog::where('novel_id', $run->novel_id)->where(fn ($query) => $query->where('status', 'pending')->orWhere(fn ($unknown) => $unknown->where('status', 'unknown')->whereNotIn('id', $run->acknowledgedUnknownLogIds())))->exists()) {
             return $run;
         }
-        $recoverable = in_array($run->error, ['CONTENT_STOPPED:invalid_schema', 'CONTENT_STOPPED:provider_failed', 'CONTENT_STOPPED:retry_limit',
-            'CONTENT_PARAGRAPH_INCOMPLETE', 'SUBMISSION_STOPPED:EVENT_VALIDATION_BLOCKED', 'SUBMISSION_STOPPED:INVALID_RESPONSE', 'SETTING_DECISION_FAILED'], true)
-            || ($run->step === 'setting' && $run->error === 'ValidationException')
-            || ($run->step === 'outline' && $run->error === 'OUTLINE_STOPPED:batch_failed');
-        // 首章历史恢复指纹保持原值；十章授权按章区分失败，防止旧授权重复领用。
-        $fingerprint = PlanningJson::hash($run->chapter_limit === 1 ? [$run->step, $run->error] : [$run->artifacts['chapter_number'] ?? 1, $run->step, $run->error]);
-        if (! $recoverable || collect($run->history)->contains(fn (array $entry): bool => ($entry['automatic_failure_fingerprint'] ?? null) === $fingerprint)) {
+        // 首章历史恢复指纹保持原值；多章授权按章区分失败，防止旧授权重复领用。
+        $fingerprint = PlanningJson::hash($run->chapter_limit === 1 ? [$run->step, $run->error] : [$run->artifacts['chapter_number'] ?? $run->start_chapter, $run->step, $run->error]);
+        if (! ProductionFailure::isAutomaticallyRecoverable($run->error, $run->step) || collect($run->history)->contains(fn (array $entry): bool => ($entry['automatic_failure_fingerprint'] ?? null) === $fingerprint)) {
             return $run;
         }
         // 先记录自动恢复原因；不静默覆盖失败记录或借重试批准未通过的独立评审。
@@ -123,13 +169,12 @@ final class FirstChapterService
         }
     }
 
-    /** 顺序推进，产物先入库；断点重放优先复用已完成产物。
+    /** 顺序推进，产物先入库；断点重放优先复用已完成产物。规划步骤在此处理，章节步骤交给步骤机。
      * @throws InvalidArgumentException
      */
-    private function perform(FirstChapterRun $run, Novel $novel, User $author): void
+    private function perform(ProductionRun $run, Novel $novel, User $author): void
     {
         $artifacts = $run->artifacts;
-        $number = $artifacts['chapter_number'] ?? 1;
         switch ($run->step) {
             case 'setting':
                 $pipeline = new NovelPipelineService(new StageExecutorRegistry(app(SettingExecutor::class), true));
@@ -179,67 +224,8 @@ final class FirstChapterService
                     throw new InvalidArgumentException('OUTLINE_STOPPED:'.$plan->stop_reason);
                 }
                 break;
-            case 'content':
-                $body = ChapterGenerationRun::whereHas('chapter', fn ($query) => $query->where('novel_id', $novel->id)->where('number', $number))->latest('id')->first()
-                    ?? app(ContentGenerationService::class)->start($novel, $author, reason: '第'.$number.'章自动授权生成', modelOverride: $novel->generation_config['model'], chapterNumber: $number);
-                $artifacts['body_run_id'] = $body->id;
-                if ($body->status === 'pending') {
-                    app(ContentExecutionService::class)->runStep($body->id, $body->invocation_id, app(AiTextGenerationService::class));
-                    $body->refresh();
-                }
-                if ($body->stop_reason === 'awaiting_review') {
-                    // 任何句中截断都必须先修复；独立模型通过不能豁免确定性完整性检查。
-                    $version = ChapterVersion::findOrFail($body->chapter->current_candidate_version_id);
-                    $incomplete = ContentExecutionContract::incompleteParagraphs($version->body);
-                    if ($incomplete !== []) {
-                        app(ContentExecutionService::class)->recordReading($body->id, $author, false,
-                            ['自动段落完整性检查未通过：第'.implode('、', array_column($incomplete, 'paragraph')).'段在句中截断。必须由模型补全或合理合并，不能删除残句或仅补标点冒充完整；不是人工阅读结论。'], $run->id);
-                        throw new InvalidArgumentException('CONTENT_PARAGRAPH_INCOMPLETE');
-                    }
-                    app(ContentExecutionService::class)->recordReading($body->id, $author, true, ['自动授权策略通过当前推进检查；后续独立评审通过后才提交。此记录不是人工全文阅读。'], $run->id);
-                    $body->refresh();
-                }
-                if ($body->stop_reason === 'b04_accepted') {
-                    $artifacts['version_id'] = $body->chapter->current_candidate_version_id;
-                    $run->step = 'submission';
-                } elseif ($body->status !== 'pending') {
-                    throw new InvalidArgumentException('CONTENT_STOPPED:'.$body->stop_reason);
-                }
-                break;
-            case 'submission':
-                $submission = ChapterSubmissionRun::where('novel_id', $novel->id)->where('version_id', $artifacts['version_id'])->whereHas('chapter', fn ($query) => $query->where('number', $number))->latest('id')->first()
-                    ?? app(ChapterSubmissionService::class)->prepare($artifacts['version_id'], $author, $number - 1, '第'.$number.'章自动授权评审与提取', dispatch: false, modelOverride: ChapterGenerationRun::findOrFail($artifacts['body_run_id'])->config['model']);
-                $artifacts['submission_run_id'] = $submission->id;
-                if ($submission->status === 'pending') {
-                    app(ChapterSubmissionService::class)->execute($submission->id, $submission->invocation_id, false);
-                    $submission->refresh();
-                }
-                if (in_array($submission->status, ['ready', 'awaiting_approval', 'committed'], true)) {
-                    $run->step = 'commit';
-                } elseif ($submission->status !== 'pending') {
-                    throw new InvalidArgumentException('SUBMISSION_STOPPED:'.$submission->stop_reason);
-                }
-                break;
-            case 'commit':
-                $submission = ChapterSubmissionRun::findOrFail($artifacts['submission_run_id']);
-                $review = ChapterReview::where('submission_run_id', $submission->id)->firstOrFail();
-                $extraction = ChapterEventExtraction::where('submission_run_id', $submission->id)->firstOrFail();
-                $validation = ChapterSubmissionValidation::where('submission_run_id', $submission->id)->orderBy('id')->firstOrFail();
-                $commit = app(CanonicalCommitService::class)->commit($submission->version_id, $review->id, $extraction->id, $validation->id, $number - 1,
-                    $run->chapterCommitKey($number), $author, $number === 1 ? '首章自动授权正式提交' : '第'.$number.'章自动授权正式提交', array_column($extraction->result['proposed_entities'], 'key'), true, $run->id);
-                $artifacts['commit_id'] = $commit->id;
-                // 正式提交完成才推进章号；提交回执与每章产物保留在编排历史中。
-                $artifacts['chapters'][(string) $number] = ['number' => $number, 'body_run_id' => $artifacts['body_run_id'], 'version_id' => $artifacts['version_id'], 'submission_run_id' => $submission->id, 'commit_id' => $commit->id];
-                if ($number < $run->chapter_limit) {
-                    $artifacts['chapter_number'] = $number + 1;
-                    unset($artifacts['body_run_id'], $artifacts['version_id'], $artifacts['submission_run_id'], $artifacts['commit_id']);
-                    $run->step = 'content';
-                } else {
-                    $run->step = 'completed';
-                }
-                break;
             default:
-                throw new InvalidArgumentException('UNKNOWN_AUTOMATION_STEP');
+                $artifacts = $this->stepper->perform($run, $novel, $author, $artifacts);
         }
         $run->artifacts = $artifacts;
     }
@@ -249,17 +235,16 @@ final class FirstChapterService
     {
         // 全部为本地结算，事务失败时恢复原领取，避免遗留不可恢复的中间状态。
         DB::transaction(function () use ($id, $author): void {
-            $run = FirstChapterRun::findOrFail($id);
+            $run = ProductionRun::findOrFail($id);
             $run->assertDelegation($run->novel_id, $author->id);
             if ($run->status !== 'running' || $run->lease_expires_at === null || $run->lease_expires_at->isFuture()) {
                 throw new InvalidArgumentException('领取尚未超时，不能接管运行中的请求');
             }
             // 先独占中断核对，防止两个恢复请求互相覆盖状态。
-            if (! FirstChapterRun::whereKey($id)->where('status', 'running')->where('lease_token', $run->lease_token)->update(['status' => 'reconciling'])) {
+            if (! ProductionRun::whereKey($id)->where('status', 'running')->where('lease_token', $run->lease_token)->update(['status' => 'reconciling'])) {
                 throw new InvalidArgumentException('已有其他请求正在核对中断');
             }
             $novel = Novel::findOrFail($run->novel_id);
-            $number = $run->artifacts['chapter_number'] ?? 1;
             if ($run->step === 'setting') {
                 (new RunSettingJob($novel->id, $novel->generation_config['invocation_id']))->failed(null);
             } elseif ($run->step === 'outline') {
@@ -267,16 +252,8 @@ final class FirstChapterService
                 if ($plan?->status === 'running') {
                     app(OutlineGenerationService::class)->interrupted($plan->id, $plan->invocation_id);
                 }
-            } elseif ($run->step === 'content') {
-                $body = ChapterGenerationRun::whereHas('chapter', fn ($query) => $query->where('novel_id', $novel->id)->where('number', $number))->latest('id')->first();
-                if ($body?->status === 'running') {
-                    app(ContentExecutionService::class)->interrupted($body->id, $body->invocation_id);
-                }
-            } elseif ($run->step === 'submission') {
-                $submission = ChapterSubmissionRun::where('novel_id', $novel->id)->whereHas('chapter', fn ($query) => $query->where('number', $number))->latest('id')->first();
-                if ($submission?->status === 'running') {
-                    app(ChapterSubmissionService::class)->interrupted($submission->id, $submission->invocation_id);
-                }
+            } else {
+                $this->stepper->interrupt($run, $novel);
             }
             CostLog::where('novel_id', $novel->id)->where('status', 'pending')->update(['status' => 'unknown', 'error_category' => 'automation_interrupted', 'error_message' => '自动流程中断，结果未知，未自动重发', 'finished_at' => now()]);
             $run->update(['status' => 'failed', 'error' => 'INTERRUPTED_RECONCILED', 'lease_token' => null, 'lease_expires_at' => null,
@@ -285,28 +262,28 @@ final class FirstChapterService
     }
 
     /** 恢复原子领取，两个后台请求不能同时创建后继或修改运行状态。 */
-    public function retry(int $id, User $author, bool $confirmUnknown = false, bool $rewrite = false, ?string $model = null): FirstChapterRun
+    public function retry(int $id, User $author, bool $confirmUnknown = false, bool $rewrite = false, ?string $model = null): ProductionRun
     {
-        $run = FirstChapterRun::findOrFail($id);
+        $run = ProductionRun::findOrFail($id);
         $run->assertDelegation($run->novel_id, $author->id);
         if ($run->status === 'running') {
             $this->reconcile($id, $author);
         }
-        if (! FirstChapterRun::whereKey($id)->where('status', 'failed')->update(['status' => 'recovering'])) {
+        if (! ProductionRun::whereKey($id)->where('status', 'failed')->update(['status' => 'recovering'])) {
             throw new InvalidArgumentException('只能恢复已停止的自动流程');
         }
         try {
             return $this->prepareRetry($id, $author, $confirmUnknown, $rewrite, $model);
         } catch (Throwable $error) {
-            FirstChapterRun::whereKey($id)->where('status', 'recovering')->update(['status' => 'failed']);
+            ProductionRun::whereKey($id)->where('status', 'recovering')->update(['status' => 'failed']);
             throw $error;
         }
     }
 
     /** 显式恢复保留所有旧证据；未知响应必须额外确认，不自动无限重放。 */
-    private function prepareRetry(int $id, User $author, bool $confirmUnknown, bool $rewrite, ?string $model): FirstChapterRun
+    private function prepareRetry(int $id, User $author, bool $confirmUnknown, bool $rewrite, ?string $model): ProductionRun
     {
-        $run = FirstChapterRun::findOrFail($id);
+        $run = ProductionRun::findOrFail($id);
         $run->assertDelegation($run->novel_id, $author->id);
         if ($run->status !== 'recovering') {
             throw new InvalidArgumentException('只能恢复已停止的自动流程');
@@ -315,7 +292,6 @@ final class FirstChapterService
             throw new InvalidArgumentException('存在未知响应，必须明确确认保留费用风险后再恢复');
         }
         $novel = Novel::findOrFail($run->novel_id);
-        $number = $run->artifacts['chapter_number'] ?? 1;
         // 连续十章初始额度较大，恢复不得以当前次数加二十反向降低已授权总额度。
         $recoveryLimit = max($novel->max_execution_count, $novel->execution_count + 20);
         $novel->update(['pause_requested' => false]);
@@ -326,49 +302,29 @@ final class FirstChapterService
         } elseif ($run->step === 'outline') {
             $plan = $novel->outlinePlans()->latest('id')->first();
             if ($plan !== null && in_array($plan->status, ['paused', 'error'], true)) {
-                app(OutlineGenerationService::class)->continue($plan->id, $confirmUnknown, $recoveryLimit, '恢复自动首章', $author->id);
+                app(OutlineGenerationService::class)->continue($plan->id, $confirmUnknown, $recoveryLimit, '恢复自动生成', $author->id);
             }
-        } elseif ($run->step === 'content') {
-            $body = ChapterGenerationRun::whereHas('chapter', fn ($query) => $query->where('novel_id', $novel->id)->where('number', $number))->latest('id')->first();
-            if ($body !== null && $body->stop_reason !== 'b04_accepted' && $body->status !== 'pending') {
-                app(ContentGenerationService::class)->recover($body->id, $author, '恢复自动首章，保留前序失败证据', executionLimit: $recoveryLimit, confirmUnknown: $confirmUnknown, rewrite: $rewrite, model: $model);
-            }
-        } elseif ($run->step === 'submission') {
-            $submission = ChapterSubmissionRun::where('novel_id', $novel->id)->whereHas('chapter', fn ($query) => $query->where('number', $number))->latest('id')->first();
-            if ($submission?->status === 'failed') {
-                if ($submission->stop_reason === 'REVIEW_NOT_PASSED') {
-                    // 拒绝评审不能靠再次抽样变通过，必须绑定原评审另建定点修订。
-                    $review = ChapterReview::where('submission_run_id', $submission->id)->firstOrFail();
-                    $body = ChapterGenerationRun::where('chapter_id', $submission->chapter_id)->latest('id')->firstOrFail();
-                    $revised = app(ContentGenerationService::class)->recover($body->id, $author, '根据独立提交评审修订当前候选', executionLimit: $recoveryLimit, model: $model, submissionReviewId: $review->id);
-                    $run->step = 'content';
-                    $artifacts = $run->artifacts;
-                    $artifacts['body_run_id'] = $revised->id;
-                    unset($artifacts['version_id'], $artifacts['submission_run_id']);
-                    $run->artifacts = $artifacts;
-                } else {
-                    app(ChapterSubmissionService::class)->prepare($submission->version_id, $author, $number - 1, '恢复自动首章提交准备', $recoveryLimit, false, $submission->id, $model ?? $submission->config['model']);
-                }
-            }
+        } elseif (in_array($run->step, ChapterProductionStepper::STEPS, true)) {
+            $this->stepper->prepareRetry($run, $novel, $author, $recoveryLimit, $confirmUnknown, $rewrite, $model);
         }
         $run->update(['status' => 'pending', 'error' => null, 'history' => [...$run->history, ['action' => 'retry', 'operator_id' => $author->id, 'confirm_unknown' => $confirmUnknown, 'confirmed_unknown_log_ids' => $confirmUnknown ? CostLog::where('novel_id', $novel->id)->where('status', 'unknown')->pluck('id')->all() : [], 'rewrite' => $rewrite, 'model' => $model, 'at' => now()->toIso8601String()]]]);
 
         return $run;
     }
 
-    /** 请求计数取小说独立成本流水，失败和未知请求同样计入。 */
-    public function requestCount(FirstChapterRun $run): int
+    /** 本次运行的真实请求数，失败和未知请求同样计入；续写运行只统计授权之后的请求。 */
+    public function requestCount(ProductionRun $run): int
     {
-        return CostLog::where('novel_id', $run->novel_id)->where('mode', 'real')->count();
+        return CostLog::where('novel_id', $run->novel_id)->where('mode', 'real')->where('id', '>', (int) ($run->artifacts['cost_log_baseline'] ?? 0))->count();
     }
 
     /** 投递失败可从相同断点重试，不重复创建小说。 */
-    public function dispatch(FirstChapterRun $run): void
+    public function dispatch(ProductionRun $run): void
     {
         try {
-            Bus::dispatch(new AdvanceFirstChapterJob($run->id));
+            Bus::dispatch(new AdvanceProductionRunJob($run->id));
         } catch (Throwable) {
-            FirstChapterRun::whereKey($run->id)->where('status', 'pending')->update(['status' => 'failed', 'error' => 'DISPATCH_FAILED']);
+            ProductionRun::whereKey($run->id)->where('status', 'pending')->update(['status' => 'failed', 'error' => 'DISPATCH_FAILED']);
         }
     }
 }

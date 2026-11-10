@@ -6,8 +6,8 @@ use App\Filament\Resources\Novels\NovelResource;
 use App\Filament\Resources\Novels\Pages\SearchLab;
 use App\Filament\Resources\Novels\Pages\ViewNovel;
 use App\Models\CostLog;
-use App\Models\FirstChapterRun;
 use App\Models\Novel;
+use App\Models\ProductionRun;
 use App\Models\User;
 use App\Services\Search\EmbeddingService;
 use Filament\Facades\Filament;
@@ -45,7 +45,7 @@ class C05EmbeddingTest extends TestCase
     {
         $this->assertSame(':memory:', DB::connection()->getDatabaseName());
         // 只在已核验的内存库移除自动编排测试授权，生产历史不受影响。
-        DB::table('first_chapter_runs')->delete();
+        DB::table('production_runs')->delete();
         B04ContentTest::clearFixtures();
         parent::tearDown();
     }
@@ -56,7 +56,7 @@ class C05EmbeddingTest extends TestCase
         foreach ([false, true] as $automated) {
             $novel = Novel::factory()->create();
             if ($automated) {
-                FirstChapterRun::factory()->create(['novel_id' => $novel->id]);
+                ProductionRun::factory()->create(['novel_id' => $novel->id]);
             }
             $url = NovelResource::getUrl('search', ['record' => $novel->id]);
             Livewire::test(ViewNovel::class, ['record' => $novel->id])

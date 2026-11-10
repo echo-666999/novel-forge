@@ -12,8 +12,8 @@ use App\Models\ChapterSubmissionRun;
 use App\Models\ChapterSubmissionValidation;
 use App\Models\ChapterVersion;
 use App\Models\CostLog;
-use App\Models\FirstChapterRun;
 use App\Models\NovelStage;
+use App\Models\ProductionRun;
 use App\Services\Pipeline\CanonicalCommitService;
 use App\Services\Pipeline\ChapterSubmissionService;
 use App\Services\Pipeline\ContentExecutionContract;
@@ -82,7 +82,7 @@ class ViewChapterContent extends Page implements HasTable
     public function stopLabel(): string
     {
         return match ($this->run()?->stop_reason) {
-            'b04_accepted' => FirstChapterRun::where('novel_id', $this->getRecord()->id)->exists() ? '自动授权下的推进检查已通过；不代表人工全文阅读，正式状态以提交回执为准' : 'B04正文、独立检查及全文核对已通过；候选仍待后续评审及正式提交',
+            'b04_accepted' => ProductionRun::coveringChapter($this->getRecord()->id, $this->chapterNumber) !== null ? '自动授权下的推进检查已通过；不代表人工全文阅读，正式状态以提交回执为准' : 'B04正文、独立检查及全文核对已通过；候选仍待后续评审及正式提交',
             'awaiting_review' => '推进检查通过，等待后续评审；尚未正式提交',
             'execution_limit' => '请求或小说执行额度耗尽，已停止；继续须显式调整额度并填写原因',
             'user_paused' => '作者已暂停，可在原额度内继续未执行步骤',
@@ -351,8 +351,8 @@ class ViewChapterContent extends Page implements HasTable
      */
     protected function getHeaderActions(): array
     {
-        // 自动授权小说统一从恢复台推进，避免手动与自动任务并发接管同一候选。
-        if (FirstChapterRun::where('novel_id', $this->getRecord()->id)->exists()) {
+        // 自动授权范围内的章节统一从恢复台推进，避免手动与自动任务并发接管同一候选；范围外的章节使用手动工作台。
+        if (ProductionRun::coveringChapter($this->getRecord()->id, $this->chapterNumber) !== null) {
             return [Action::make('selectChapter')->label('选择阅读章节')->schema([Select::make('number')->label('章节')->options(fn (): array => $this->getRecord()->chapters()->orderBy('number')->get()->mapWithKeys(fn ($chapter): array => [$chapter->number => '第'.$chapter->number.'章 '.$chapter->title])->all())->required()])->action(function (array $data): void {
                 $this->chapterNumber = (int) $data['number'];
                 $this->resolvedRun = null;

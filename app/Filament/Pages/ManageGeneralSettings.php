@@ -2,8 +2,10 @@
 
 namespace App\Filament\Pages;
 
+use App\Services\Ai\ModelProfiles;
 use App\Settings\GeneralSettings;
 use BackedEnum;
+use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Pages\SettingsPage;
@@ -31,9 +33,11 @@ class ManageGeneralSettings extends SettingsPage
                     ->columns(2)
                     ->columnSpanFull()
                     ->schema([
-                        TextInput::make('default_model')
+                        Select::make('default_model')
                             ->label('默认模型')
-                            ->helperText('DeepSeek填写deepseek-flash或deepseek-v4-pro，并在本机配置DEEPSEEK_API_KEY；其他模型使用OpenAI。')
+                            ->options(fn (?string $state): array => ModelProfiles::options($state))
+                            ->native(false)
+                            ->helperText('可选模型来自 config/ai.php 的 models；DeepSeek 模型需在本机配置 DEEPSEEK_API_KEY。')
                             ->required(),
                         TextInput::make('temperature')
                             ->label('采样温度')

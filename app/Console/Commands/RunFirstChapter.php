@@ -2,26 +2,33 @@
 
 namespace App\Console\Commands;
 
-use App\Models\FirstChapterRun;
+use App\Models\ProductionRun;
 use App\Models\User;
-use App\Services\Pipeline\FirstChapterService;
+use App\Services\Pipeline\ProductionRunService;
 use Illuminate\Console\Command;
 
 /** 与后台共用的首章及前十章自动生成入口，支持显式恢复及同步验收。 */
 class RunFirstChapter extends Command
 {
     /** 新建必须提供创意文件及明确授权；恢复复用原小说。 */
-    protected $signature = 'app:run-first-chapter {--chapters=1 : 本次新建授权一章或前十章} {--input= : 创意JSON文件} {--author= : 授权用户编号} {--authorize-automatic-commit : 授权设定决策、实体采纳和指定范围正式提交} {--run= : 已有自动流程编号} {--retry : 恢复失败断点} {--confirm-unknown : 接受历史未知请求费用风险} {--model= : 新流程或正文/提交恢复使用的模型，不改全局设置} {--rewrite : 正文恢复时授权新版本整章重写，保留旧正文} {--sync : 当前进程顺序执行直到完成或失败}';
+    protected $signature = 'app:run-first-chapter {--chapters=1 : 本次新建授权一章或前十章} {--input= : 创意JSON文件} {--author= : 授权用户编号} {--authorize-automatic-commit : 授权设定决策、实体采纳和指定范围正式提交} {--run= : 已有自动流程编号} {--retry : 恢复失败断点} {--confirm-unknown : 接受历史未知请求费用风险} {--model= : 新流程或正文/提交恢复使用的模型，不改全局设置} {--rewrite : 正文恢复时授权新版本整章重写，保留旧正文} {--sync : 当前进程顺序执行直到完成或失败} {--novel= : 续写的已有小说编号} {--extend= : 续写授权章数（1至10）} {--reason= : 续写授权原因}';
 
     /** Artisan中文说明。 */
-    protected $description = '自动生成并正式提交新小说首章或前十章，保留授权、断点及请求次数';
+    protected $description = '自动生成并正式提交新小说首章或前十章，或为已有小说续写后续章节；保留授权、断点及请求次数';
 
     /** CLI不补写故事，所有产物均通过应用服务与正式门禁生成。 */
-    public function handle(FirstChapterService $service): int
+    public function handle(ProductionRunService $service): int
     {
         $author = User::findOrFail((int) $this->option('author'));
-        if ($this->option('run')) {
-            $run = FirstChapterRun::findOrFail((int) $this->option('run'));
+        if ($this->option('extend') !== null) {
+            if (! ctype_digit((string) $this->option('novel')) || ! ctype_digit((string) $this->option('extend')) || ! filled($this->option('reason'))) {
+                $this->error('续写必须提供 --novel、--extend 章数及 --reason');
+
+                return self::FAILURE;
+            }
+            $run = $service->extend((int) $this->option('novel'), $author, (int) $this->option('extend'), $this->option('model'), (string) $this->option('reason'), false);
+        } elseif ($this->option('run')) {
+            $run = ProductionRun::findOrFail((int) $this->option('run'));
             $run->assertDelegation($run->novel_id, $author->id);
             if ($this->option('retry')) {
                 $run = $service->retry($run->id, $author, (bool) $this->option('confirm-unknown'), (bool) $this->option('rewrite'), $this->option('model'));

@@ -10,8 +10,8 @@ use App\Models\ChapterReview;
 use App\Models\ChapterSubmissionRun;
 use App\Models\ChapterSubmissionValidation;
 use App\Models\ChapterVersion;
-use App\Models\FirstChapterRun;
 use App\Models\Novel;
+use App\Models\ProductionRun;
 use App\Models\StoryEntity;
 use App\Models\StoryEvent;
 use App\Models\StoryOutboxEvent;
@@ -49,9 +49,9 @@ final class CanonicalCommitService
             $novel = Novel::lockForUpdate()->findOrFail($version->chapter->novel_id);
             $delegation = null;
             if ($automationId !== null) {
-                $delegation = FirstChapterRun::findOrFail($automationId);
+                $delegation = ProductionRun::findOrFail($automationId);
                 $delegation->assertDelegation($novel->id, $operator->id);
-                if ($version->chapter->number > $delegation->chapter_limit || $expectedState !== $version->chapter->number - 1 || $idempotencyKey !== $delegation->chapterCommitKey($version->chapter->number)) {
+                if ($version->chapter->number < $delegation->start_chapter || $version->chapter->number > $delegation->chapter_limit || $expectedState !== $version->chapter->number - 1 || $idempotencyKey !== $delegation->chapterCommitKey($version->chapter->number)) {
                     throw new InvalidArgumentException('AUTOMATION_SCOPE_MISMATCH');
                 }
             }

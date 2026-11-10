@@ -54,9 +54,9 @@ final readonly class TextRequestOptions
     public static function executionChapter(string $step, float $temperature, array $context, int $bodyTokens = 8192): self
     {
         self::setting($temperature);
-        // 仅显式单段修复或新分支正文、修订、复查允许16K推理，其他请求保持原上限。
+        // 仅显式单段修复，或运行已冻结扩展输出容量（含旧验收分支）的正文、修订、复查允许16K推理，其他请求保持原上限。
         $repairThinking = ($context['deepseek_reasoning_effort'] ?? null) === 'low'
-            && (($step === 'draft' && isset($context['draft_repair_slot'])) || (in_array($step, ['draft', 'revise', 'check'], true) && ($context['accepted_branch_continuation'] ?? false)));
+            && (($step === 'draft' && isset($context['draft_repair_slot'])) || (in_array($step, ['draft', 'revise', 'check'], true) && (($context['accepted_branch_continuation'] ?? false) || ($context['extended_output'] ?? false))));
         if (! in_array($step, ['fine', 'draft', 'revise', 'check'], true) || $bodyTokens < 1 || $bodyTokens > ($repairThinking ? 16384 : 8192)) {
             throw new InvalidArgumentException('统一正文步骤无效');
         }

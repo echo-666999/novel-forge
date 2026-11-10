@@ -4,21 +4,27 @@ namespace Tests\Feature;
 
 use App\Filament\Resources\Novels\Pages\CreateNovel;
 use App\Filament\Resources\Novels\Pages\ViewChapterContent;
+use App\Filament\Resources\Novels\Pages\ViewNovel;
 use App\Models\CanonicalCommit;
 use App\Models\Chapter;
+use App\Models\ChapterEventExtraction;
 use App\Models\ChapterGenerationRun;
 use App\Models\ChapterSubmissionRun;
 use App\Models\ContextManifest;
 use App\Models\CostLog;
-use App\Models\FirstChapterRun;
 use App\Models\Novel;
+use App\Models\ProductionRun;
 use App\Models\User;
+use App\Services\Ai\AiTextGenerationService;
 use App\Services\Pipeline\CanonicalChapterContext;
-use App\Services\Pipeline\FirstChapterService;
+use App\Services\Pipeline\ChapterSubmissionService;
+use App\Services\Pipeline\ContentExecutionService;
+use App\Services\Pipeline\ContentGenerationService;
 use App\Services\Pipeline\ForeshadowLedger;
 use App\Services\Pipeline\LegacyContentSources;
 use App\Services\Pipeline\OutlineGenerationService;
 use App\Services\Pipeline\PlanningJson;
+use App\Services\Pipeline\ProductionRunService;
 use App\Services\Pipeline\StoryStateReplay;
 use App\Settings\GeneralSettings;
 use Filament\Facades\Filament;
@@ -99,7 +105,9 @@ class C01SequenceTest extends TestCase
 
                     return Http::response(['error' => ['message' => '隔离规划失败']], 400);
                 }
-                $data = B03OutlineTest::batch();
+                // 按请求范围返回批次，支持超过十章的目标；原十章场景仍是1至10章。
+                $range = $log->request_parameters['range'];
+                $data = B03OutlineTest::batch($range['start'], $range['end'], $range['total']);
             } elseif (isset($log->request_parameters['purpose'])) {
                 if ($this->assertForeshadows) {
                     $payload = json_decode(explode('冻结提交输入：', $request['input'][1]['content'][0]['text'], 2)[1], true, flags: JSON_THROW_ON_ERROR);
@@ -166,7 +174,9 @@ class C01SequenceTest extends TestCase
     protected function tearDown(): void
     {
         $this->assertSame(':memory:', DB::connection()->getDatabaseName());
-        DB::table('first_chapter_runs')->delete();
+        // 续写运行引用前序运行，先解除引用再清理内存夹具。
+        DB::table('production_runs')->update(['predecessor_id' => null]);
+        DB::table('production_runs')->delete();
         B04ContentTest::clearFixtures();
         parent::tearDown();
     }
@@ -175,7 +185,7 @@ class C01SequenceTest extends TestCase
     public function test_ten_chapters_commit_in_order_with_frozen_prior_context(): void
     {
         $this->assertForeshadows = true;
-        $service = app(FirstChapterService::class);
+        $service = app(ProductionRunService::class);
         $run = $service->start([...B02SettingTest::input(), 'chapter_length_policy' => ['min_characters' => 20, 'max_characters' => 300]], User::factory()->create(), true, false, chapterLimit: 10);
         // 在生成首章前登记三条计划，验证所有十章的真实请求路径持续携带未完成义务。
         foreach (range(1, 3) as $index) {
@@ -227,10 +237,138 @@ class C01SequenceTest extends TestCase
 
     }
 
+    /** 推进自动运行直至停止，返回最终状态。 */
+    private function drain(ProductionRun $run): ProductionRun
+    {
+        $service = app(ProductionRunService::class);
+        for ($i = 0; $i < 200 && $run->status === 'pending'; $i++) {
+            $run = $service->advance($run->id);
+        }
+
+        return $run;
+    }
+
+    /** O2：前十章完成后授权第11～20章，同一本书两次运行顺序提交，旧提交键与回放不受影响。 */
+    public function test_completed_ten_chapter_run_extends_to_chapters_eleven_to_twenty(): void
+    {
+        $service = app(ProductionRunService::class);
+        $author = User::factory()->create();
+        $first = $this->drain($service->start([...B02SettingTest::input(), 'target_chapters' => 20, 'chapter_length_policy' => ['min_characters' => 20, 'max_characters' => 300]], $author, true, false, chapterLimit: 10));
+        $this->assertSame('completed', $first->status, $first->error ?? '');
+        $keys = CanonicalCommit::orderBy('state_version')->pluck('idempotency_key')->all();
+        $replayTen = PlanningJson::hash(app(StoryStateReplay::class)->atChapter(Novel::findOrFail($first->novel_id), 10)['state']);
+        $baseline = CostLog::count();
+
+        $second = $service->extend($first->novel_id, $author, 10, null, '隔离续写第11至20章', false);
+        $this->assertSame([11, 20, $first->id, 'content'], [$second->start_chapter, $second->chapter_limit, $second->predecessor_id, $second->step]);
+        $this->assertSame(11, $second->artifacts['chapter_number']);
+        $second = $this->drain($second);
+        $this->assertSame('completed', $second->status, $second->error ?? '');
+        $novel = Novel::findOrFail($first->novel_id);
+        $this->assertSame([20, 20], [$novel->chapters_done, $novel->state_version]);
+        $this->assertSame(range(1, 20), CanonicalCommit::orderBy('state_version')->pluck('state_version')->all());
+        $this->assertSame($keys, CanonicalCommit::orderBy('state_version')->limit(10)->pluck('idempotency_key')->all());
+        $this->assertSame($replayTen, PlanningJson::hash(app(StoryStateReplay::class)->atChapter($novel, 10)['state']));
+        $this->assertSame(CostLog::count() - $baseline, $service->requestCount($second));
+        // 第11章起的正文冻结了全部正式前文，提交键只来自第二次授权。
+        $eleven = ChapterGenerationRun::whereHas('chapter', fn ($query) => $query->where('number', 11))->firstOrFail();
+        $this->assertCount(10, $eleven->snapshot['prior_context']['chapters']);
+        $this->assertSame($second->chapterCommitKey(11), CanonicalCommit::where('state_version', 11)->value('idempotency_key'));
+        $this->assertSame(2, ProductionRun::where('novel_id', $novel->id)->count());
+    }
+
+    /** O2：续写授权的范围、目标章数、在途运行与单次上限均被拒绝；授权冻结后范围外章号不能派生提交键。 */
+    public function test_extension_guards(): void
+    {
+        $service = app(ProductionRunService::class);
+        $author = User::factory()->create();
+        $run = $this->drain($service->start([...B02SettingTest::input(), 'target_chapters' => 12, 'chapter_length_policy' => ['min_characters' => 20, 'max_characters' => 300]], $author, true, false, chapterLimit: 10));
+        $this->assertSame('completed', $run->status, $run->error ?? '');
+        foreach ([[11, null], [3, null], [0, null], [2, 'not-a-model']] as [$count, $model]) {
+            try {
+                $service->extend($run->novel_id, $author, $count, $model, '越界测试', false);
+                $this->fail('续写范围'.$count.'应被拒绝');
+            } catch (\InvalidArgumentException) {
+                $this->assertSame(1, ProductionRun::where('novel_id', $run->novel_id)->count());
+            }
+        }
+        $next = $service->extend($run->novel_id, $author, 2, 'gpt-6.1-terra', '续写最后两章', false);
+        $this->assertSame('gpt-6.1-terra', $next->frozenModel());
+        $this->expectException(\InvalidArgumentException::class);
+        $service->extend($run->novel_id, $author, 1, null, '在途运行不能重复授权', false);
+    }
+
+    /** O2：续写授权冻结起止章，范围外章号不能派生提交键，篡改范围会使授权校验失败。 */
+    public function test_range_policy_is_frozen(): void
+    {
+        $service = app(ProductionRunService::class);
+        $author = User::factory()->create();
+        $run = $this->drain($service->start([...B02SettingTest::input(), 'target_chapters' => 20, 'chapter_length_policy' => ['min_characters' => 20, 'max_characters' => 300]], $author, true, false, chapterLimit: 10));
+        $next = $service->extend($run->novel_id, $author, 3, null, '冻结范围', false);
+        $next->assertDelegation($run->novel_id, $author->id);
+        foreach ([10, 14] as $number) {
+            try {
+                $next->chapterCommitKey($number);
+                $this->fail('第'.$number.'章不在授权范围');
+            } catch (\LogicException) {
+                $this->assertTrue(true);
+            }
+        }
+        DB::table('production_runs')->where('id', $next->id)->update(['chapter_limit' => 20]);
+        $this->expectException(\LogicException::class);
+        $next->fresh()->assertDelegation($run->novel_id, $author->id);
+    }
+
+    /** O2：自动首章完成后，作者无需新授权即可手动逐章写到第3章，每章经过检查、评审、提取并由作者批准提交。 */
+    public function test_manual_chapters_continue_after_completed_run(): void
+    {
+        $author = User::factory()->create();
+        $run = $this->drain(app(ProductionRunService::class)->start([...B02SettingTest::input(), 'chapter_length_policy' => ['min_characters' => 20, 'max_characters' => 300]], $author, true, false));
+        $this->assertSame('completed', $run->status, $run->error ?? '');
+        foreach ([2, 3] as $number) {
+            $novel = Novel::findOrFail($run->novel_id);
+            $body = app(ContentGenerationService::class)->start($novel, $author, reason: '手动第'.$number.'章', chapterNumber: $number);
+            for ($i = 0; $i < 10 && $body->status === 'pending'; $i++) {
+                app(ContentExecutionService::class)->runStep($body->id, $body->invocation_id, app(AiTextGenerationService::class));
+                $body->refresh();
+            }
+            $this->assertSame('awaiting_review', $body->stop_reason);
+            $body = app(ContentExecutionService::class)->recordReading($body->id, $author, true, ['作者全文核对通过']);
+            $submission = app(ChapterSubmissionService::class)->prepare($body->chapter->current_candidate_version_id, $author, $number - 1, '手动提交准备', dispatch: false);
+            for ($i = 0; $i < 5 && $submission->status === 'pending'; $i++) {
+                app(ChapterSubmissionService::class)->execute($submission->id, $submission->invocation_id, false);
+                $submission->refresh();
+            }
+            $this->assertContains($submission->status, ['ready', 'awaiting_approval']);
+            ChapterSubmissionTest::commit($submission, $author, array_column(ChapterEventExtraction::where('submission_run_id', $submission->id)->sole()->result['proposed_entities'], 'key'));
+        }
+        $novel = Novel::findOrFail($run->novel_id);
+        $this->assertSame([3, 3], [$novel->chapters_done, $novel->state_version]);
+        $this->assertSame(1, ProductionRun::where('novel_id', $novel->id)->count());
+        $this->assertNull(ProductionRun::coveringChapter($novel->id, 2));
+        $this->assertSame([1, 2, 3], CanonicalCommit::orderBy('state_version')->pluck('state_version')->all());
+    }
+
+    /** O2：工作台在运行完成后显示“生成下一章”和“继续自动生成”，续写动作建立冻结范围的新运行；运行在途时两者隐藏。 */
+    public function test_novel_page_offers_next_chapter_and_extension(): void
+    {
+        $author = User::factory()->create();
+        $run = $this->drain(app(ProductionRunService::class)->start([...B02SettingTest::input(), 'target_chapters' => 20, 'chapter_length_policy' => ['min_characters' => 20, 'max_characters' => 300]], $author, true, false, chapterLimit: 10));
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        $this->actingAs($author);
+        $page = Livewire::test(ViewNovel::class, ['record' => $run->novel_id])
+            ->assertActionVisible('generateNextChapter')->assertActionVisible('extendProduction')
+            ->callAction('extendProduction', ['count' => 3, 'model' => null, 'reason' => '后台续写验收', 'accept_request' => true])
+            ->assertHasNoActionErrors();
+        $next = ProductionRun::latestFor($run->novel_id);
+        $this->assertSame([11, 13, 'pending'], [$next->start_chapter, $next->chapter_limit, $next->status]);
+        Livewire::test(ViewNovel::class, ['record' => $run->novel_id])->assertActionDoesNotExist('generateNextChapter')->assertActionDoesNotExist('extendProduction');
+    }
+
     /** 旧首章授权不能派生第二章提交密钥。 */
     public function test_single_chapter_authorization_cannot_expand(): void
     {
-        $run = app(FirstChapterService::class)->start(B02SettingTest::input(), User::factory()->create(), true, false);
+        $run = app(ProductionRunService::class)->start(B02SettingTest::input(), User::factory()->create(), true, false);
         $this->expectException(\LogicException::class);
         $run->chapterCommitKey(2);
     }
@@ -239,7 +377,7 @@ class C01SequenceTest extends TestCase
     public function test_middle_chapter_failure_preserves_prior_commits(): void
     {
         $this->rejectFifthReview = true;
-        $service = app(FirstChapterService::class);
+        $service = app(ProductionRunService::class);
         $run = $service->start([...B02SettingTest::input(), 'chapter_length_policy' => ['min_characters' => 20, 'max_characters' => 300]], User::factory()->create(), true, false, chapterLimit: 10);
         for ($i = 0; $i < 80 && $run->status === 'pending'; $i++) {
             $run = $service->advance($run->id);
@@ -271,8 +409,8 @@ class C01SequenceTest extends TestCase
         $this->assertSame(0, Novel::count());
         Livewire::test(CreateNovel::class)->fillForm([...B02SettingTest::input(), 'automatic_first_ten' => true])
             ->call('create')->assertHasNoFormErrors();
-        $this->assertSame(10, FirstChapterRun::sole()->chapter_limit);
-        $this->assertSame('c01-v1', FirstChapterRun::sole()->policy['version']);
+        $this->assertSame(10, ProductionRun::sole()->chapter_limit);
+        $this->assertSame('c01-v1', ProductionRun::sole()->policy['version']);
         $this->assertSame('gpt-6.1-terra', Novel::sole()->generation_config['model']);
         Http::assertNothingSent();
     }
@@ -281,7 +419,7 @@ class C01SequenceTest extends TestCase
     public function test_ninth_chapter_extraction_recovers_without_lowering_authorized_limit(): void
     {
         $this->rejectNinthExtraction = true;
-        $service = app(FirstChapterService::class);
+        $service = app(ProductionRunService::class);
         $run = $service->start([...B02SettingTest::input(), 'chapter_length_policy' => ['min_characters' => 20, 'max_characters' => 300]], User::factory()->create(), true, false, chapterLimit: 10);
         $limit = Novel::findOrFail($run->novel_id)->max_execution_count;
         for ($i = 0; $i < 100 && $run->status === 'pending'; $i++) {
@@ -298,7 +436,7 @@ class C01SequenceTest extends TestCase
     /** 恢复旧规划不覆盖60秒历史，新尝试冻结180秒且继续通过正常门禁。 */
     public function test_outline_recovery_freezes_longer_timeout_without_overwriting_old_plan(): void
     {
-        $service = app(FirstChapterService::class);
+        $service = app(ProductionRunService::class);
         $author = User::factory()->create();
         $run = $service->start([...B02SettingTest::input(), 'chapter_length_policy' => ['min_characters' => 20, 'max_characters' => 300]], $author, true, false, chapterLimit: 10);
         $run = $service->advance($run->id);
@@ -321,7 +459,7 @@ class C01SequenceTest extends TestCase
     /** 确认旧未知费用后可以跨阶段执行，原记录仍未知且新增未知请求仍需再次确认。 */
     public function test_confirmed_unknown_request_does_not_block_later_chapters_or_approve_future_unknowns(): void
     {
-        $service = app(FirstChapterService::class);
+        $service = app(ProductionRunService::class);
         $author = User::factory()->create();
         $run = $service->start([...B02SettingTest::input(), 'chapter_length_policy' => ['min_characters' => 20, 'max_characters' => 300]], $author, true, false, chapterLimit: 10);
         $this->unknownFirstOutline = true;

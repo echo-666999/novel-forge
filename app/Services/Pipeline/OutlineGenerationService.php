@@ -8,12 +8,12 @@ use App\Enums\Stage;
 use App\Enums\StageStatus;
 use App\Jobs\RunOutlineBatchJob;
 use App\Models\CostLog;
-use App\Models\FirstChapterRun;
 use App\Models\Novel;
 use App\Models\NovelOutlineChapter;
 use App\Models\NovelOutlinePlan;
 use App\Models\NovelSettingConfirmation;
 use App\Models\NovelStage;
+use App\Models\ProductionRun;
 use App\Models\User;
 use App\Services\Ai\TextRequestOptions;
 use App\Settings\GeneralSettings;
@@ -47,7 +47,7 @@ final class OutlineGenerationService
                 $this->reject('默认模型标识不合法。');
             }
             // 自动编排任务有210秒执行窗口；普通大纲队列仍保持60秒请求边界。
-            $timeout = FirstChapterRun::where('novel_id', $novel->id)->exists() ? 180 : 60;
+            $timeout = ProductionRun::where('novel_id', $novel->id)->exists() ? 180 : 60;
             $config = TextRequestOptions::outline($settings->temperature, 1, min(10, $novel->target_chapters), $novel->target_chapters, $timeout)->toArray();
             unset($config['range']);
             $token = (string) Str::uuid7();
@@ -94,7 +94,7 @@ final class OutlineGenerationService
                 $this->reject('提高执行上限必须填写原因。');
             }
             $plan->update(['status' => 'pending', 'stop_reason' => null, 'invocation_id' => (string) Str::uuid7(),
-                'control_history' => [...$plan->control_history, [...$this->control('continue', $authorId, $oldLimit, $newLimit, $reason ?? '显式继续现有大纲'), 'timeout_seconds' => FirstChapterRun::where('novel_id', $novel->id)->exists() ? 180 : 60]]]);
+                'control_history' => [...$plan->control_history, [...$this->control('continue', $authorId, $oldLimit, $newLimit, $reason ?? '显式继续现有大纲'), 'timeout_seconds' => ProductionRun::where('novel_id', $novel->id)->exists() ? 180 : 60]]]);
             $novel->update(['status' => NovelStatus::Pending, 'pause_requested' => false, 'max_execution_count' => $newLimit]);
 
             return $plan;
@@ -273,7 +273,7 @@ final class OutlineGenerationService
     private function dispatch(int $planId, string $token): void
     {
         // 自动首章由独立持久化编排器推进，禁止同时派发旧步骤任务。
-        if (FirstChapterRun::where('novel_id', NovelOutlinePlan::findOrFail($planId)->novel_id)->exists()) {
+        if (ProductionRun::where('novel_id', NovelOutlinePlan::findOrFail($planId)->novel_id)->exists()) {
             return;
         }
 

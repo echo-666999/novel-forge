@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\Novels\Schemas;
 
 use App\Enums\GenerationMode;
+use App\Services\Ai\ModelProfiles;
 use Filament\Forms\Components\Checkbox;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
@@ -25,7 +26,8 @@ class NovelForm
                         Select::make('generation_mode')->label('生成模式')->required()->native()
                             ->options(collect(GenerationMode::cases())->mapWithKeys(fn (GenerationMode $mode): array => [$mode->value => $mode->label()])->all())
                             ->default(GenerationMode::Simulation->value)->columnSpanFull(),
-                        TextInput::make('automatic_model')->label('自动生成模型（可选）')->maxLength(128)->helperText('留空时使用通用设置的默认模型；deepseek-开头的模型走DeepSeek；仅自动生成时生效，不修改全局模型。')->columnSpanFull(),
+                        Select::make('automatic_model')->label('自动生成模型（可选）')->options(ModelProfiles::options())->native(false)->placeholder('使用通用设置的默认模型')
+                            ->helperText('仅自动生成时生效，不修改全局模型。')->columnSpanFull(),
                         Checkbox::make('automatic_first_ten')->label('授权自动生成并正式提交前10章')->helperText('仅本次新小说生效：自动决定设定问题、采纳通过校验的新实体并逐章正式提交。目标须至少10章；会产生模型费用，全部请求与失败均记录，不代表人工全文阅读。')->default(false)->columnSpanFull(),
                         Checkbox::make('automatic_first_chapter')->label('授权自动生成并正式提交第一章')
                             ->helperText('仅对本次新建小说生效：自动决定设定问题、采纳通过校验的新实体并提交首章。明确失败可自动恢复，同一错误重复或响应未知会暂停。将产生模型费用；不代表人工全文阅读。')->default(false)->columnSpanFull(),

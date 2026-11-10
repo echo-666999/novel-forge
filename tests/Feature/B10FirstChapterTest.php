@@ -4,16 +4,16 @@ namespace Tests\Feature;
 
 use App\Filament\Resources\Novels\Pages\CreateNovel;
 use App\Filament\Resources\Novels\Pages\ViewNovelRun;
-use App\Jobs\AdvanceFirstChapterJob;
+use App\Jobs\AdvanceProductionRunJob;
 use App\Models\CanonicalCommit;
 use App\Models\ChapterGenerationRun;
 use App\Models\ChapterSubmissionRun;
 use App\Models\CostLog;
-use App\Models\FirstChapterRun;
 use App\Models\Novel;
+use App\Models\ProductionRun;
 use App\Models\User;
-use App\Services\Pipeline\FirstChapterService;
 use App\Services\Pipeline\PlanningJson;
+use App\Services\Pipeline\ProductionRunService;
 use App\Settings\GeneralSettings;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
@@ -114,21 +114,21 @@ class B10FirstChapterTest extends TestCase
     protected function tearDown(): void
     {
         $this->assertSame(':memory:', DB::connection()->getDatabaseName());
-        DB::table('first_chapter_runs')->delete();
+        DB::table('production_runs')->delete();
         B04ContentTest::clearFixtures();
         parent::tearDown();
     }
 
     /** 从真实创建入口构造授权，正文夹具使用最小篇幅。 */
-    private function start(?string $model = null): FirstChapterRun
+    private function start(?string $model = null): ProductionRun
     {
-        return app(FirstChapterService::class)->start([...B02SettingTest::input(), 'chapter_length_policy' => ['min_characters' => 20, 'max_characters' => 300]], User::factory()->create(), true, false, $model);
+        return app(ProductionRunService::class)->start([...B02SettingTest::input(), 'chapter_length_policy' => ['min_characters' => 20, 'max_characters' => 300]], User::factory()->create(), true, false, $model);
     }
 
     /** 单次授权贯穿所有门禁，重复完成消息不能增加费用或正式章数。 */
     public function test_new_idea_automatically_commits_with_truthful_delegation_and_idempotency(): void
     {
-        $service = app(FirstChapterService::class);
+        $service = app(ProductionRunService::class);
         $run = $this->start();
         for ($i = 0; $i < 20 && $run->status === 'pending'; $i++) {
             $run = $service->advance($run->id);
@@ -153,7 +153,7 @@ class B10FirstChapterTest extends TestCase
     {
         $default = app(GeneralSettings::class)->default_model;
         $run = $this->start('gpt-4.1');
-        $service = app(FirstChapterService::class);
+        $service = app(ProductionRunService::class);
         for ($i = 0; $i < 20 && $run->status === 'pending'; $i++) {
             $run = $service->advance($run->id);
         }
@@ -166,7 +166,7 @@ class B10FirstChapterTest extends TestCase
     public function test_incomplete_paragraph_is_rejected_before_submission(): void
     {
         $this->truncateDraft = true;
-        $service = app(FirstChapterService::class);
+        $service = app(ProductionRunService::class);
         $run = $this->start();
         for ($i = 0; $i < 20 && $run->status === 'pending'; $i++) {
             $run = $service->advance($run->id);
@@ -181,7 +181,7 @@ class B10FirstChapterTest extends TestCase
     public function test_event_validation_failure_recovers_automatically_without_weakening_gate(): void
     {
         $this->rejectFirstExtraction = true;
-        $service = app(FirstChapterService::class);
+        $service = app(ProductionRunService::class);
         $run = $this->start();
         for ($i = 0; $i < 20 && $run->status === 'pending'; $i++) {
             $run = $service->advance($run->id);
@@ -202,7 +202,7 @@ class B10FirstChapterTest extends TestCase
             throw new ConnectionException('隔离网络中断');
         });
         $run = $this->start();
-        $run = app(FirstChapterService::class)->advance($run->id);
+        $run = app(ProductionRunService::class)->advance($run->id);
         $this->assertSame('failed', $run->status);
         $this->assertSame('unknown', CostLog::sole()->status);
         $this->assertFalse(collect($run->history)->contains('action', 'automatic_recovery'));
@@ -213,7 +213,7 @@ class B10FirstChapterTest extends TestCase
     public function test_independent_review_rejection_blocks_commit(): void
     {
         $this->rejectReview = true;
-        $service = app(FirstChapterService::class);
+        $service = app(ProductionRunService::class);
         $run = $this->start();
         for ($i = 0; $i < 20 && $run->status === 'pending'; $i++) {
             $run = $service->advance($run->id);
@@ -231,11 +231,11 @@ class B10FirstChapterTest extends TestCase
         $this->actingAs(User::factory()->create());
         Livewire::test(CreateNovel::class)
             ->fillForm([...B02SettingTest::input(), 'automatic_first_chapter' => true])->call('create')->assertHasNoFormErrors();
-        $run = FirstChapterRun::sole();
-        Queue::assertPushed(AdvanceFirstChapterJob::class);
+        $run = ProductionRun::sole();
+        Queue::assertPushed(AdvanceProductionRunJob::class);
         Http::assertNothingSent();
         Livewire::test(ViewNovelRun::class, ['record' => $run->novel_id])
-            ->assertSee('自动首章授权与进度')->assertSee('真实 AI 请求次数')->assertSee('非人工阅读');
+            ->assertSee('自动生产运行与进度')->assertSee('本次运行真实 AI 请求')->assertSee('非人工阅读');
     }
 
     /** 未知请求不能未经确认续费，操作者不符也不能恢复。 */
@@ -245,13 +245,13 @@ class B10FirstChapterTest extends TestCase
         $run->update(['status' => 'failed']);
         CostLog::factory()->create(['novel_id' => $run->novel_id, 'mode' => 'real', 'status' => 'unknown']);
         try {
-            app(FirstChapterService::class)->retry($run->id, User::findOrFail($run->author_id));
+            app(ProductionRunService::class)->retry($run->id, User::findOrFail($run->author_id));
             $this->fail('未知费用应阻止未经确认恢复');
         } catch (InvalidArgumentException $error) {
             $this->assertStringContainsString('未知响应', $error->getMessage());
         }
         try {
-            app(FirstChapterService::class)->retry($run->id, User::factory()->create(), true);
+            app(ProductionRunService::class)->retry($run->id, User::factory()->create(), true);
             $this->fail('其他用户不能恢复');
         } catch (\LogicException $error) {
             $this->assertSame('自动授权来源不匹配', $error->getMessage());
@@ -264,7 +264,7 @@ class B10FirstChapterTest extends TestCase
     public function test_no_authorization_creates_nothing(): void
     {
         try {
-            app(FirstChapterService::class)->start(B02SettingTest::input(), User::factory()->create(), false);
+            app(ProductionRunService::class)->start(B02SettingTest::input(), User::factory()->create(), false);
             $this->fail('缺少授权应拒绝');
         } catch (InvalidArgumentException) {
             $this->assertSame(0, Novel::count());
@@ -276,7 +276,7 @@ class B10FirstChapterTest extends TestCase
     public function test_failed_setting_can_resume_without_losing_request_history(): void
     {
         $run = $this->start();
-        $service = app(FirstChapterService::class);
+        $service = app(ProductionRunService::class);
         $this->reject = true;
         $run = $service->advance($run->id);
         $this->assertSame('pending', $run->status);
@@ -295,7 +295,7 @@ class B10FirstChapterTest extends TestCase
         $run = $this->start();
         $run->update(['status' => 'running', 'step' => 'decision', 'lease_token' => (string) Str::uuid7(), 'lease_expires_at' => now()->subMinute()]);
         CostLog::factory()->create(['novel_id' => $run->novel_id, 'mode' => 'real', 'status' => 'pending']);
-        app(FirstChapterService::class)->reconcile($run->id, User::findOrFail($run->author_id));
+        app(ProductionRunService::class)->reconcile($run->id, User::findOrFail($run->author_id));
         $this->assertSame('failed', $run->refresh()->status);
         $this->assertSame('unknown', CostLog::sole()->status);
         $this->assertNull($run->lease_token);
@@ -307,7 +307,7 @@ class B10FirstChapterTest extends TestCase
     {
         $run = $this->start();
         $run->update(['status' => 'running']);
-        (new AdvanceFirstChapterJob($run->id))->handle(app(FirstChapterService::class));
+        (new AdvanceProductionRunJob($run->id))->handle(app(ProductionRunService::class));
         Http::assertNothingSent();
         Queue::assertNothingPushed();
     }

@@ -45,8 +45,8 @@ final class AiTextGenerationService
         if ($model === '' || strlen($model) > 128) {
             throw new InvalidArgumentException('模型标识不能为空且不能超过128字节。');
         }
-        // 供应商由冻结模型名决定，切换默认模型不会改变既有运行的供应商。
-        $provider = $mode === 'fake' ? 'fake' : (str_starts_with($model, 'deepseek-') ? 'deepseek' : 'openai');
+        // 供应商由模型配置决定，未登记模型按名称前缀识别；切换默认模型不会改变既有运行的供应商。
+        $provider = $mode === 'fake' ? 'fake' : ModelProfiles::provider($model);
         // 仅读取小说根运行的冻结模板；历史运行没有此字段时继续使用原程序指令。
         if ($novelId !== null && $options->isStructured()) {
             $config = Novel::findOrFail($novelId)->generation_config ?? [];

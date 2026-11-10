@@ -12,11 +12,12 @@ use App\Models\ChapterReview;
 use App\Models\ChapterSubmissionRun;
 use App\Models\ChapterVersion;
 use App\Models\CostLog;
-use App\Models\FirstChapterRun;
 use App\Models\Novel;
 use App\Models\NovelStage;
+use App\Models\ProductionRun;
 use App\Models\User;
 use App\Services\Ai\AiTextGenerationService;
+use App\Services\Ai\ModelProfiles;
 use App\Services\Ai\TextRequestOptions;
 use App\Settings\GeneralSettings;
 use Illuminate\Support\Facades\DB;
@@ -44,9 +45,9 @@ final class ContentGenerationService
                 || $novel->chapters()->where('number', '>=', $chapterNumber)->exists()) {
                 throw new InvalidArgumentException('不在首次正文生成边界');
             }
-            // 后续章必须属于独立的十章授权，旧首章授权不能自动扩大。
-            if ($chapterNumber > 1) {
-                $automation = FirstChapterRun::where('novel_id', $novel->id)->firstOrFail();
+            // 有未完成的生产运行时，章号必须在其授权范围内；没有在途运行时作者可逐章手动生成，连续性校验见上。
+            $automation = ProductionRun::activeFor($novel->id);
+            if ($automation !== null) {
                 $automation->assertDelegation($novel->id, $author->id);
                 $automation->chapterCommitKey($chapterNumber);
             }
@@ -62,10 +63,11 @@ final class ContentGenerationService
             // 验收分支的首章实验模板仅用于首章，后续章冻结这一适用范围。
             if (isset($novel->generation_config['acceptance_branch'])) {
                 $snapshot['acceptance_branch'] = $novel->generation_config['acceptance_branch'];
-                // 新分支后续章首次正文预留推理容量；旧运行配置保持冻结。
-                if ($chapterNumber > 1 && str_starts_with($config['model'], 'deepseek')) {
-                    $config['draft_max_output_tokens'] = 16384;
-                }
+            }
+            // 扩展输出容量与按段修复来自模型配置并冻结在新运行中；旧运行配置保持不变。
+            $config = $this->withModelCapabilities($config);
+            if ($config['extended_output_tokens'] !== null) {
+                $config['draft_max_output_tokens'] = $config['extended_output_tokens'];
             }
             if ($chapterNumber > 1) {
                 $snapshot['prior_context'] = app(CanonicalChapterContext::class)->build($novel, $chapterNumber);
@@ -175,13 +177,14 @@ final class ContentGenerationService
             }
             $settings = app(GeneralSettings::class);
             $config = $this->configuration($model ?? $parent->config['model'], $parent->config['temperature'], $fine, 8192, $settings->max_retries_per_chapter, $author->id, $reason);
-            if (isset($parent->snapshot['acceptance_branch']) && str_starts_with($config['model'], 'deepseek')) {
+            $config = $this->withModelCapabilities($config);
+            // 已有验收分支的运行沿用原按段修复行为，与所选模型无关。
+            $config['slot_repair'] = $config['slot_repair'] || isset($parent->snapshot['acceptance_branch']);
+            if ($config['extended_output_tokens'] !== null) {
                 // 多轮修订复查需重新比对当前原文，避免无推理响应直接复述旧缺陷。
-                $config['check_max_output_tokens'] = 16384;
-                // 细纲恢复后仍可能首次生成正文，保持新分支的正文推理预算。
-                if ($parent->chapter->number > 1) {
-                    $config['draft_max_output_tokens'] = 16384;
-                }
+                $config['check_max_output_tokens'] = $config['extended_output_tokens'];
+                // 细纲恢复后仍可能首次生成正文，保持同一扩展正文容量。
+                $config['draft_max_output_tokens'] = $config['extended_output_tokens'];
             }
             if ($step === 'revise' && $config['max_retries'] === 0) {
                 throw new InvalidArgumentException('设置禁止修订，不能新建修订运行');
@@ -202,18 +205,18 @@ final class ContentGenerationService
                 'source_lineage' => $source === null ? [] : $this->recoveryLineage($parent, $source), 'plan_hash' => PlanningJson::hash($plan), 'fine_stage_id' => $parent->fine_stage_id];
             $config['request_cap'] = $limit;
             $config['initial_step'] = $step;
-            // 新分支的DeepSeek定点修订需要推理空间，范围与完整性门禁不因此放宽。
-            if ($step === 'revise' && isset($parent->snapshot['acceptance_branch']) && str_starts_with($config['model'], 'deepseek')) {
-                $config['revision_max_output_tokens'] = 16384;
+            // 支持扩展输出的模型在定点修订时预留推理空间，范围与完整性门禁不因此放宽。
+            if ($step === 'revise' && $config['extended_output_tokens'] !== null) {
+                $config['revision_max_output_tokens'] = $config['extended_output_tokens'];
             }
             // 冻结前轮响应契约错误，后继请求才能针对真实失败修复，旧响应不改写。
             $failedStage = $novel->stages()->where('input->run_id', $parent->id)->where('status', 'failed')->latest('id')->first();
             $config['recovery_validation_error'] = data_get($failedStage?->output, 'data.validation_error');
-            // DeepSeek推理与文本共用输出容量；仅新分支单段修复的已知耗尽允许增加推理余量。
+            // 推理与文本共用输出容量；仅单段修复的已知耗尽允许增加推理余量。
             $failedResponse = CostLog::where('novel_stage_id', $failedStage?->id)->whereKey(data_get($failedStage?->output, 'data.cost_log_id'))->first();
-            if (isset($parent->snapshot['acceptance_branch']) && str_starts_with($config['model'], 'deepseek')
+            if ($config['extended_output_tokens'] !== null
                 && (isset($parent->config['repair_max_output_tokens']) || ($failedResponse?->error_category === 'invalid_response' && $failedResponse->output_tokens === 8192))) {
-                $config['repair_max_output_tokens'] = 16384;
+                $config['repair_max_output_tokens'] = $config['extended_output_tokens'];
             }
             // 只携带同一失败阶段的完整正文响应；后继运行冻结副本，旧费用及原始输出不修改。
             if ($step === 'draft' && data_get($failedStage?->output, 'data.step') === 'draft') {
@@ -223,7 +226,7 @@ final class ContentGenerationService
                 if (is_array($repaired) && $repaired['hash'] === PlanningJson::hash($repaired['response']) && $repaired['source_input_hash'] === $parent->input_hash) {
                     // 继承已通过单段校验的合并结果及来源，失败槽位下一轮继续处理，不篡改旧响应。
                     $config['recovery_draft'] = ['cost_log_id' => $failedLog?->id, 'response' => $repaired['response'], 'merged_stage_id' => $failedStage->id, 'merged_hash' => $repaired['hash']];
-                } elseif (isset($parent->config['recovery_draft'], $parent->snapshot['acceptance_branch'])) {
+                } elseif (isset($parent->config['recovery_draft']) && $config['slot_repair']) {
                     $config['recovery_draft'] = $parent->config['recovery_draft'];
                     // 未达字数的完整单段只作为下次修复输入，绝不合入正式正文；截断时保留上次完整尝试。
                     $parts = $failedLog?->structured_output['paragraphs'] ?? null;
@@ -402,6 +405,17 @@ final class ContentGenerationService
     /** 启动时将设置中的修订次数约束为零或一次，保留原全局设置。
      * @return array<string, mixed>
      */
+    /** 冻结模型配置中的扩展能力；运行建立后不再随配置文件变化。
+     * @param  array<string, mixed>  $config
+     * @return array<string, mixed>
+     */
+    private function withModelCapabilities(array $config): array
+    {
+        $profile = ModelProfiles::profile($config['model']);
+
+        return [...$config, 'extended_output_tokens' => $profile['extended_output_tokens'], 'slot_repair' => $profile['slot_repair']];
+    }
+
     private function configuration(string $model, float $temperature, bool $fine, int $tokens, int $retries, int $authorId, string $reason): array
     {
         TextRequestOptions::setting($temperature);
@@ -432,7 +446,7 @@ final class ContentGenerationService
     private function assertIdle(Novel $novel, bool $confirmUnknown): void
     {
         // 已显式确认的旧未知费用仍保留，只解除这些请求对后续章节的重复阻塞。
-        $acknowledged = FirstChapterRun::where('novel_id', $novel->id)->first()?->acknowledgedUnknownLogIds() ?? [];
+        $acknowledged = ProductionRun::latestFor($novel->id)?->acknowledgedUnknownLogIds() ?? [];
         if ($novel->stages()->where('status', 'running')->exists() || ChapterGenerationRun::whereHas('chapter', fn ($q) => $q->where('novel_id', $novel->id))->whereIn('status', ['pending', 'running'])->exists()
             || CostLog::where('novel_id', $novel->id)->where('status', 'pending')->exists()
             || (! $confirmUnknown && CostLog::where('novel_id', $novel->id)->where('status', 'unknown')->whereNotIn('id', $acknowledged)->exists())) {

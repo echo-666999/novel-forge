@@ -3,16 +3,19 @@
 namespace App\Filament\Resources\Novels\Pages;
 
 use App\Enums\GenerationMode;
+use App\Enums\NovelStatus;
 use App\Enums\Stage;
 use App\Enums\StageStatus;
 use App\Filament\Resources\Novels\NovelResource;
 use App\Filament\Resources\Novels\Schemas\SettingConfirmationForm;
-use App\Models\FirstChapterRun;
 use App\Models\Novel;
+use App\Models\ProductionRun;
+use App\Services\Ai\ModelProfiles;
 use App\Services\Pipeline\ConfirmSettingService;
 use App\Services\Pipeline\ContentGenerationService;
 use App\Services\Pipeline\FormalChapterExport;
 use App\Services\Pipeline\OutlineGenerationService;
+use App\Services\Pipeline\ProductionRunService;
 use App\Settings\GeneralSettings;
 use Filament\Actions\Action;
 use Filament\Facades\Filament;
@@ -105,6 +108,48 @@ class ViewNovel extends ViewRecord
                     }
                     $this->redirect(NovelResource::getUrl('content', ['record' => $this->getRecord()]));
                 }),
+            // 手动逐章：已正式提交的下一章，连续性与额度校验由正文服务再次执行。
+            Action::make('generateNextChapter')->label(fn (): string => '生成第'.($this->getRecord()->chapters_done + 1).'章')->modalHeading(fn (): string => '生成第'.($this->getRecord()->chapters_done + 1).'章候选并独立检查推进')
+                ->visible(fn (): bool => $this->canContinueWriting())
+                ->modalDescription(fn (): string => '仅生成候选，通过评审并由你批准后才正式提交。模型'.app(GeneralSettings::class)->default_model.'，启动时冻结；本小说剩余执行额度'.max(0, $this->getRecord()->max_execution_count - $this->getRecord()->execution_count).'次。金额未知不代表免费。')
+                ->schema([
+                    TextInput::make('tokens')->label('本次正文输出Token上限')->integer()->minValue(1)->maxValue(8192)->default(8192)->required(),
+                    TextInput::make('request_limit')->label('本次请求总上限（含细纲、检查及修订）')->integer()->minValue(1)->maxValue(fn (): int => $this->contentRequestCap())->default(fn (): int => $this->contentRequestCap())->required(),
+                    TextInput::make('execution_limit')->label('确认本小说执行总上限')->integer()->minValue(1)->maxValue(2147483647)->default(fn (): int => max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + $this->contentRequestCap()))->required(),
+                    Textarea::make('reason')->label('本次生成原因')->default(fn (): string => '手动生成第'.($this->getRecord()->chapters_done + 1).'章')->required(),
+                    Checkbox::make('accept_request')->label('我确认按上述请求上限使用真实模型并产生费用；候选尚未获得正式稿批准。')->accepted(),
+                ])->action(function (array $data): void {
+                    $number = $this->getRecord()->chapters_done + 1;
+                    try {
+                        app(ContentGenerationService::class)->start($this->getRecord(), Filament::auth()->user(), (int) $data['tokens'], (int) $data['request_limit'], $data['reason'], (int) $data['execution_limit'], chapterNumber: $number);
+                    } catch (InvalidArgumentException $exception) {
+                        Notification::make()->danger()->title('第'.$number.'章生成未执行')->body($exception->getMessage())->send();
+
+                        return;
+                    }
+                    $this->redirect(NovelResource::getUrl('content', ['record' => $this->getRecord(), 'chapter' => $number]));
+                }),
+            // 续写授权：从下一章起自动生成并正式提交，单次最多十章，范围与模型冻结在运行上。
+            Action::make('extendProduction')->label('继续自动生成')->modalHeading('授权自动生成后续章节')
+                ->visible(fn (): bool => $this->canContinueWriting())
+                ->modalDescription(fn (): string => '从第'.($this->getRecord()->chapters_done + 1).'章起自动生成、评审、提取并正式提交，自动采纳通过校验的新实体；任何门禁未通过都会停下等你处理。单次最多'.ProductionRun::MAX_RANGE.'章，会产生模型费用，金额未知不代表免费；不代表人工全文阅读。')
+                ->schema([
+                    TextInput::make('count')->label('授权章数')->integer()->minValue(1)->maxValue(fn (): int => $this->extendLimit())->default(fn (): int => $this->extendLimit())->required()
+                        ->helperText(fn (): string => '本次范围：第'.($this->getRecord()->chapters_done + 1).'章起，最多'.$this->extendLimit().'章。'),
+                    Select::make('model')->label('模型（可选）')->options(ModelProfiles::options())->native(false)->placeholder('沿用本书生成模型：'.($this->getRecord()->generation_config['model'] ?? app(GeneralSettings::class)->default_model)),
+                    Textarea::make('reason')->label('授权原因')->required()->maxLength(2000),
+                    Checkbox::make('accept_request')->label('我授权在上述范围内自动生成并正式提交，接受相应模型费用。')->accepted(),
+                ])->action(function (array $data): void {
+                    try {
+                        app(ProductionRunService::class)->extend($this->getRecord()->id, Filament::auth()->user(), (int) $data['count'], filled($data['model'] ?? null) ? $data['model'] : null, $data['reason']);
+                    } catch (InvalidArgumentException $exception) {
+                        Notification::make()->danger()->title('续写授权未执行')->body($exception->getMessage())->send();
+
+                        return;
+                    }
+                    Notification::make()->success()->title('续写已启动')->body('可在运行详情查看进度、请求次数和失败恢复。')->send();
+                    $this->redirect(NovelResource::getUrl('run', ['record' => $this->getRecord()]));
+                }),
             Action::make('viewContent')->label('查看首章候选')->url(fn (): string => NovelResource::getUrl('content', ['record' => $this->getRecord()]))
                 ->visible(fn (): bool => $this->getRecord()->chapters()->exists()),
             Action::make('refreshStatus')->label('刷新状态')->action(fn () => $this->getRecord()->refresh()),
@@ -153,11 +198,28 @@ class ViewNovel extends ViewRecord
                 }),
         ];
         // 自动小说同样保留检索实验室及只读产物入口，推进与恢复仍经独占编排器。
-        if (FirstChapterRun::where('novel_id', $this->getRecord()->id)->exists()) {
+        if (ProductionRun::activeFor($this->getRecord()->id) !== null) {
             return array_values(array_filter($actions, fn (Action $action): bool => in_array($action->getName(), ['entities', 'scenes', 'exports', 'acceptance', 'knowledge', 'requirements', 'blueprints', 'structure', 'chapters', 'exportFormal', 'searchLab', 'viewContexts', 'viewForeshadows', 'viewState', 'viewCosts', 'viewRun', 'viewContent', 'refreshStatus', 'viewOutline'], true)));
         }
 
         return $actions;
+    }
+
+    /** 已正式提交至少一章、没有在途运行或候选、未达目标章数时，可以手动写下一章或授权续写。 */
+    private function canContinueWriting(): bool
+    {
+        $novel = $this->getRecord();
+
+        return $novel->generation_mode === GenerationMode::SettingReal && $novel->archived_at === null && $novel->status === NovelStatus::Paused
+            && $novel->chapters_done >= 1 && $novel->chapters_done < $novel->target_chapters && $novel->state_version === $novel->chapters_done
+            && ! $novel->chapters()->where('number', '>', $novel->chapters_done)->exists()
+            && $novel->outlinePlans()->where('status', 'completed')->exists() && ProductionRun::activeFor($novel->id) === null;
+    }
+
+    /** 续写授权章数上限：单次上限与剩余目标章数取小。 */
+    private function extendLimit(): int
+    {
+        return max(1, min(ProductionRun::MAX_RANGE, $this->getRecord()->target_chapters - $this->getRecord()->chapters_done));
     }
 
     /** 仅成功的真实设定且尚未建立大纲时显示确认入口。 */

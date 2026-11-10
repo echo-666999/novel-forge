@@ -6,8 +6,8 @@ use App\Enums\NovelStatus;
 use App\Models\ChapterGenerationRun;
 use App\Models\ChapterSubmissionRun;
 use App\Models\ChapterVersion;
-use App\Models\FirstChapterRun;
 use App\Models\Novel;
+use App\Models\ProductionRun;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
@@ -27,7 +27,7 @@ final class ManualContentDrafts
             || $chapter->number !== $chapter->novel->chapters_done + 1 || $chapter->novel->state_version !== $chapter->number - 1
             || ! in_array($run->status, ['paused', 'completed', 'error'], true)
             || ChapterGenerationRun::where('chapter_id', $chapter->id)->latest('id')->value('id') !== $run->id
-            || FirstChapterRun::where('novel_id', $novelId)->exists()
+            || ProductionRun::coveringChapter($novelId, $chapter->number, true) !== null
             || ChapterSubmissionRun::where('chapter_id', $chapter->id)->whereIn('status', ['pending', 'running'])->exists()) {
             throw ValidationException::withMessages(['editor' => '当前作者、正文版本或运行状态不允许人工编辑，请刷新工作台。']);
         }

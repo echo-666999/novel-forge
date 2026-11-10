@@ -8,12 +8,12 @@ use App\Enums\Stage;
 use App\Enums\StageStatus;
 use App\Models\ChapterGenerationRun;
 use App\Models\ChapterVersion;
-use App\Models\FirstChapterRun;
 use App\Models\Foreshadow;
 use App\Models\Novel;
 use App\Models\NovelOutlinePlan;
 use App\Models\NovelSettingConfirmation;
 use App\Models\NovelStage;
+use App\Models\ProductionRun;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -24,13 +24,13 @@ use InvalidArgumentException;
 final class AcceptanceBranch
 {
     /** 明确授权十章后原子创建分支；相同来源重复执行只返回已有运行。 */
-    public function create(int $sourceNovelId, User $author, string $evidence, string $model, bool $authorized): FirstChapterRun
+    public function create(int $sourceNovelId, User $author, string $evidence, string $model, bool $authorized): ProductionRun
     {
         if (! $authorized || ! preg_match('/^[a-zA-Z0-9_-]+$/', $evidence) || trim($model) === '' || strlen($model) > 128) {
             throw new InvalidArgumentException('需要明确分支十章授权、有效证据目录及模型');
         }
 
-        return DB::transaction(function () use ($sourceNovelId, $author, $evidence, $model): FirstChapterRun {
+        return DB::transaction(function () use ($sourceNovelId, $author, $evidence, $model): ProductionRun {
             $original = Novel::lockForUpdate()->findOrFail($sourceNovelId);
             $chapter = $original->chapters()->where('number', 1)->firstOrFail();
             $comparison = app(AcceptanceComparison::class)->latest($chapter);
@@ -47,7 +47,7 @@ final class AcceptanceBranch
             }
             $key = PlanningJson::hash([$sourceNovelId, $evidence, $comparison['body'], $author->id]);
             if ($existing = Novel::where('generation_config->acceptance_branch->key', $key)->first()) {
-                return FirstChapterRun::where('novel_id', $existing->id)->firstOrFail();
+                return ProductionRun::where('novel_id', $existing->id)->firstOrFail();
             }
             $sourceRun = ChapterGenerationRun::findOrFail(ChapterVersion::findOrFail($comparison['source_version_id'])->run_id);
             app(ContentGenerationService::class)->assertFrozenSources($sourceRun);
@@ -133,8 +133,8 @@ final class AcceptanceBranch
             $version = ChapterVersion::create(['chapter_id' => $newChapter->id, 'run_id' => $bodyRun->id, 'source_stage_id' => $bodyStage->id, 'version' => 1,
                 'title' => $comparison['title'], 'body' => $comparison['body'], 'body_hash' => $lineage['body_hash'], 'character_count' => $comparison['characters'], 'count_version' => ContentSchema::COUNT_VERSION, 'created_at' => now()]);
             $newChapter->update(['current_candidate_version_id' => $version->id]);
-            $automation = FirstChapterRun::create(['novel_id' => $novel->id, 'author_id' => $author->id, 'chapter_limit' => 10, 'policy' => FirstChapterRun::policy(3),
-                'policy_hash' => PlanningJson::hash(FirstChapterRun::policy(3)), 'commit_key' => (string) Str::uuid7(), 'status' => 'pending', 'step' => 'content',
+            $automation = ProductionRun::create(['novel_id' => $novel->id, 'author_id' => $author->id, 'chapter_limit' => 10, 'policy' => ProductionRun::policy(3),
+                'policy_hash' => PlanningJson::hash(ProductionRun::policy(3)), 'commit_key' => (string) Str::uuid7(), 'status' => 'pending', 'step' => 'content',
                 'artifacts' => ['confirmation_id' => $confirmed->id, 'outline_plan_id' => $plan->id, 'body_run_id' => $bodyRun->id, 'chapter_number' => 1],
                 'history' => [['action' => 'authorized_branch', 'operator_id' => $author->id, ...$lineage]]]);
             $novel->update(['status' => NovelStatus::Pending]);

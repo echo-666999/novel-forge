@@ -28,6 +28,10 @@ final class LegacyContentSources
         $recorded = collect(data_get($origin->output, 'data.chapters', []))->firstWhere('chapter_number', $run->chapter->number);
         $chapterData = collect($source->attributesToArray())->except(['id', 'outline_plan_id', 'source_stage_id'])->all();
         $settingStage = NovelStage::query()->findOrFail($confirmation->source_stage_id);
+        // 全书走向只由首个大纲批次产生，后续批次承接冻结走向但不重复输出；第11章起须与首批比对。
+        $roadmapOrigin = data_get($origin->output, 'data.roadmap') !== null ? $origin
+            : NovelStage::query()->where('novel_id', $plan->novel_id)->where('stage', Stage::Outline->value)->where('status', StageStatus::Completed->value)
+                ->where('input->outline_plan_id', $plan->id)->orderBy('id')->first();
         $checks = [
             '运行输入摘要' => PlanningJson::hash([$snapshot, $run->config]) === $run->input_hash,
             '确认内容摘要' => $confirmation->hasValidHash(),
@@ -36,7 +40,7 @@ final class LegacyContentSources
             '确认身份' => $confirmation->content_hash === $snapshot['confirmation_hash'] && $plan->setting_confirmation_id === $confirmation->id,
             '大纲状态' => $plan->status === 'completed' && $plan->id === $snapshot['outline_plan_id'] && $source->chapter_number === $run->chapter->number,
             '大纲完整性' => $plan->next_chapter === $plan->target_chapters + 1 && $plan->chapters()->count() === $plan->target_chapters,
-            '全书走向' => PlanningJson::hash($plan->roadmap) === PlanningJson::hash($snapshot['roadmap']) && PlanningJson::hash($plan->roadmap) === PlanningJson::hash(data_get($origin->output, 'data.roadmap')),
+            '全书走向' => PlanningJson::hash($plan->roadmap) === PlanningJson::hash($snapshot['roadmap']) && PlanningJson::hash($plan->roadmap) === PlanningJson::hash(data_get($roadmapOrigin?->output, 'data.roadmap')),
             '真实来源' => $run->chapter->novel->generation_mode === GenerationMode::SettingReal && $settingStage->stage === Stage::Setting && $settingStage->status === StageStatus::Completed,
             '章计划归属' => data_get($origin->input, 'outline_plan_id') === $plan->id,
             '阶段归属' => $origin->novel_id === $plan->novel_id && $origin->stage === Stage::Outline && $origin->status === StageStatus::Completed,

@@ -20,6 +20,7 @@ use App\Models\StoryStateProjection;
 use App\Models\User;
 use App\Services\Ai\AiGenerationException;
 use App\Services\Ai\AiTextGenerationService;
+use App\Services\Ai\ModelProfiles;
 use App\Services\Ai\TextRequestOptions;
 use App\Settings\GeneralSettings;
 use Illuminate\Support\Facades\Bus;
@@ -100,9 +101,10 @@ final class ChapterSubmissionService
             }
             $config = ['version' => SubmissionContract::VERSION, 'model' => $model, 'temperature' => 0, 'request_limit' => 2,
                 'operator_id' => $operator->id, 'reason' => $reason, 'protocol' => ['review' => hash('sha256', SubmissionContract::instructions('review')), 'extract' => hash('sha256', SubmissionContract::instructions('extract'))]];
-            if (isset($novel->generation_config['acceptance_branch']) && str_starts_with($model, 'deepseek')) {
-                // 新验收分支独立评审使用低推理，避免将文本提示直接复制成阻塞结论。
-                $config['review_reasoning_effort'] = 'low';
+            // 评审推理强度来自模型配置并冻结在本次准备中，避免将文本提示直接复制成阻塞结论。
+            $reasoning = ModelProfiles::profile($model)['review_reasoning'];
+            if ($reasoning !== null) {
+                $config['review_reasoning_effort'] = $reasoning;
             }
             if ($predecessor !== null) {
                 $config['predecessor'] = ['id' => $predecessor->id, 'input_hash' => $predecessor->input_hash, 'stop_reason' => $predecessor->stop_reason];

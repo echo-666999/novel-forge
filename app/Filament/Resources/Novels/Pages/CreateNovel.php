@@ -4,10 +4,10 @@ namespace App\Filament\Resources\Novels\Pages;
 
 use App\Enums\GenerationMode;
 use App\Filament\Resources\Novels\NovelResource;
-use App\Models\FirstChapterRun;
 use App\Models\Novel;
+use App\Models\ProductionRun;
 use App\Services\Pipeline\CreateNovelService;
-use App\Services\Pipeline\FirstChapterService;
+use App\Services\Pipeline\ProductionRunService;
 use Filament\Actions\Action;
 use Filament\Facades\Filament;
 use Filament\Notifications\Notification;
@@ -59,7 +59,7 @@ class CreateNovel extends CreateRecord
             throw ValidationException::withMessages(['data.target_chapters' => '生成前10章要求目标章数至少为10。']);
         }
         if (($data['automatic_first_chapter'] ?? false) || ($data['automatic_first_ten'] ?? false)) {
-            $run = app(FirstChapterService::class)->start($data, Filament::auth()->user(), true, model: filled($data['automatic_model'] ?? null) ? $data['automatic_model'] : null, chapterLimit: ($data['automatic_first_ten'] ?? false) ? 10 : 1);
+            $run = app(ProductionRunService::class)->start($data, Filament::auth()->user(), true, model: filled($data['automatic_model'] ?? null) ? $data['automatic_model'] : null, chapterLimit: ($data['automatic_first_ten'] ?? false) ? 10 : 1);
             $this->startupConfirmed = $run->status === 'pending';
 
             return Novel::findOrFail($run->novel_id);
@@ -77,7 +77,7 @@ class CreateNovel extends CreateRecord
             return Notification::make()->warning()->title('小说已保存，启动投递未确认')->body('请查看列表中的运行状态，不必重复创建。');
         }
 
-        if (FirstChapterRun::where('novel_id', $this->record->id)->exists()) {
+        if (ProductionRun::where('novel_id', $this->record->id)->exists()) {
             return Notification::make()->success()->title('小说已创建，自动生成已启动')->body('已记录自动授权；可在运行详情查看进度、请求次数和失败恢复。');
         }
 
