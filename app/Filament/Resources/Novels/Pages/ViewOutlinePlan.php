@@ -7,9 +7,17 @@ use App\Models\CostLog;
 use App\Models\NovelOutlineChapter;
 use App\Models\NovelOutlinePlan;
 use App\Models\NovelStage;
+use App\Services\Pipeline\OutlineRevisions;
 use Filament\Actions\Action;
+use Filament\Facades\Filament;
+use Filament\Forms\Components\Hidden;
+use Filament\Forms\Components\Repeater;
+use Filament\Forms\Components\Select;
+use Filament\Forms\Components\Textarea;
+use Filament\Forms\Components\TextInput;
 use Filament\Infolists\Components\RepeatableEntry;
 use Filament\Infolists\Components\TextEntry;
+use Filament\Notifications\Notification;
 use Filament\Resources\Pages\Concerns\InteractsWithRecord;
 use Filament\Resources\Pages\Page;
 use Filament\Schemas\Components\EmbeddedTable;
@@ -99,10 +107,14 @@ class ViewOutlinePlan extends Page implements HasTable
                 TextColumn::make('chapter_number')->label('章序'), TextColumn::make('title')->label('章名')->wrap(),
                 TextColumn::make('objective')->label('本章目标')->limit(70)->wrap(),
                 TextColumn::make('points_count')->label('推进点数')->state(fn (NovelOutlineChapter $record): int => count($record->progression_points)),
+                TextColumn::make('revision')->label('章纲修订')->state(fn (NovelOutlineChapter $record): string => ($latest = app(OutlineRevisions::class)->latest($record->id)) === null ? '原章纲' : '修订 #'.$latest->id)->badge()
+                    ->color(fn (string $state): string => $state === '原章纲' ? 'gray' : 'warning'),
             ])->recordActions([
                 Action::make('readChapter')->label('查看推进点')->modalHeading(fn (NovelOutlineChapter $record): string => '第'.$record->chapter_number.'章 · '.$record->title)
-                    ->fillForm(fn (NovelOutlineChapter $record): array => $record->toArray())->modalSubmitAction(false)->modalCancelActionLabel('关闭')
+                    ->fillForm(fn (NovelOutlineChapter $record): array => [...$record->toArray(), ...$this->effective($record)])->modalSubmitAction(false)->modalCancelActionLabel('关闭')
                     ->schema([
+                        TextEntry::make('revision_note')->hiddenLabel()->state(fn (NovelOutlineChapter $record): string => ($latest = app(OutlineRevisions::class)->latest($record->id)) === null
+                            ? '当前为大纲生成时的原章纲。' : '当前显示作者修订 #'.$latest->id.'（'.$latest->reason.'）。新运行按此冻结；已开始的旧运行仍按原快照。'),
                         TextEntry::make('summary')->label('摘要'), TextEntry::make('objective')->label('目标'),
                         TextEntry::make('conflict')->label('冲突'), TextEntry::make('hook')->label('章末钩子'),
                         RepeatableEntry::make('progression_points')->label('必须完成的情节推进点')->schema([
@@ -114,7 +126,48 @@ class ViewOutlinePlan extends Page implements HasTable
                             TextEntry::make('verification')->label('正文完成条件'),
                         ]),
                     ]),
+                Action::make('reviseOutline')->label('修订章纲')->icon('heroicon-o-pencil-square')
+                    ->visible(fn (NovelOutlineChapter $record): bool => $record->chapter_number > $this->getRecord()->chapters_done)
+                    ->modalHeading(fn (NovelOutlineChapter $record): string => '修订第'.$record->chapter_number.'章章纲 · '.$record->title)
+                    ->modalDescription('只对还没正式提交的章节生效：保存为新修订版本，原章纲和已开始运行的快照不变。之后新建或整章重写的运行按最新修订冻结。适用于章纲与前文正式正文矛盾、评审和核对互相否决的情况。')
+                    ->fillForm(fn (NovelOutlineChapter $record): array => ['expected_id' => app(OutlineRevisions::class)->latest($record->id)?->id, ...$this->effective($record)])
+                    ->schema(fn (NovelOutlineChapter $record): array => [
+                        Hidden::make('expected_id'),
+                        Textarea::make('summary')->label('摘要')->required()->rows(2)->maxLength(5000),
+                        Textarea::make('objective')->label('目标')->required()->rows(2)->maxLength(5000),
+                        Textarea::make('conflict')->label('冲突')->required()->rows(2)->maxLength(5000),
+                        Textarea::make('hook')->label('章末钩子')->required()->rows(2)->maxLength(5000),
+                        Repeater::make('progression_points')->label('推进点（编号和数量不变）')->addable(false)->deletable(false)->reorderable(false)->columns(2)
+                            ->itemLabel(fn (array $state): ?string => $state['id'] ?? null)
+                            ->schema([
+                                Hidden::make('id'),
+                                Select::make('change_type')->label('变化类型')->required()->native(false)
+                                    ->options(['information' => '信息', 'decision' => '决定', 'relationship' => '关系', 'resource' => '资源', 'position' => '位置', 'risk' => '风险']),
+                                TextInput::make('subject')->label('主体')->required()->maxLength(2000),
+                                Textarea::make('before')->label('变化前状态')->required()->rows(2)->maxLength(2000),
+                                Textarea::make('action')->label('具体行动')->required()->rows(2)->maxLength(2000),
+                                Textarea::make('after')->label('变化后状态')->required()->rows(2)->maxLength(2000),
+                                Textarea::make('verification')->label('正文完成条件')->required()->rows(2)->maxLength(2000),
+                            ]),
+                        Textarea::make('reason')->label('修订原因')->required()->rows(2)->maxLength(2000),
+                    ])
+                    ->action(function (NovelOutlineChapter $record, array $data): void {
+                        app(OutlineRevisions::class)->revise($this->getRecord()->id, $record->id, Filament::auth()->user(), $data, $data['reason'],
+                            filled($data['expected_id'] ?? null) ? (int) $data['expected_id'] : null);
+                        Notification::make()->success()->title('章纲修订已保存')->body('该章下一次新建或整章重写的运行会按修订冻结。')->send();
+                    }),
             ])->toolbarActions([]);
+    }
+
+    /** 当前生效的章纲内容：有修订时取最新修订，否则取原章纲。
+     * @return array<string, mixed>
+     */
+    private function effective(NovelOutlineChapter $record): array
+    {
+        $latest = app(OutlineRevisions::class)->latest($record->id);
+        $content = $latest === null ? app(OutlineRevisions::class)->original($record) : app(OutlineRevisions::class)->content($latest);
+
+        return [...$content, 'progression_points' => array_values($content['progression_points'])];
     }
 
     /** 提供只读刷新和返回小说的入口。

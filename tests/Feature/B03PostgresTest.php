@@ -165,11 +165,17 @@ class B03PostgresTest extends TestCase
         $readingMigration = require database_path('migrations/2026_11_07_014131_create_reading_records_table.php');
         // 场景规划引用大纲章节，先撤销空子表再验证大纲迁移。
         $sceneMigration = require database_path('migrations/2026_11_07_132700_create_scene_plan_versions_table.php');
+        // 章纲修订同样引用大纲章节，先撤销空修订表，恢复时最后重建。
+        $outlineRevisionMigration = require database_path('migrations/2026_11_11_000518_create_outline_chapter_revisions_table.php');
+        $outlineRevisionMigration->down();
         $sceneMigration->down();
         $readingMigration->down();
         // C09 实体版本依赖正式实体，专库回滚按子表优先执行，禁止级联删除。
         $entityDefinitionsMigration = require database_path('migrations/2026_11_07_133118_create_entity_definition_versions_table.php');
         $entityDefinitionsMigration->down();
+        // D01 伏笔长程契约字段依附于伏笔表，先撤销再撤销原账本表，恢复时按相反顺序重建。
+        $foreshadowContractMigration = require database_path('migrations/2026_11_10_201335_add_long_range_contract_to_foreshadows.php');
+        $foreshadowContractMigration->down();
         $foreshadowMigration->down();
         $lineageMigration->down();
         $submissionMigration->down();
@@ -182,9 +188,11 @@ class B03PostgresTest extends TestCase
         $submissionMigration->up();
         $lineageMigration->up();
         $foreshadowMigration->up();
+        $foreshadowContractMigration->up();
         $entityDefinitionsMigration->up();
         $readingMigration->up();
         $sceneMigration->up();
+        $outlineRevisionMigration->up();
         $this->assertSame($beforeNovel, Novel::findOrFail($stage->novel_id)->getRawOriginal());
         $this->assertSame($beforeStage, $stage->fresh()->getRawOriginal());
     }

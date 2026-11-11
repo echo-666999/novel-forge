@@ -13,6 +13,7 @@ use App\Models\ChapterSubmissionRun;
 use App\Models\ChapterVersion;
 use App\Models\CostLog;
 use App\Models\Novel;
+use App\Models\NovelOutlineChapter;
 use App\Models\NovelStage;
 use App\Models\ProductionRun;
 use App\Models\User;
@@ -59,7 +60,13 @@ final class ContentGenerationService
             $snapshot = ['novel' => $novel->planningInput(),
                 'confirmation_id' => $plan->confirmation->id, 'confirmation_hash' => $plan->confirmation->content_hash,
                 'confirmed_setting' => $plan->confirmation->setting, 'decisions' => $plan->confirmation->decisions,
-                'source_chapter' => $plan->chapters()->where('chapter_number', $chapterNumber)->firstOrFail()->attributesToArray(), 'outline_plan_id' => $plan->id, 'roadmap' => $plan->roadmap];
+                'outline_plan_id' => $plan->id, 'roadmap' => $plan->roadmap];
+            // 章计划叠加作者对未提交章节的最新章纲修订，修订身份一并冻结供核对；无修订时与原章纲完全一致。
+            $frozenOutline = app(OutlineRevisions::class)->freeze($plan->chapters()->where('chapter_number', $chapterNumber)->firstOrFail());
+            $snapshot['source_chapter'] = $frozenOutline['source_chapter'];
+            if ($frozenOutline['revision'] !== null) {
+                $snapshot['outline_revision'] = $frozenOutline['revision'];
+            }
             // 验收分支的首章实验模板仅用于首章，后续章冻结这一适用范围。
             if (isset($novel->generation_config['acceptance_branch'])) {
                 $snapshot['acceptance_branch'] = $novel->generation_config['acceptance_branch'];
@@ -145,7 +152,9 @@ final class ContentGenerationService
 
                 return [$existing, false];
             }
-            if (! in_array($parent->status, ['paused', 'error', 'completed'], true) || ($parent->stop_reason === 'b04_accepted' && $issues === null && $review === null) || $novel->status !== NovelStatus::Paused) {
+            // 已通过正文检查的候选只有在作者明确授权整章重写且本章尚未正式提交时才可另起新版本。
+            $authorRewrite = $rewrite && $issues === null && $parent->chapter->formal_version_id === null;
+            if (! in_array($parent->status, ['paused', 'error', 'completed'], true) || ($parent->stop_reason === 'b04_accepted' && $issues === null && $review === null && ! $authorRewrite) || $novel->status !== NovelStatus::Paused) {
                 throw new InvalidArgumentException('当前运行不能恢复或验收已经完成');
             }
             $workbench = $issues === null ? null : app(RevisionWorkbench::class)->freeze($parent, $author, $expectedVersionId ?? 0, $issues);
@@ -157,8 +166,25 @@ final class ContentGenerationService
             $source = $parent->chapter->current_candidate_version_id === null ? null : ChapterVersion::findOrFail($parent->chapter->current_candidate_version_id);
             $fine = $parent->config['enable_fine_outline'];
             $plan = $parent->plan_data;
+            $snapshot = $parent->snapshot;
+            $fineStageId = $parent->fine_stage_id;
+            // 整章重写时若作者已修订本章章纲，改用最新修订重新冻结章计划，并丢弃按旧章纲生成的细纲；定点修订仍沿用原计划。
+            $outlineRevision = $rewrite && $workbench === null
+                ? app(OutlineRevisions::class)->freeze(NovelOutlineChapter::findOrFail($parent->outline_chapter_id)) : null;
+            if ($outlineRevision !== null && $outlineRevision['revision'] !== null && ($snapshot['outline_revision']['id'] ?? null) !== $outlineRevision['revision']['id']) {
+                $snapshot['source_chapter'] = $outlineRevision['source_chapter'];
+                $snapshot['outline_revision'] = $outlineRevision['revision'];
+                $plan = null;
+                $fineStageId = null;
+            }
+            // 整章重写按当前前文协议与上下文预算重新冻结，旧运行快照不变；正式前文由来源核对按版本重建。
+            if ($rewrite && $workbench === null && $parent->chapter->number > 1
+                && (($snapshot['prior_context']['version'] ?? null) !== CanonicalChapterContext::VERSION || ($snapshot['context_policy'] ?? null) !== app(ContextBuilder::class)->policy())) {
+                $snapshot['prior_context'] = app(CanonicalChapterContext::class)->build($novel, $parent->chapter->number);
+                $snapshot['context_policy'] = app(ContextBuilder::class)->policy();
+            }
             if (! $fine) {
-                $plan ??= $parent->snapshot['source_chapter'];
+                $plan ??= $snapshot['source_chapter'];
             }
             $step = $fine && $plan === null ? 'fine' : ($source !== null && ! $rewrite ? 'revise' : 'draft');
             // 仅纠正自动段尾误报：保留旧失败，另建检查运行；真实残句或人工拒绝仍须修订。
@@ -199,10 +225,9 @@ final class ContentGenerationService
             if ($step === 'revise' && $limit !== 2) {
                 throw new InvalidArgumentException('恢复范围修订只允许修订和检查各一次');
             }
-            $snapshot = $parent->snapshot;
             $snapshot['recovery'] = ['parent_run_id' => $parent->id, 'parent_input_hash' => $parent->input_hash, 'parent_status' => $parent->status,
                 'parent_stop_reason' => $parent->stop_reason, 'source_version_id' => $source?->id, 'source_body_hash' => $source?->body_hash,
-                'source_lineage' => $source === null ? [] : $this->recoveryLineage($parent, $source), 'plan_hash' => PlanningJson::hash($plan), 'fine_stage_id' => $parent->fine_stage_id];
+                'source_lineage' => $source === null ? [] : $this->recoveryLineage($parent, $source), 'plan_hash' => PlanningJson::hash($plan), 'fine_stage_id' => $fineStageId];
             $config['request_cap'] = $limit;
             $config['initial_step'] = $step;
             // 支持扩展输出的模型在定点修订时预留推理空间，范围与完整性门禁不因此放宽。
@@ -262,7 +287,7 @@ final class ContentGenerationService
             }
             $run = ChapterGenerationRun::create(['chapter_id' => $parent->chapter_id, 'outline_chapter_id' => $parent->outline_chapter_id,
                 'parent_run_id' => $parent->id, 'source_version_id' => $source?->id, 'snapshot' => $snapshot, 'config' => $config,
-                'input_hash' => PlanningJson::hash([$snapshot, $config]), 'plan_data' => $plan, 'fine_stage_id' => $parent->fine_stage_id,
+                'input_hash' => PlanningJson::hash([$snapshot, $config]), 'plan_data' => $plan, 'fine_stage_id' => $fineStageId,
                 'status' => 'pending', 'next_step' => $step, 'invocation_id' => (string) Str::uuid7(), 'requests_used' => 0, 'request_limit' => $limit, 'retry_count' => 0, 'length_repair_count' => 0,
                 'control_history' => [['action' => 'recover_v14', 'author_id' => $author->id, 'reason' => $reason, 'request_limit' => $limit,
                     'old_model' => $parent->config['model'], 'new_model' => $config['model'], 'unknown_costs_preserved' => CostLog::where('novel_id', $novel->id)->where('status', 'unknown')->pluck('id')->all(), 'at' => now()->toIso8601String()]]]);

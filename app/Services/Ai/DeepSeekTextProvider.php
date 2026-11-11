@@ -73,11 +73,13 @@ final class DeepSeekTextProvider implements TextProvider
         // 仅完整响应允许处理尾逗号；原始响应保持原样，另附规范化证据。
         if ($options->isStructured() && ($raw['status'] ?? null) === 'completed') {
             $normalized = DeepSeekJsonOutput::normalize($text);
-            if ($normalized['removed_comma_offsets'] !== []) {
+            if ($normalized['removed_comma_offsets'] !== [] || $normalized['removed_trailing_offsets'] !== []) {
+                // 只有尾逗号时沿用原版本号与字段，历史审计格式保持不变。
                 $raw['_application_json_normalization'] = [
-                    'version' => 'trailing-comma-v1', 'original_text_sha256' => hash('sha256', $text),
+                    'version' => $normalized['removed_trailing_offsets'] === [] ? 'trailing-comma-v1' : 'trailing-comma-bracket-v2', 'original_text_sha256' => hash('sha256', $text),
                     'normalized_text_sha256' => hash('sha256', $normalized['text']),
                     'removed_comma_offsets' => $normalized['removed_comma_offsets'],
+                    ...($normalized['removed_trailing_offsets'] === [] ? [] : ['removed_trailing_bracket_offsets' => $normalized['removed_trailing_offsets']]),
                 ];
                 $text = $normalized['text'];
             }

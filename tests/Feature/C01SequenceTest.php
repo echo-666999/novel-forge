@@ -5,16 +5,23 @@ namespace Tests\Feature;
 use App\Enums\ProductionFailure;
 use App\Filament\Resources\Novels\Pages\CreateNovel;
 use App\Filament\Resources\Novels\Pages\ViewChapterContent;
+use App\Filament\Resources\Novels\Pages\ViewForeshadows;
 use App\Filament\Resources\Novels\Pages\ViewNovel;
+use App\Filament\Resources\Novels\Pages\ViewOutlinePlan;
+use App\Jobs\AdvanceProductionRunJob;
 use App\Models\CanonicalCommit;
 use App\Models\Chapter;
 use App\Models\ChapterEventExtraction;
 use App\Models\ChapterGenerationRun;
 use App\Models\ChapterSubmissionRun;
+use App\Models\ChapterSubmissionValidation;
+use App\Models\ChapterVersion;
 use App\Models\ContextManifest;
 use App\Models\CostLog;
+use App\Models\Foreshadow;
 use App\Models\ModelPrice;
 use App\Models\Novel;
+use App\Models\OutlineChapterRevision;
 use App\Models\ProductionRun;
 use App\Models\User;
 use App\Services\Ai\AiTextGenerationService;
@@ -22,11 +29,13 @@ use App\Services\Pipeline\CanonicalChapterContext;
 use App\Services\Pipeline\ChapterSubmissionService;
 use App\Services\Pipeline\ContentExecutionService;
 use App\Services\Pipeline\ContentGenerationService;
+use App\Services\Pipeline\ContextBuilder;
 use App\Services\Pipeline\ForeshadowLedger;
 use App\Services\Pipeline\LegacyContentSources;
 use App\Services\Pipeline\NovelBudget;
 use App\Services\Pipeline\NovelProgressQuery;
 use App\Services\Pipeline\OutlineGenerationService;
+use App\Services\Pipeline\OutlineRevisions;
 use App\Services\Pipeline\PlanningJson;
 use App\Services\Pipeline\ProductionRunService;
 use App\Services\Pipeline\StoryStateReplay;
@@ -39,6 +48,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use Livewire\Livewire;
 use Tests\TestCase;
 
@@ -50,11 +60,17 @@ class C01SequenceTest extends TestCase
     /** 专项验证供应商实际收到的到期伏笔，默认不改变其他场景。 */
     private bool $assertForeshadows = false;
 
+    /** 第三章事件提取持续返回供应商错误，验证提交失败后的整章重写入口。 */
+    private bool $failThirdExtraction = false;
+
     /** 在第五章模拟独立评审拒绝，验证提交边界。 */
     private bool $rejectFifthReview = false;
 
     /** 第九章首次提取制造硬校验失败，验证恢复保持既有总额度。 */
     private bool $rejectNinthExtraction = false;
+
+    /** D01 伏笔故障注入：omit_payoff 不报告回收，early_payoff 在窗口前一章报告回收。 */
+    private ?string $foreshadowFault = null;
 
     /** 模拟旧60秒规划请求失败，验证新尝试等待时间独立冻结。 */
     private bool $rejectFirstOutline = false;
@@ -123,12 +139,39 @@ class C01SequenceTest extends TestCase
                     $data = ['review' => ['verdict' => $this->rejectFifthReview && $submission->chapter->number === 5 ? 'needs_revision' : 'pass', 'summary' => '隔离评审通过', 'evidence_ids' => ['p1'], 'findings' => []]];
                 } else {
                     $submission = ChapterSubmissionRun::findOrFail($log->request_parameters['submission_run_id']);
+                    if ($this->failThirdExtraction && $submission->chapter->number === 3) {
+                        return Http::response(['error' => ['message' => '隔离提取失败']], 400);
+                    }
                     $data = ['events' => [['key' => 'event-1', 'event_type' => 'observation', 'narrative_order' => 1,
                         'actor_ref' => array_key_first($submission->snapshot['entity_catalog']), 'target_refs' => [], 'time_scope' => 'present',
                         'fact_category' => 'objective_confirmed', 'summary' => '隔离观察', 'evidence_ids' => ['p1'], 'state_changes' => []]]];
                     if ($this->rejectNinthExtraction && $submission->chapter->number === 9) {
                         $data['events'][0]['event_type'] = 'statement';
                         $this->rejectNinthExtraction = false;
+                    }
+                    // 长程伏笔：按冻结上下文的义务报告埋设、强化与回收，可注入故障。
+                    $submitted = json_decode(explode('冻结提交输入：', $request['input'][1]['content'][0]['text'], 2)[1], true, flags: JSON_THROW_ON_ERROR);
+                    $longRange = array_filter($submitted['foreshadow_context']['items'] ?? [], fn (array $item): bool => isset($item['payoff_to']));
+                    if ($longRange !== []) {
+                        $number = $submission->chapter->number;
+                        $data['foreshadows'] = [];
+                        foreach ($longRange as $item) {
+                            $action = match ($item['obligation']) {
+                                'plant' => 'plant', 'resolve' => 'payoff', 'prepare' => $number % 5 === 0 ? 'reinforce' : null,
+                                'preserve' => $number % 25 === 0 ? 'reinforce' : null, default => null,
+                            };
+                            // 故障只注入到必回收的铜钥匙，其他伏笔照常流转。
+                            $faulty = $item['title'] === '缺口铜钥匙';
+                            if ($faulty && $this->foreshadowFault === 'omit_payoff' && $action === 'payoff') {
+                                $action = null;
+                            }
+                            if ($faulty && $this->foreshadowFault === 'early_payoff' && $number === $item['payoff_from'] - 1) {
+                                $action = 'payoff';
+                            }
+                            if ($action !== null) {
+                                $data['foreshadows'][] = ['foreshadow_id' => $item['id'], 'action' => $action, 'evidence_ids' => ['p1'], 'explanation' => '隔离测试：'.$action];
+                            }
+                        }
                     }
                 }
             } else {
@@ -180,7 +223,7 @@ class C01SequenceTest extends TestCase
         $this->assertSame(':memory:', DB::connection()->getDatabaseName());
         // 预算与单价只在内存库清理，迁移回滚保护保持开启。
         DB::table('cost_logs')->update(['reserved_cost' => null, 'reserved_currency' => null]);
-        DB::table('novels')->update(['budget_amount' => null, 'budget_currency' => null]);
+        DB::table('novels')->update(['budget_amount' => null, 'budget_currency' => null, 'creative_brief' => null]);
         DB::table('model_prices')->delete();
         // 续写运行引用前序运行，先解除引用再清理内存夹具。
         DB::table('production_runs')->update(['predecessor_id' => null]);
@@ -460,6 +503,145 @@ class C01SequenceTest extends TestCase
         $this->assertSame(0, CostLog::where('id', '>', $logs)->whereNull('reserved_cost')->count());
     }
 
+    /** 推进生产运行；运行完成且未达目标时按十章一段续写，直到目标章数或运行停止。 */
+    private function produceAll(ProductionRun $run, User $author): ProductionRun
+    {
+        $service = app(ProductionRunService::class);
+        $run = $this->drain($run);
+        while ($run->status === 'completed' && ($novel = Novel::findOrFail($run->novel_id))->chapters_done < $novel->target_chapters) {
+            $run = $this->drain($service->extend($novel->id, $author, min(10, $novel->target_chapters - $novel->chapters_done), null, '隔离续写', false));
+        }
+
+        return $run;
+    }
+
+    /** 登记 PRD 11.3 样例的三条长程伏笔：必回收的铜钥匙（第3章埋设、第100章回收）及两条中期伏笔。
+     * @return array{0: Foreshadow, 1: Foreshadow, 2: Foreshadow}
+     */
+    private function longRangePlans(ProductionRun $run, User $author, int $target): array
+    {
+        $ledger = app(ForeshadowLedger::class);
+        $novel = Novel::findOrFail($run->novel_id);
+        $key = $ledger->plan($novel, $author, '缺口铜钥匙', '前3章出现缺口铜钥匙，第'.$target.'章揭示其证明旧案证据被替换', 3, $target, (string) Str::uuid7(),
+            ['surface_clue' => '一枚有异常缺口的铜钥匙', 'hidden_meaning' => '缺口与原始档案封记对应，证明证据被替换', 'payoff_effect' => '主角据此识破替换并改变调查方向',
+                'knowledge_constraint' => '回收前任何人物都不知道缺口的用途', 'payoff_from' => $target, 'payoff_to' => $target, 'must_payoff' => true]);
+        $letter = $ledger->plan($novel, $author, '褪色来信', '第2章出现褪色来信，中期揭示寄信人', 2, (int) ceil($target * 0.4), (string) Str::uuid7(),
+            ['surface_clue' => '一封褪色的来信', 'hidden_meaning' => '寄信人是失踪的师父', 'payoff_from' => (int) ceil($target * 0.3), 'payoff_to' => (int) ceil($target * 0.4), 'must_payoff' => true]);
+        $lamp = $ledger->plan($novel, $author, '熄灭的灯', '第5章灯塔异常熄灭，中期解释原因', 5, (int) ceil($target * 0.6), (string) Str::uuid7(),
+            ['surface_clue' => '灯塔无故熄灭', 'hidden_meaning' => '有人借熄灯掩护走私', 'payoff_from' => (int) ceil($target * 0.6), 'payoff_to' => (int) ceil($target * 0.6)]);
+
+        return [$key, $letter, $lamp];
+    }
+
+    /** D01：生成前冻结三条长程伏笔，逐段续写到第100章；必回收伏笔在第3章埋设、中途强化、第100章由正式正文自动回收，证据链可从回收反查埋设。 */
+    public function test_hundred_chapter_foreshadow_payoff_through_real_pipeline(): void
+    {
+        $service = app(ProductionRunService::class);
+        $author = User::factory()->create();
+        $run = $service->start([...B02SettingTest::input(), 'target_chapters' => 100, 'chapter_length_policy' => ['min_characters' => 20, 'max_characters' => 300]], $author, true, false, chapterLimit: 10);
+        [$key, $letter, $lamp] = $this->longRangePlans($run, $author, 100);
+        $this->assertTrue($key->planned_before_generation);
+        $novel = Novel::findOrFail($run->novel_id);
+        // 第95章前确定性取得待回收伏笔及来源，不依赖检索召回。
+        $run = $this->drain($run);
+        $run = $this->produceAll($run, $author);
+        $this->assertSame('completed', $run->status, $run->error ?? '');
+        $novel->refresh();
+        $this->assertSame([100, 100], [$novel->chapters_done, $novel->state_version]);
+        $key->refresh();
+        $this->assertSame('resolved', $key->status);
+        $chain = $key->evidence;
+        $this->assertSame(['planted', 3], [$chain->first()->to_status, $chain->first()->chapter_number]);
+        $this->assertSame(['resolved', 100, 'commit_extraction'], [$chain->last()->to_status, $chain->last()->chapter_number, $chain->last()->source]);
+        $this->assertGreaterThan(0, $chain->where('to_status', 'reinforced')->whereBetween('chapter_number', [80, 99])->count());
+        $finalCommit = CanonicalCommit::where('novel_id', $novel->id)->where('state_version', 100)->sole();
+        $this->assertSame([$finalCommit->id, $finalCommit->version_id], [$chain->last()->commit_id, $chain->last()->version_id]);
+        $this->assertSame('resolved', $letter->fresh()->status);
+        // 中期伏笔在回收窗口首章（第30章）回收。
+        $this->assertSame(30, $letter->fresh()->evidence->last()->chapter_number);
+        $this->assertSame('resolved', $lamp->fresh()->status);
+        // 第95章的冻结上下文必须带有铜钥匙及其埋设来源，义务为回收准备。
+        $ninetyFive = ChapterGenerationRun::whereHas('chapter', fn ($query) => $query->where('novel_id', $novel->id)->where('number', 95))->firstOrFail();
+        $item = collect($ninetyFive->snapshot['foreshadow_context']['items'])->firstWhere('id', $key->id);
+        $this->assertSame(['prepare', 3], [$item['obligation'], $item['sources'][0]['chapter_number']]);
+        $hundred = ChapterGenerationRun::whereHas('chapter', fn ($query) => $query->where('novel_id', $novel->id)->where('number', 100))->firstOrFail();
+        $this->assertSame(['resolve', true], [collect($hundred->snapshot['foreshadow_context']['items'])->firstWhere('id', $key->id)['obligation'], collect($hundred->snapshot['foreshadow_context']['items'])->firstWhere('id', $key->id)['must_address']]);
+        // 已回收后不再出现在后续上下文中；准备检查显示无提醒。
+        $this->assertSame([], collect(app(ForeshadowLedger::class)->readiness($novel))->firstWhere('id', $key->id)['warnings']);
+    }
+
+    /** D01 逆向测试：必回收伏笔在窗口末章没有回收证据时阻塞提交，停在第12章前。 */
+    public function test_missing_payoff_blocks_the_target_chapter(): void
+    {
+        $service = app(ProductionRunService::class);
+        $author = User::factory()->create();
+        $run = $service->start([...B02SettingTest::input(), 'target_chapters' => 12, 'chapter_length_policy' => ['min_characters' => 20, 'max_characters' => 300]], $author, true, false, chapterLimit: 10);
+        [$key] = $this->longRangePlans($run, $author, 12);
+        $this->foreshadowFault = 'omit_payoff';
+        $run = $this->produceAll($run, $author);
+        $this->assertSame(['failed', 'SUBMISSION_STOPPED:EVENT_VALIDATION_BLOCKED'], [$run->status, $run->error]);
+        $this->assertSame(11, Novel::findOrFail($run->novel_id)->chapters_done);
+        $validation = ChapterSubmissionValidation::latest('id')->firstOrFail();
+        $this->assertContains('FORESHADOW_PAYOFF_MISSING', array_column($validation->result['errors'], 'code'));
+        $this->assertNotSame('resolved', $key->fresh()->status);
+        // 必回收伏笔不能通过手工登记绕过正文回收。
+        $version = ChapterVersion::findOrFail(Chapter::where('novel_id', $run->novel_id)->where('number', 11)->sole()->formal_version_id);
+        $this->expectExceptionMessage('必回收伏笔只能由正式提交的正文自动回收');
+        app(ForeshadowLedger::class)->record($key->fresh(), $author, $key->fresh()->revision, 'resolved', $version->id, 1, mb_substr(explode("\n", $version->body)[0], 0, 2), '手工回收', (string) Str::uuid7());
+    }
+
+    /** D01：伏笔页登记长程契约，展示回收窗口、必回收与准备检查；必回收项不提供手工“已回收”。 */
+    public function test_foreshadow_page_registers_long_range_contract(): void
+    {
+        $author = User::factory()->create();
+        $run = app(ProductionRunService::class)->start([...B02SettingTest::input(), 'target_chapters' => 100], $author, true, false, chapterLimit: 10);
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        $this->actingAs($author);
+        Livewire::test(ViewForeshadows::class, ['record' => $run->novel_id])
+            ->callAction('createPlan', ['title' => '缺口铜钥匙', 'description' => '第100章回收', 'plant' => 3, 'target' => 100, 'surface_clue' => '缺口铜钥匙', 'hidden_meaning' => '证明证据被替换',
+                'payoff_from' => 100, 'payoff_to' => 100, 'must_payoff' => true])->assertHasNoActionErrors();
+        $ledger = Foreshadow::sole();
+        $this->assertSame([100, 100, true, true], [$ledger->payoff_from, $ledger->payoff_to, $ledger->must_payoff, $ledger->planned_before_generation]);
+        Livewire::test(ViewForeshadows::class, ['record' => $run->novel_id])->assertSee('第100～100章')->assertSee('回收准备检查');
+        // 窗口末章与最迟回收章不一致时拒绝登记。
+        Livewire::test(ViewForeshadows::class, ['record' => $run->novel_id])
+            ->callAction('createPlan', ['title' => '错误窗口', 'description' => '窗口不一致', 'plant' => 3, 'target' => 90, 'payoff_from' => 99, 'payoff_to' => 100])
+            ->assertNotified('回收窗口须晚于埋设章，且窗口末章等于最迟回收章');
+        $this->assertSame(1, Foreshadow::count());
+    }
+
+    /** D01：用验收样例文件启动时，伏笔契约与预算在投递任何任务前写入，契约标记为生成前登记。 */
+    public function test_cli_registers_sample_contract_before_dispatch(): void
+    {
+        $author = User::factory()->create();
+        $this->artisan('app:run-first-chapter', ['--chapters' => 10, '--input' => storage_path('app/private/d01-acceptance/input.json'), '--author' => $author->id,
+            '--authorize-automatic-commit' => true, '--model' => 'deepseek-flash', '--foreshadows' => storage_path('app/private/d01-acceptance/foreshadows.json'), '--budget' => '50'])
+            ->expectsOutputToContain('已登记伏笔')->assertSuccessful();
+        $novel = Novel::sole();
+        $this->assertSame([100, 800, 1200, '50.00000000', 'CNY', 'deepseek-flash'], [$novel->target_chapters, $novel->chapter_length_policy['min_characters'], $novel->chapter_length_policy['max_characters'], $novel->budget_amount, $novel->budget_currency, $novel->generation_config['model']]);
+        $this->assertSame('不写穿越、重生、超自然能力；不写恋爱主线；不写血腥暴力', $novel->creative_brief['forbidden_content']);
+        $plans = Foreshadow::orderBy('id')->get();
+        $this->assertSame([[3, 100, 100, true], [2, 30, 40, true], [5, 60, 60, false]], $plans->map(fn ($plan): array => [$plan->plant_chapter, $plan->payoff_from, $plan->payoff_to, $plan->must_payoff])->all());
+        $this->assertTrue($plans->every(fn ($plan): bool => $plan->planned_before_generation));
+        Queue::assertPushed(AdvanceProductionRunJob::class, 1);
+        $this->assertSame(0, CostLog::count());
+    }
+
+    /** D01 逆向测试：把回收提前到窗口前一章，提交被阻塞，不会提前变为已回收。 */
+    public function test_early_payoff_outside_window_is_blocked(): void
+    {
+        $service = app(ProductionRunService::class);
+        $author = User::factory()->create();
+        $run = $service->start([...B02SettingTest::input(), 'target_chapters' => 12, 'chapter_length_policy' => ['min_characters' => 20, 'max_characters' => 300]], $author, true, false, chapterLimit: 10);
+        [$key] = $this->longRangePlans($run, $author, 12);
+        $this->foreshadowFault = 'early_payoff';
+        $run = $this->produceAll($run, $author);
+        $this->assertSame('failed', $run->status);
+        $validation = ChapterSubmissionValidation::latest('id')->firstOrFail();
+        $this->assertContains('FORESHADOW_WINDOW_VIOLATION', array_column($validation->result['errors'], 'code'));
+        $this->assertNotSame('resolved', $key->fresh()->status);
+    }
+
     /** 旧首章授权不能派生第二章提交密钥。 */
     public function test_single_chapter_authorization_cannot_expand(): void
     {
@@ -492,6 +674,173 @@ class C01SequenceTest extends TestCase
         $this->assertSame('revise', $repair->next_step);
         $this->assertSame(Chapter::where('number', 5)->sole()->current_candidate_version_id, $repair->config['submission_review']['version_id']);
         $this->assertSame($before, $service->requestCount($resumed));
+    }
+
+    /** 章纲与前文冲突时：作者修订未提交章节的章纲，整章重写按修订冻结并继续提交；原章纲、旧快照和已提交章节不变。 */
+    public function test_outline_revision_unblocks_rewrite_of_failed_chapter(): void
+    {
+        $this->rejectFifthReview = true;
+        $service = app(ProductionRunService::class);
+        $author = User::factory()->create();
+        $run = $service->start([...B02SettingTest::input(), 'chapter_length_policy' => ['min_characters' => 20, 'max_characters' => 300]], $author, true, false, chapterLimit: 10);
+        for ($i = 0; $i < 80 && $run->status === 'pending'; $i++) {
+            $run = $service->advance($run->id);
+        }
+        $this->assertSame('SUBMISSION_STOPPED:REVIEW_NOT_PASSED', $run->error);
+        $novel = Novel::findOrFail($run->novel_id);
+        $plan = $novel->outlinePlans()->where('status', 'completed')->latest('id')->firstOrFail();
+        $fifth = $plan->chapters()->where('chapter_number', 5)->sole();
+        $original = $fifth->attributesToArray();
+        $oldBody = ChapterGenerationRun::whereHas('chapter', fn ($q) => $q->where('number', 5))->latest('id')->firstOrFail();
+        $revisions = app(OutlineRevisions::class);
+        $points = $fifth->progression_points;
+        $points[0]['after'] = '修订后的变化结果';
+        $data = ['summary' => $fifth->summary, 'objective' => $fifth->objective, 'conflict' => $fifth->conflict, 'hook' => '修订后的钩子：只保留前文已建立的线索', 'progression_points' => $points];
+
+        // 已提交章节、编号被改动和无变化的修订都被拒绝，且不发送请求。
+        $committed = $plan->chapters()->where('chapter_number', 4)->sole();
+        $this->assertThrows(fn () => $revisions->revise($novel->id, $committed->id, $author, [...$data, 'progression_points' => $committed->progression_points], '冲突', null), ValidationException::class);
+        $this->assertThrows(fn () => $revisions->revise($novel->id, $fifth->id, $author, [...$data, 'progression_points' => [[...$points[0], 'id' => 'chapter-5-point-9']]], '冲突', null), ValidationException::class);
+        $this->assertThrows(fn () => $revisions->revise($novel->id, $fifth->id, $author, [...$data, 'hook' => $fifth->hook, 'progression_points' => $fifth->progression_points], '冲突', null), ValidationException::class);
+        $before = $service->requestCount($run);
+        $revision = $revisions->revise($novel->id, $fifth->id, $author, $data, '章纲要求与前文正式正文冲突', null);
+        $this->assertThrows(fn () => $revisions->revise($novel->id, $fifth->id, $author, [...$data, 'hook' => '另一个钩子'], '并发修订', null), ValidationException::class);
+        $this->assertSame($original, $fifth->refresh()->attributesToArray());
+        $this->assertSame($before, $service->requestCount($run));
+
+        $this->rejectFifthReview = false;
+        $resumed = $service->retry($run->id, $author, rewrite: true);
+        $rewrite = ChapterGenerationRun::findOrFail($resumed->artifacts['body_run_id']);
+        $this->assertSame('fine', $rewrite->next_step);
+        $this->assertNull($rewrite->plan_data);
+        $this->assertSame('修订后的钩子：只保留前文已建立的线索', $rewrite->snapshot['source_chapter']['hook']);
+        $this->assertSame('修订后的变化结果', $rewrite->snapshot['source_chapter']['progression_points'][0]['after']);
+        $this->assertSame(['id' => $revision->id, 'content_hash' => $revision->content_hash], $rewrite->snapshot['outline_revision']);
+        $this->assertNotNull($rewrite->config['submission_review']);
+        // 旧运行快照仍是原章纲，并继续通过来源核对。
+        $this->assertSame($original['hook'], $oldBody->refresh()->snapshot['source_chapter']['hook']);
+        app(LegacyContentSources::class)->assertPlanningSources($oldBody);
+        app(LegacyContentSources::class)->assertPlanningSources($rewrite);
+
+        $run = $resumed;
+        for ($i = 0; $i < 80 && $run->status === 'pending'; $i++) {
+            $run = $service->advance($run->id);
+        }
+        $this->assertSame('completed', $run->status, $run->error ?? '');
+        $this->assertSame(10, CanonicalCommit::count());
+        // 快照中的修订身份被篡改时来源核对拒绝。
+        $tampered = new ChapterGenerationRun;
+        $tampered->setRawAttributes($rewrite->refresh()->getAttributes());
+        $tampered->snapshot = [...$rewrite->snapshot, 'outline_revision' => ['id' => $revision->id, 'content_hash' => str_repeat('0', 64)]];
+        $this->assertThrows(fn () => app(LegacyContentSources::class)->assertPlanningSources($tampered), \InvalidArgumentException::class);
+        // 之后整章重写的章节不能再修订。
+        $this->assertThrows(fn () => $revisions->revise($novel->id, $fifth->id, $author, [...$data, 'hook' => '提交后修订'], '冲突', $revision->id), ValidationException::class);
+    }
+
+    /** 提交准备失败后作者授权整章重写：已通过检查的候选另起新正文运行，按当前前文协议重新冻结，旧证据保留。 */
+    public function test_rewrite_after_submission_failure_refreezes_prior_context(): void
+    {
+        $this->failThirdExtraction = true;
+        $service = app(ProductionRunService::class);
+        $author = User::factory()->create();
+        $run = $service->start([...B02SettingTest::input(), 'chapter_length_policy' => ['min_characters' => 20, 'max_characters' => 300]], $author, true, false, chapterLimit: 10);
+        for ($i = 0; $i < 80 && $run->status === 'pending'; $i++) {
+            $run = $service->advance($run->id);
+        }
+        $this->assertSame('SUBMISSION_STOPPED:PROVIDER_FAILED', $run->error);
+        $accepted = ChapterGenerationRun::whereHas('chapter', fn ($q) => $q->where('number', 3))->latest('id')->firstOrFail();
+        $this->assertSame('b04_accepted', $accepted->stop_reason);
+        $this->failThirdExtraction = false;
+        $resumed = $service->retry($run->id, $author, rewrite: true);
+        $this->assertSame('content', $resumed->step);
+        $rewrite = ChapterGenerationRun::findOrFail($resumed->artifacts['body_run_id']);
+        $this->assertSame($accepted->id, $rewrite->parent_run_id);
+        $this->assertSame('draft', $rewrite->next_step);
+        $this->assertSame(CanonicalChapterContext::VERSION, $rewrite->snapshot['prior_context']['version']);
+        $this->assertSame(app(ContextBuilder::class)->policy(), $rewrite->snapshot['context_policy']);
+        $run = $resumed;
+        for ($i = 0; $i < 80 && $run->status === 'pending'; $i++) {
+            $run = $service->advance($run->id);
+        }
+        $this->assertSame('completed', $run->status, $run->error ?? '');
+        $this->assertSame(10, CanonicalCommit::count());
+        $this->assertGreaterThanOrEqual(1, ChapterSubmissionRun::where('stop_reason', 'PROVIDER_FAILED')->count());
+    }
+
+    /** 滑动窗口只省略窗口外章节的原文引用，事件与段落位置完整保留；旧协议快照仍按原版本核对。 */
+    public function test_prior_context_window_keeps_events_and_legacy_snapshots_verify(): void
+    {
+        $service = app(ProductionRunService::class);
+        $author = User::factory()->create();
+        $run = $service->start([...B02SettingTest::input(), 'target_chapters' => 20, 'chapter_length_policy' => ['min_characters' => 20, 'max_characters' => 300]], $author, true, false, chapterLimit: 10);
+        for ($i = 0; $i < 100 && $run->status === 'pending'; $i++) {
+            $run = $service->advance($run->id);
+        }
+        $run = $service->extend($run->novel_id, $author, 2, null, '验证滑动窗口', false);
+        for ($i = 0; $i < 40 && $run->status === 'pending'; $i++) {
+            $run = $service->advance($run->id);
+        }
+        $this->assertSame('completed', $run->status, $run->error ?? '');
+        $novel = Novel::findOrFail($run->novel_id);
+        $context = app(CanonicalChapterContext::class);
+        $windowed = $context->build($novel, 13);
+        $legacy = $context->build($novel, 13, CanonicalChapterContext::LEGACY_VERSION);
+        $this->assertSame(3, $windowed['evidence_window']['full_evidence_from_chapter']);
+        $this->assertArrayNotHasKey('evidence_window', $legacy);
+        foreach ($windowed['chapters'] as $index => $chapter) {
+            $old = $legacy['chapters'][$index];
+            $this->assertSame(array_column($old['events'], 'event_id'), array_column($chapter['events'], 'event_id'));
+            $this->assertSame(array_column($old['events'], 'summary'), array_column($chapter['events'], 'summary'));
+            foreach ($chapter['events'] as $e => $event) {
+                foreach ($event['evidence'] as $k => $evidence) {
+                    $source = $old['events'][$e]['evidence'][$k];
+                    $this->assertSame(array_diff_key($source, ['quote' => true]), array_diff_key($evidence, ['quote' => true]));
+                    $chapter['number'] < 3 ? $this->assertArrayNotHasKey('quote', $evidence) : $this->assertSame($source['quote'], $evidence['quote']);
+                }
+            }
+        }
+        // 新运行冻结窗口版本；旧协议快照按其版本重建后仍通过来源核对。
+        $twelfth = ChapterGenerationRun::whereHas('chapter', fn ($q) => $q->where('number', 12))->latest('id')->firstOrFail();
+        $this->assertSame(CanonicalChapterContext::VERSION, $twelfth->snapshot['prior_context']['version']);
+        $legacyRun = new ChapterGenerationRun;
+        $legacyRun->setRawAttributes($twelfth->getAttributes());
+        $snapshot = [...$twelfth->snapshot, 'prior_context' => $context->build($novel, 12, CanonicalChapterContext::LEGACY_VERSION)];
+        $legacyRun->snapshot = $snapshot;
+        $legacyRun->input_hash = PlanningJson::hash([$snapshot, $twelfth->config]);
+        app(LegacyContentSources::class)->assertPlanningSources($legacyRun);
+        // 声称窗口版本却携带完整引文的快照与按版本重建结果不符，拒绝。
+        $legacyRun->snapshot = [...$snapshot, 'prior_context' => [...$snapshot['prior_context'], 'version' => CanonicalChapterContext::VERSION]];
+        $legacyRun->input_hash = PlanningJson::hash([$legacyRun->snapshot, $twelfth->config]);
+        $this->assertThrows(fn () => app(LegacyContentSources::class)->assertPlanningSources($legacyRun), \InvalidArgumentException::class);
+    }
+
+    /** 章纲页面为未提交章节提供修订入口，已提交章节不显示。 */
+    public function test_outline_page_revises_unwritten_chapter(): void
+    {
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        $author = User::factory()->create();
+        $this->actingAs($author);
+        $service = app(ProductionRunService::class);
+        $run = $service->start([...B02SettingTest::input(), 'chapter_length_policy' => ['min_characters' => 20, 'max_characters' => 300]], $author, true, false, chapterLimit: 1);
+        for ($i = 0; $i < 40 && $run->status === 'pending'; $i++) {
+            $run = $service->advance($run->id);
+        }
+        $this->assertSame('completed', $run->status, $run->error ?? '');
+        $plan = Novel::findOrFail($run->novel_id)->outlinePlans()->latest('id')->firstOrFail();
+        $first = $plan->chapters()->where('chapter_number', 1)->sole();
+        $second = $plan->chapters()->where('chapter_number', 2)->sole();
+        Livewire::test(ViewOutlinePlan::class, ['record' => $run->novel_id])
+            ->assertTableActionHidden('reviseOutline', $first)
+            ->assertTableActionVisible('reviseOutline', $second)
+            ->callTableAction('reviseOutline', $second, ['hook' => '作者修订的第二章钩子', 'reason' => '与前文冲突'])
+            ->assertHasNoTableActionErrors()
+            ->assertSee('修订 #');
+        $this->assertSame('作者修订的第二章钩子', OutlineChapterRevision::sole()->hook);
+        $this->assertSame($second->progression_points, OutlineChapterRevision::sole()->progression_points);
+        // 下一章新运行按修订冻结。
+        $body = app(ContentGenerationService::class)->start(Novel::findOrFail($run->novel_id), $author, chapterNumber: 2);
+        $this->assertSame('作者修订的第二章钩子', $body->snapshot['source_chapter']['hook']);
+        $this->assertSame(OutlineChapterRevision::sole()->id, $body->snapshot['outline_revision']['id']);
     }
 
     /** 创建入口冻结十章范围，错误篇幅计划不能创建小说或调用模型。 */

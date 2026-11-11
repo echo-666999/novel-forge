@@ -190,8 +190,13 @@ final class ProductionRunService
                     // 成功响应可以重放解析；失败或未知响应需恢复时明确开启新尝试。
                     $log = CostLog::where('novel_id', $novel->id)->where('prompt_version', 'b10-setting-decision-v1')->latest('id')->first();
                     if ($log === null || ($artifacts['decision_retry_after'] ?? 0) >= $log->id) {
-                        $log = app(AiTextGenerationService::class)->generate(PlanningJson::encode(['idea' => $novel->premise_raw, 'candidate' => $draft['setting'], 'policy' => $run->policy]),
-                            'real', $novel->generation_config['model'], $novel->id, promptVersion: 'b10-setting-decision-v1', options: TextRequestOptions::decision());
+                        try {
+                            $log = app(AiTextGenerationService::class)->generate(PlanningJson::encode(['idea' => $novel->premise_raw, 'candidate' => $draft['setting'], 'policy' => $run->policy]),
+                                'real', $novel->generation_config['model'], $novel->id, promptVersion: 'b10-setting-decision-v1', options: TextRequestOptions::decision());
+                        } catch (AiGenerationException $exception) {
+                            // 明确失败（如响应不是有效JSON）归入可自动恢复一次的决策失败；结果未知时保留原错误，等待人工核对。
+                            throw $exception->status === 'failed' ? new InvalidArgumentException('SETTING_DECISION_FAILED') : $exception;
+                        }
                     }
                     if ($log->status !== 'succeeded') {
                         throw new InvalidArgumentException('SETTING_DECISION_FAILED');

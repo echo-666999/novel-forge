@@ -14,11 +14,24 @@ use InvalidArgumentException;
 /** 仅从已正式提交的前文生成带来源的事件摘要，不生成新的故事事实。 */
 final class CanonicalChapterContext
 {
-    /** 聚合前文各章摘要及上一章结尾；传闻、信念与客观事实保留原类别。
+    /** 原协议：全部前文章节都附完整原文引用。 */
+    public const LEGACY_VERSION = 'c01-canonical-context-v1';
+
+    /** 滑动窗口：最近若干章附完整原文引用，更早章节保留全部事件与段落位置，省略引文。 */
+    public const VERSION = 'c01-canonical-context-v2';
+
+    /** 滑动窗口内保留完整原文引用的章数。 */
+    public const FULL_EVIDENCE_CHAPTERS = 10;
+
+    /** 聚合前文各章摘要及上一章结尾；传闻、信念与客观事实保留原类别。按冻结版本重建，旧运行沿用原协议。
      * @return array<string, mixed>
      */
-    public function build(Novel $novel, int $number): array
+    public function build(Novel $novel, int $number, string $protocol = self::VERSION): array
     {
+        if (! in_array($protocol, [self::LEGACY_VERSION, self::VERSION], true)) {
+            throw new InvalidArgumentException('未知前文上下文版本');
+        }
+        $fullEvidenceFrom = $protocol === self::VERSION ? max(1, $number - self::FULL_EVIDENCE_CHAPTERS) : 1;
         $chapters = [];
         $ending = '';
         for ($i = 1; $i < $number; $i++) {
@@ -32,7 +45,8 @@ final class CanonicalChapterContext
             $events = StoryEvent::where('commit_id', $commit->id)->orderBy('narrative_order')->get()->map(fn (StoryEvent $event): array => [
                 'event_id' => $event->id, 'type' => $event->event_type, 'fact_category' => $event->fact_category,
                 'time_scope' => $event->payload['time_scope'], 'summary' => $event->payload['summary'],
-                'evidence' => $event->evidence,
+                // 窗口外章节只保留证据的段落与位置，事件本身和来源编号不删减。
+                'evidence' => $i >= $fullEvidenceFrom ? $event->evidence : array_map(fn (array $evidence): array => array_diff_key($evidence, ['quote' => true]), $event->evidence),
             ])->all();
             $chapters[] = ['number' => $i, 'title' => $chapter->title, 'commit_id' => $commit->id, 'version_id' => $version->id,
                 'body_hash' => $version->body_hash, 'events' => $events];
@@ -51,7 +65,13 @@ final class CanonicalChapterContext
                 || in_array($entity->origin['commit_id'] ?? null, $commitIds, true))
             ->mapWithKeys(fn (StoryEntity $entity): array => ['entity-'.$entity->id => $entity->definition])->all();
 
-        return ['version' => 'c01-canonical-context-v1', 'prior_state_version' => $number - 1, 'chapters' => $chapters,
+        $context = ['version' => $protocol, 'prior_state_version' => $number - 1, 'chapters' => $chapters,
             'previous_ending' => $ending, 'entities' => $entities, 'state' => $projection?->state ?? ['entities' => []]];
+        if ($protocol === self::VERSION) {
+            $context['evidence_window'] = ['full_evidence_from_chapter' => $fullEvidenceFrom,
+                'note' => '第'.$fullEvidenceFrom.'章之前的章节保留全部事件、类别和段落位置，省略原文引用；需要原文时以正式正文为准。'];
+        }
+
+        return $context;
     }
 }

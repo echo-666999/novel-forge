@@ -12,7 +12,7 @@ final class ContextBuilder
      */
     public function policy(): array
     {
-        return ['version' => 'c04-context-v1', 'capacity' => (int) config('ai.context.capacity', 262144), 'safety' => 4096, 'envelope' => 256, 'estimator' => 'utf8-bytes-conservative-v1'];
+        return ['version' => 'c04-context-v1', 'capacity' => (int) config('ai.context.capacity', 600000), 'safety' => 4096, 'envelope' => 256, 'estimator' => 'utf8-bytes-conservative-v1'];
     }
 
     /** 以完整编码字节数作保守估算，明确区别于对应模型的精确分词。 */

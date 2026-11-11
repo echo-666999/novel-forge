@@ -83,7 +83,7 @@ final class CanonicalCommitService
             }
             $preparation = app(ChapterSubmissionService::class);
             $preparation->assertCurrent($run);
-            $original = app(SubmissionValidator::class)->validate($extraction->result, $run->snapshot['entity_catalog'], $run->snapshot['state']);
+            $original = app(SubmissionValidator::class)->validate($extraction->result, $run->snapshot['entity_catalog'], $run->snapshot['state'], [], ChapterSubmissionService::longRangeForeshadowContext($run));
             if (PlanningJson::hash($validation->result) !== PlanningJson::hash($original) || $validation->verdict !== $original['verdict']) {
                 throw new InvalidArgumentException('VALIDATION_STALE');
             }
@@ -125,6 +125,10 @@ final class CanonicalCommitService
             $state = $this->mapReferences($verified->result['state'], $mapping, $eventIds);
             StoryStateProjection::create(['commit_id' => $commit->id, 'novel_id' => $novel->id, 'state_version' => $nextState, 'state' => $state, 'state_hash' => PlanningJson::hash($state), 'created_at' => now()]);
             $chapter->update(['status' => ChapterStatus::Committed, 'formal_version_id' => $version->id, 'canonical_commit_id' => $commit->id, 'committed_at' => now()]);
+            // 长程伏笔流转与正式正文同一事务写入，证据绑定本次提交、正式版本与段落；失败时整章提交回滚。
+            foreach ($extraction->result['foreshadows'] ?? [] as $entry) {
+                app(ForeshadowLedger::class)->applyFromCommit($entry, $commit, $chapter, $version, $operator, $idempotencyKey);
+            }
             // 计划章节总数及暂停状态不随单章正式提交改变，也不启动下一章。
             $novel->update(['chapters_done' => $novel->chapters_done + 1, 'state_version' => $nextState]);
             StoryOutboxEvent::create(['commit_id' => $commit->id, 'event_type' => 'chapter.committed', 'payload' => [...$receipt, 'commit_id' => $commit->id], 'created_at' => now()]);

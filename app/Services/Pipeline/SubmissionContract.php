@@ -41,7 +41,7 @@ final class SubmissionContract
     /** SDK使用严格结构化输出，引用仍由本地逐一复验。
      * @return array<string, mixed>
      */
-    public static function schema(JsonSchema $schema, string $purpose, array $anchors, array $catalog = []): array
+    public static function schema(JsonSchema $schema, string $purpose, array $anchors, array $catalog = [], array $foreshadowIds = []): array
     {
         $evidence = fn () => $schema->array()->min(1)->max(4)->items($schema->string()->enum(array_keys($anchors)))->required();
         if ($purpose === 'review') {
@@ -83,7 +83,17 @@ final class SubmissionContract
             ])->withoutAdditionalProperties();
         }
 
-        return ['events' => $schema->array()->min(1)->max(40)->items($schema->anyOf($branches))->required()];
+        $result = ['events' => $schema->array()->min(1)->max(40)->items($schema->anyOf($branches))->required()];
+        // 只有本章存在长程伏笔时才增加伏笔流转字段，其他提取的结构保持不变。
+        if ($foreshadowIds !== []) {
+            $result['foreshadows'] = $schema->array()->max(10)->items($schema->object([
+                'foreshadow_id' => $schema->integer()->enum(array_values($foreshadowIds))->required(),
+                'action' => $schema->string()->enum(array_keys(ForeshadowLedger::ACTIONS))->required(),
+                'evidence_ids' => $evidence(), 'explanation' => $schema->string()->required(),
+            ])->withoutAdditionalProperties())->required();
+        }
+
+        return $result;
     }
 
     /** 既有引用只能从冻结目录选择；新引用必须携带完整定义，禁止悬空新编号。

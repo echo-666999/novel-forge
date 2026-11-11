@@ -59,6 +59,12 @@ class B04ContentTest extends TestCase
         if (Schema::hasTable('context_manifests')) {
             DB::table('context_manifests')->delete();
         }
+        // 章纲修订按父版本倒序清理，再释放对大纲章节的外键。
+        if (Schema::hasTable('outline_chapter_revisions')) {
+            foreach (DB::table('outline_chapter_revisions')->orderByDesc('id')->pluck('id') as $id) {
+                DB::table('outline_chapter_revisions')->where('id', $id)->delete();
+            }
+        }
         // 仅清理隔离夹具，先释放伏笔对正式提交的外键。
         if (Schema::hasTable('foreshadow_evidence')) {
             DB::table('foreshadow_evidence')->delete();

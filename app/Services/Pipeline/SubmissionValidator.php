@@ -19,6 +19,9 @@ final class SubmissionValidator
      */
     public function normalize(array $data, string $body, array $priorState = []): array
     {
+        // 伏笔流转独立于事件结构，先取出再按原流程处理；没有该字段的历史提取结果完全不变。
+        $foreshadows = array_key_exists('foreshadows', $data) ? $data['foreshadows'] : null;
+        unset($data['foreshadows']);
         // 新请求内联定义；历史提取仍按原结构复验，不重写旧响应。
         if (! array_key_exists('patch', $data)) {
             $data = (new EventChangeResolver)->expand($data, $priorState);
@@ -81,15 +84,77 @@ final class SubmissionValidator
                 throw new InvalidArgumentException('PATCH_UNSUPPORTED');
             }
         }
+        if ($foreshadows !== null) {
+            ContentSchema::listing($foreshadows);
+            if (count($foreshadows) > 10) {
+                throw new InvalidArgumentException('FORESHADOW_PROGRESS_INVALID');
+            }
+            $data['foreshadows'] = array_map(function ($entry) use ($body): array {
+                ContentSchema::keys($entry, ['foreshadow_id', 'action', 'evidence_ids', 'explanation']);
+                ContentSchema::text($entry['explanation']);
+                if (! is_int($entry['foreshadow_id']) || ! array_key_exists($entry['action'], ForeshadowLedger::ACTIONS)) {
+                    throw new InvalidArgumentException('FORESHADOW_PROGRESS_INVALID');
+                }
+
+                return [...$entry, 'evidence' => SubmissionContract::evidence($entry['evidence_ids'], $body)];
+            }, $foreshadows);
+        }
 
         return $data;
+    }
+
+    /** 长程伏笔的确定性门禁：动作必须符合当前状态与章节窗口；必回收伏笔在埋设章未埋设、在窗口末章未回收时阻塞提交。旧伏笔（无窗口）不受影响。
+     * @param  array<string, mixed>|null  $context  本章冻结的伏笔上下文
+     * @return list<array{code: string, reference: string}>
+     */
+    public function foreshadowErrors(array $data, ?array $context): array
+    {
+        $items = collect($context['items'] ?? [])->keyBy('id');
+        $chapter = (int) ($context['chapter_number'] ?? 0);
+        $errors = [];
+        $declared = [];
+        foreach ($data['foreshadows'] ?? [] as $entry) {
+            $item = $items->get($entry['foreshadow_id']);
+            $reference = 'foreshadow-'.$entry['foreshadow_id'];
+            if ($item === null || ! isset($item['payoff_to'])) {
+                $errors[] = ['code' => 'FORESHADOW_UNKNOWN', 'reference' => $reference];
+
+                continue;
+            }
+            if (isset($declared[$entry['foreshadow_id']])) {
+                $errors[] = ['code' => 'FORESHADOW_DUPLICATE', 'reference' => $reference];
+            }
+            $declared[$entry['foreshadow_id']] = $entry['action'];
+            $valid = match ($entry['action']) {
+                'plant' => $item['status'] === 'planned' && $chapter <= $item['plant_chapter'],
+                'reinforce' => in_array($item['status'], ['planted', 'reinforced'], true) && $chapter < $item['payoff_from'],
+                'payoff' => in_array($item['status'], ['planted', 'reinforced'], true) && $chapter >= $item['payoff_from'] && $chapter <= $item['payoff_to'],
+                default => false,
+            };
+            if (! $valid) {
+                $errors[] = ['code' => $entry['action'] === 'payoff' ? 'FORESHADOW_WINDOW_VIOLATION' : 'FORESHADOW_TRANSITION_INVALID', 'reference' => $reference];
+            }
+        }
+        foreach ($items as $id => $item) {
+            if (! ($item['must_payoff'] ?? false)) {
+                continue;
+            }
+            if ($item['status'] === 'planned' && $chapter >= $item['plant_chapter'] && ($declared[$id] ?? null) !== 'plant') {
+                $errors[] = ['code' => 'FORESHADOW_PLANT_MISSING', 'reference' => 'foreshadow-'.$id];
+            }
+            if (in_array($item['status'], ['planted', 'reinforced'], true) && $chapter >= $item['payoff_to'] && ($declared[$id] ?? null) !== 'payoff') {
+                $errors[] = ['code' => 'FORESHADOW_PAYOFF_MISSING', 'reference' => 'foreshadow-'.$id];
+            }
+        }
+
+        return $errors;
     }
 
     /** 用冻结实体和前序状态重放最小补丁，未批准实体明确单列。
      * @param  list<string>  $approvedKeys  本次作者明确批准的提议编号
      * @return array{verdict: string, errors: list<array<string, mixed>>, approval_required: list<string>, state: array<string, mixed>}
      */
-    public function validate(array $data, array $catalog, array $state, array $approvedKeys = []): array
+    public function validate(array $data, array $catalog, array $state, array $approvedKeys = [], ?array $foreshadowContext = null): array
     {
         $errors = [];
         $add = function (string $code, string $reference) use (&$errors): void {
@@ -228,6 +293,12 @@ final class SubmissionValidator
             }
         }
         $required = array_values(array_diff(array_keys($proposed), $approvedKeys));
+        // 只有冻结上下文中存在长程伏笔时才加入伏笔门禁，旧验证结果的摘要保持不变。
+        if ($foreshadowContext !== null) {
+            foreach ($this->foreshadowErrors($data, $foreshadowContext) as $error) {
+                $errors[] = $error;
+            }
+        }
 
         return ['verdict' => $errors !== [] ? 'blocked' : ($required !== [] ? 'requires_approval' : 'pass'), 'errors' => $errors, 'approval_required' => $required, 'state' => $state];
     }

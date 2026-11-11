@@ -156,6 +156,9 @@ class B04PostgresTest extends TestCase
         // C09 实体版本依赖正式实体，专库回滚按子表优先执行，禁止级联删除。
         $entityDefinitionsMigration = require database_path('migrations/2026_11_07_133118_create_entity_definition_versions_table.php');
         $entityDefinitionsMigration->down();
+        // D01 伏笔长程契约字段依附于伏笔表，先撤销再撤销原账本表，恢复时按相反顺序重建。
+        $foreshadowContractMigration = require database_path('migrations/2026_11_10_201335_add_long_range_contract_to_foreshadows.php');
+        $foreshadowContractMigration->down();
         $foreshadowMigration->down();
         $lineageMigration->down();
         $submissionMigration->down();
@@ -166,6 +169,7 @@ class B04PostgresTest extends TestCase
         $submissionMigration->up();
         $lineageMigration->up();
         $foreshadowMigration->up();
+        $foreshadowContractMigration->up();
         $entityDefinitionsMigration->up();
         $readingMigration->up();
         $this->assertSame($before, Novel::findOrFail($stage->novel_id)->getRawOriginal());

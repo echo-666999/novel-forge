@@ -268,6 +268,10 @@ final class ChapterSubmissionService
         try {
             $anchors = ContentSchema::anchors($version->body);
             $context = ['anchors' => $anchors, 'entity_catalog' => $run->snapshot['entity_catalog'], 'run_id' => $run->id, 'version_id' => $version->id, 'body_hash' => $version->body_hash];
+            // 本章存在长程伏笔时，提取结构增加伏笔流转字段，编号只能取冻结上下文中的伏笔。
+            if ($purpose === 'extract' && ($ids = self::longRangeForeshadowIds($run)) !== []) {
+                $context['foreshadow_ids'] = $ids;
+            }
             if ($purpose === 'review' && isset($run->config['review_reasoning_effort'])) {
                 $context['deepseek_reasoning_effort'] = $run->config['review_reasoning_effort'];
             }
@@ -454,7 +458,7 @@ final class ChapterSubmissionService
         if ($review->verdict !== 'pass' || $review->result['verdict'] !== 'pass') {
             throw new InvalidArgumentException('REVIEW_NOT_PASSED');
         }
-        $result = app(SubmissionValidator::class)->validate($extraction->result, $run->snapshot['entity_catalog'], $run->snapshot['state'], $approvedKeys);
+        $result = app(SubmissionValidator::class)->validate($extraction->result, $run->snapshot['entity_catalog'], $run->snapshot['state'], $approvedKeys, self::longRangeForeshadowContext($run));
 
         return ChapterSubmissionValidation::create(['submission_run_id' => $run->id, 'review_id' => $review->id, 'extraction_id' => $extraction->id,
             'verdict' => $result['verdict'], 'input_hash' => PlanningJson::hash([$run->input_hash, $review->result_hash, $extraction->result_hash, $approvedKeys]), 'result' => $result, 'created_at' => now()]);
@@ -484,5 +488,21 @@ final class ChapterSubmissionService
             }
             $run->update(['status' => 'failed', 'stop_reason' => $log === null ? 'DISPATCH_FAILED' : 'UNKNOWN_RESPONSE']);
         });
+    }
+
+    /** 本章冻结上下文中带回收窗口的伏笔编号；旧快照或没有长程伏笔时为空。
+     * @return list<int>
+     */
+    public static function longRangeForeshadowIds(ChapterSubmissionRun $run): array
+    {
+        return array_values(array_map(fn (array $item): int => (int) $item['id'], array_filter($run->snapshot['content_sources']['foreshadow_context']['items'] ?? [], fn (array $item): bool => isset($item['payoff_to']))));
+    }
+
+    /** 有长程伏笔时返回冻结上下文供确定性门禁使用，否则为空，旧验证结果保持不变。
+     * @return array<string, mixed>|null
+     */
+    public static function longRangeForeshadowContext(ChapterSubmissionRun $run): ?array
+    {
+        return self::longRangeForeshadowIds($run) === [] ? null : $run->snapshot['content_sources']['foreshadow_context'];
     }
 }

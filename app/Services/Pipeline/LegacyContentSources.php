@@ -45,13 +45,13 @@ final class LegacyContentSources
             '章计划归属' => data_get($origin->input, 'outline_plan_id') === $plan->id,
             '阶段归属' => $origin->novel_id === $plan->novel_id && $origin->stage === Stage::Outline && $origin->status === StageStatus::Completed,
             '大纲章节摘要' => PlanningJson::hash($recorded) === PlanningJson::hash($chapterData),
-            '冻结章计划' => PlanningJson::hash($source->attributesToArray()) === PlanningJson::hash($snapshot['source_chapter']),
+            '冻结章计划' => PlanningJson::hash(app(OutlineRevisions::class)->expected($source, $snapshot['outline_revision'] ?? null)) === PlanningJson::hash($snapshot['source_chapter']),
             '确认设定' => PlanningJson::hash($snapshot['confirmed_setting']) === PlanningJson::hash($confirmation->setting),
             '作者决定' => PlanningJson::hash($snapshot['decisions']) === PlanningJson::hash($confirmation->decisions),
         ];
         // 后续章摘要只能来自对应前序正式版本，篡改或误注入未来章节立即拒绝。
         if ($run->chapter->number > 1) {
-            $checks['前文摘要与正式来源'] = PlanningJson::hash($snapshot['prior_context'] ?? []) === PlanningJson::hash(app(CanonicalChapterContext::class)->build($run->chapter->novel, $run->chapter->number));
+            $checks['前文摘要与正式来源'] = PlanningJson::hash($snapshot['prior_context'] ?? []) === PlanningJson::hash(app(CanonicalChapterContext::class)->build($run->chapter->novel, $run->chapter->number, $snapshot['prior_context']['version'] ?? CanonicalChapterContext::LEGACY_VERSION));
         }
         foreach ($checks as $label => $valid) {
             if (! $valid) {

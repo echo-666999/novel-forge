@@ -126,13 +126,22 @@ final class ChapterProductionStepper
             $submission = ChapterSubmissionRun::where('novel_id', $novel->id)->whereHas('chapter', fn ($query) => $query->where('number', $number))->latest('id')->first();
             if ($submission?->status === 'failed') {
                 if ($submission->stop_reason === 'REVIEW_NOT_PASSED') {
-                    // 拒绝评审不能靠再次抽样变通过，必须绑定原评审另建定点修订。
+                    // 拒绝评审不能靠再次抽样变通过，必须绑定原评审另建修订；作者授权整章重写时按最新章纲重写，评审意见仍随运行冻结。
                     $review = ChapterReview::where('submission_run_id', $submission->id)->firstOrFail();
                     $body = ChapterGenerationRun::where('chapter_id', $submission->chapter_id)->latest('id')->firstOrFail();
-                    $revised = app(ContentGenerationService::class)->recover($body->id, $author, '根据独立提交评审修订当前候选', executionLimit: $recoveryLimit, model: $model, submissionReviewId: $review->id);
+                    $revised = app(ContentGenerationService::class)->recover($body->id, $author, $rewrite ? '根据独立提交评审整章重写当前候选' : '根据独立提交评审修订当前候选', executionLimit: $recoveryLimit, rewrite: $rewrite, model: $model, submissionReviewId: $review->id);
                     $run->step = 'content';
                     $artifacts = $run->artifacts;
                     $artifacts['body_run_id'] = $revised->id;
+                    unset($artifacts['version_id'], $artifacts['submission_run_id']);
+                    $run->artifacts = $artifacts;
+                } elseif ($rewrite) {
+                    // 提交准备失败而作者授权整章重写（如冻结前文超出上下文预算）：另建正文运行，按当前协议重新冻结。
+                    $body = ChapterGenerationRun::where('chapter_id', $submission->chapter_id)->latest('id')->firstOrFail();
+                    $rewritten = app(ContentGenerationService::class)->recover($body->id, $author, '提交准备失败，作者授权按当前协议整章重写', executionLimit: $recoveryLimit, confirmUnknown: $confirmUnknown, rewrite: true, model: $model);
+                    $run->step = 'content';
+                    $artifacts = $run->artifacts;
+                    $artifacts['body_run_id'] = $rewritten->id;
                     unset($artifacts['version_id'], $artifacts['submission_run_id']);
                     $run->artifacts = $artifacts;
                 } else {
