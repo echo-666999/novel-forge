@@ -108,9 +108,12 @@ class ManagePromptTemplates extends Page implements HasTable
             foreach ($data['groups'] as $scope => $group) {
                 foreach ($group['versions'] as $version) {
                     $rows->put($version->id, [
-                        'id' => $version->id, 'identity' => $group['title'],
-                        'version' => 'V'.$version->version_number, 'status' => $version->status,
-                        'notes' => $version->notes, 'created_at' => $version->created_at,
+                        'id'         => $version->id,
+                        'identity'   => $group['title'],
+                        'version'    => 'V' . $version->version_number,
+                        'status'     => $version->status,
+                        'notes'      => $version->notes,
+                        'created_at' => $version->created_at,
                         'references' => $data['references'][$version->id] ?? 0,
                     ]);
                 }
