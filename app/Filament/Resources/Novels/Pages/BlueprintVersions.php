@@ -6,24 +6,24 @@ use App\Filament\Resources\Novels\NovelResource;
 use App\Filament\Resources\Novels\Schemas\SettingConfirmationForm;
 use App\Models\NovelSettingConfirmation;
 use App\Models\RequirementVersion;
-use App\Services\Pipeline\BodyVersionDiff;
 use App\Services\Pipeline\ConfirmSettingService;
+use App\Services\Pipeline\SettingVersionDiff;
 use Filament\Actions\Action;
 use Filament\Facades\Filament;
 use Filament\Forms\Components\Select;
-use Filament\Infolists\Components\RepeatableEntry;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\Concerns\InteractsWithRecord;
 use Filament\Resources\Pages\Page;
 use Filament\Schemas\Components\EmbeddedTable;
 use Filament\Schemas\Components\Section;
+use Filament\Schemas\Components\View as ViewComponent;
 use Filament\Schemas\Schema;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Concerns\InteractsWithTable;
 use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Table;
-use Illuminate\Support\HtmlString;
+use Illuminate\Contracts\View\View;
 use Livewire\Attributes\Locked;
 use UnitEnum;
 
@@ -65,16 +65,19 @@ class BlueprintVersions extends Page implements HasTable
         return $schema->components([
             Section::make('版本边界')->description('确认设定是候选规划来源，不是正式剧情。新增确认版本不会替换既有大纲及章节冻结来源；原始生成结果始终保留。')->schema([]),
             EmbeddedTable::make(),
-            Section::make('完整区段对照')->visible(fn (): bool => count($this->comparison) === 2)->schema([
-                RepeatableEntry::make('diff')->hiddenLabel()->state(function (): array {
-                    if (count($this->comparison) !== 2) {
-                        return [];
-                    }
-                    [$old, $new] = array_map(fn (int $id): NovelSettingConfirmation => NovelSettingConfirmation::where('novel_id', $this->getRecord()->id)->findOrFail($id), $this->comparison);
+            Section::make(fn (): string => count($this->comparison) === 2 ? '版本对照：确认记录 #'.$this->comparison[0].' → #'.$this->comparison[1] : '版本对照')
+                ->description('按字段对照两个确认版本：人物按姓名、作者决定按问题匹配，规则与保留细节按条目比较。')
+                ->visible(fn (): bool => count($this->comparison) === 2)
+                ->headerActions([Action::make('closeComparison')->label('关闭对照')->link()->action(fn () => $this->comparison = [])])
+                ->schema([
+                    ViewComponent::make('filament.resources.novels.partials.field-diff')->viewData(function (): array {
+                        [$old, $new] = array_map(fn (int $id): NovelSettingConfirmation => NovelSettingConfirmation::where('novel_id', $this->getRecord()->id)->findOrFail($id), $this->comparison);
+                        $label = fn (NovelSettingConfirmation $version): string => '#'.$version->id.'（'.$version->confirmed_at?->format('Y-m-d H:i').'）';
 
-                    return BodyVersionDiff::compare(self::describe($old), self::describe($new));
-                })->schema([TextEntry::make('kind')->label('差异类型')->badge(), TextEntry::make('text')->label('内容')->formatStateUsing(fn (string $state): HtmlString => new HtmlString(nl2br(e($state))))]),
-            ]),
+                        return ['diff' => SettingVersionDiff::compare($old->setting, $old->decisions, $new->setting, $new->decisions), 'oldLabel' => $label($old), 'newLabel' => $label($new),
+                            'sameMessage' => '两个版本的设定与作者决定完全相同，没有需要关注的变化。'];
+                    }),
+                ]),
         ]);
     }
 
@@ -88,14 +91,21 @@ class BlueprintVersions extends Page implements HasTable
             TextColumn::make('confirmed_at')->label('确认时间')->dateTime(),
             TextColumn::make('integrity')->label('摘要校验')->state(fn (NovelSettingConfirmation $record): string => $record->hasValidHash() ? '有效' : '来源损坏，禁止使用'),
         ])->recordActions([
-            Action::make('inspect')->label('查看完整设定')->modalSubmitAction(false)->schema(fn (NovelSettingConfirmation $record): array => [
-                TextEntry::make('body')->label('设定与作者决定')->state(self::describe($record))->formatStateUsing(fn (string $state): HtmlString => new HtmlString(nl2br(e($state)))),
-                TextEntry::make('plans')->label('引用此确认记录的大纲记录编号')->state(fn (): string => $this->getRecord()->outlinePlans()->where('setting_confirmation_id', $record->id)->orderByDesc('id')->pluck('id')->implode('、') ?: '尚无'),
-            ]),
-            Action::make('compare')->label('与另一版本对照')->schema([Select::make('other')->label('旧版 / 对照版本')->options(fn (): array => $this->getRecord()->settingConfirmations()->orderByDesc('id')->pluck('id', 'id')->map(fn ($id): string => '确认记录 #'.$id)->all())->required()])
+            Action::make('inspect')->label('查看完整设定')->modalHeading(fn (NovelSettingConfirmation $record): string => '完整设定 · 确认记录 #'.$record->id)
+                ->modalWidth('5xl')->modalAutofocus(false)->modalSubmitAction(false)->modalCancelActionLabel('关闭')
+                ->modalContent(fn (NovelSettingConfirmation $record): View => view('filament.resources.novels.pages.setting-confirmation', [
+                    'setting' => self::presentation($record),
+                    'confirmation' => $record,
+                    'plans' => $this->getRecord()->outlinePlans()->where('setting_confirmation_id', $record->id)->orderByDesc('id')->pluck('id')->all(),
+                ])),
+            Action::make('compare')->label('与另一版本对照')->modalHeading('选择要对照的版本')
+                ->visible(fn (): bool => $this->getRecord()->settingConfirmations()->count() > 1)
+                ->schema(fn (NovelSettingConfirmation $record): array => [Select::make('other')->label('对照版本')->helperText('编号较小的一方作为旧版显示在左侧。')->options($this->getRecord()->settingConfirmations()->whereKeyNot($record->id)->orderByDesc('id')->get()
+                    ->mapWithKeys(fn (NovelSettingConfirmation $version): array => [$version->id => '确认记录 #'.$version->id.'（'.$version->confirmed_at?->format('Y-m-d H:i').'）'])->all())->required()])
                 ->action(function (NovelSettingConfirmation $record, array $data): void {
                     $old = NovelSettingConfirmation::where('novel_id', $this->getRecord()->id)->findOrFail((int) $data['other']);
-                    $this->comparison = [$old->id, $record->id];
+                    // 始终按编号先后排列，旧版在前、新版在后。
+                    $this->comparison = [min($old->id, $record->id), max($old->id, $record->id)];
                 }),
         ])->emptyStateHeading('尚无作者确认版本')->emptyStateDescription('先在小说工作台生成设定候选，再审阅修订并确认。');
     }
@@ -124,24 +134,52 @@ class BlueprintVersions extends Page implements HasTable
         ];
     }
 
-    /** 用中文字段展示完整设定及决定，避免把原始结构化键名当业务表单。 */
-    private static function describe(NovelSettingConfirmation $version): string
+    /** “查看完整设定”的分区数据：重点内容单独列出，未识别的字段归入“其他”，不丢失任何内容。
+     * @return array{core_conflict: ?string, open_questions: list<array{question: string, impact: ?string, blocking: bool}>, decisions: list<array{question: ?string, answer: string, impact: ?string, blocking: bool}>, characters: list<array{name: string, role: ?string, fields: list<array{label: string, value: string}>}>, world: array{era: ?string, background: ?string, rules: list<string>}, tone: list<array{label: string, value: string}>, preserved: list<string>, other: list<string>}
+     */
+    private static function presentation(NovelSettingConfirmation $version): array
     {
-        $labels = ['world' => '世界', 'era' => '时代', 'background' => '背景', 'rules' => '规则', 'characters' => '人物', 'name' => '姓名', 'role' => '角色', 'goal' => '目标', 'personality' => '性格', 'speech_style' => '说话方式', 'abilities' => '能力', 'limitations' => '限制', 'tone' => '基调', 'narrative_style' => '文风', 'pov' => '视角', 'pacing' => '节奏', 'core_conflict' => '核心矛盾', 'preserved_details' => '保留细节', 'open_questions' => '待决定问题', 'question' => '问题', 'impact' => '影响', 'blocking' => '阻塞', 'answer' => '作者决定'];
-        $walk = function (array $value, string $prefix = '') use (&$walk, $labels): array {
-            $lines = [];
-            foreach ($value as $key => $item) {
-                $label = $prefix.(is_int($key) ? (string) ($key + 1) : ($labels[$key] ?? $key));
-                if (is_array($item)) {
-                    $lines = [...$lines, ...$walk($item, $label.' / ')];
-                } else {
-                    $lines[] = $label.'：'.(is_bool($item) ? ($item ? '是' : '否') : $item);
+        $setting = $version->setting;
+        $text = fn (mixed $value): ?string => is_scalar($value) && trim((string) $value) !== '' ? trim((string) $value) : null;
+        $list = fn (mixed $value): array => is_array($value) ? array_values(array_filter(array_map(fn (mixed $item): ?string => is_scalar($item) ? $text($item) : implode('；', SettingVersionDiff::lines((array) $item)), $value))) : [];
+        $question = fn (mixed $item): array => is_array($item)
+            ? ['question' => $text($item['question'] ?? null), 'answer' => $text($item['answer'] ?? null), 'impact' => $text($item['impact'] ?? null), 'blocking' => (bool) ($item['blocking'] ?? false)]
+            : ['question' => $text($item), 'answer' => null, 'impact' => null, 'blocking' => false];
+        $characters = [];
+        foreach (is_array($setting['characters'] ?? null) ? $setting['characters'] : [] as $character) {
+            $character = (array) $character;
+            $fields = [];
+            foreach (['goal', 'personality', 'speech_style', 'abilities', 'limitations'] as $key) {
+                if (($value = $text($character[$key] ?? null)) !== null) {
+                    $fields[] = ['label' => SettingVersionDiff::LABELS[$key], 'value' => $value];
                 }
             }
+            foreach (array_diff_key($character, array_flip(['name', 'role', 'goal', 'personality', 'speech_style', 'abilities', 'limitations'])) as $key => $value) {
+                $fields[] = ['label' => SettingVersionDiff::LABELS[$key] ?? (string) $key, 'value' => is_array($value) ? implode('；', SettingVersionDiff::lines($value)) : (string) $value];
+            }
+            $characters[] = ['name' => $text($character['name'] ?? null) ?? '未命名人物', 'role' => $text($character['role'] ?? null), 'fields' => $fields];
+        }
+        $world = (array) ($setting['world'] ?? []);
+        $tone = [];
+        foreach (['pov', 'pacing', 'narrative_style'] as $key) {
+            if (($value = $text($setting['tone'][$key] ?? null)) !== null) {
+                $tone[] = ['label' => SettingVersionDiff::LABELS[$key], 'value' => $value];
+            }
+        }
+        $known = ['core_conflict', 'open_questions', 'characters', 'world', 'tone', 'preserved_details'];
+        $other = SettingVersionDiff::lines(array_diff_key($setting, array_flip($known)));
+        $other = [...$other, ...SettingVersionDiff::lines(array_diff_key($world, array_flip(['era', 'background', 'rules'])), '世界 / '),
+            ...SettingVersionDiff::lines(array_diff_key((array) ($setting['tone'] ?? []), array_flip(['pov', 'pacing', 'narrative_style'])), '基调 / ')];
 
-            return $lines;
-        };
-
-        return implode("\n", [...$walk($version->setting), ...$walk($version->decisions, '决定 / ')]);
+        return [
+            'core_conflict' => $text($setting['core_conflict'] ?? null),
+            'open_questions' => array_values(array_filter(array_map($question, is_array($setting['open_questions'] ?? null) ? $setting['open_questions'] : []), fn (array $item): bool => $item['question'] !== null)),
+            'decisions' => array_values(array_filter(array_map($question, $version->decisions), fn (array $item): bool => $item['answer'] !== null || $item['question'] !== null)),
+            'characters' => $characters,
+            'world' => ['era' => $text($world['era'] ?? null), 'background' => $text($world['background'] ?? null), 'rules' => $list($world['rules'] ?? null)],
+            'tone' => $tone,
+            'preserved' => $list($setting['preserved_details'] ?? null),
+            'other' => $other,
+        ];
     }
 }

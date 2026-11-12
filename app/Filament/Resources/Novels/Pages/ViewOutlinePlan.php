@@ -87,14 +87,14 @@ class ViewOutlinePlan extends Page implements HasTable
                 TextEntry::make('roadmap')->label('全书走向候选')->state(fn (): ?string => data_get($this->plan()?->roadmap, 'whole_story_summary'))->columnSpanFull(),
                 TextEntry::make('ending')->label('终局方向候选')->state(fn (): ?string => data_get($this->plan()?->roadmap, 'ending_direction'))->columnSpanFull(),
             ]),
-            Section::make('批次尝试与费用')->schema([
+            EmbeddedTable::make(),
+            Section::make('批次尝试与费用')->collapsible()->collapsed()->schema([
                 RepeatableEntry::make('attempts')->label('大纲批次')->state(fn (): array => $this->attempts())->columns(3)->schema([
                     TextEntry::make('id')->label('阶段编号'), TextEntry::make('range')->label('章序范围'), TextEntry::make('status')->label('执行状态'),
                     TextEntry::make('duration')->label('耗时'), TextEntry::make('cost')->label('费用'), TextEntry::make('cost_log_id')->label('调用日志编号')->placeholder('尚无记录'),
                     TextEntry::make('error')->label('失败说明')->placeholder('无')->columnSpanFull(),
                 ]),
             ]),
-            EmbeddedTable::make(),
         ]);
     }
 

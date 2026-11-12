@@ -60,19 +60,19 @@ class NovelInfolist
                         TextEntry::make('creative_brief_text')->label('补充创作要求')->columnSpanFull()->visible(fn (Novel $record): bool => filled($record->creative_brief))
                             ->state(fn (Novel $record): array => collect($record->creative_brief ?? [])->map(fn (string $value, string $key): string => (CreateNovelService::BRIEF_FIELDS[$key] ?? $key).'：'.$value)->values()->all())->listWithLineBreaks(),
                     ]),
-                Section::make('预算与费用')->description('设了预算时，每次请求前按单价上限预留，余额不足即在发送前停下；未设预算时只受执行次数上限约束。金额未知不等于免费。')->columnSpanFull()->schema([
+                Section::make('预算与费用')->collapsible()->description('设了预算时，每次请求前按单价上限预留，余额不足即在发送前停下；未设预算时只受执行次数上限约束。金额未知不等于免费。')->columnSpanFull()->schema([
                     TextEntry::make('budget_summary')->label('预算')->state(fn (Novel $record): string => app(NovelBudget::class)->describe($record))
                         ->color(fn (Novel $record): ?string => match (app(NovelBudget::class)->summary($record)['state']) {
                             'exhausted' => 'danger', 'warning' => 'warning', default => null
                         }),
                     TextEntry::make('cost_summary')->label('全部调用')->state(fn (Novel $record): string => app(NovelCostSummary::class)->describe(app(NovelCostSummary::class)->forNovel($record->id))),
                 ]),
-                Section::make('篇幅计划')->collapsible()->collapsed()->columns(3)->columnSpanFull()->schema([
+                Section::make('篇幅计划')->collapsible()->columns(3)->columnSpanFull()->schema([
                     TextEntry::make('target_chapters')->label('目标章数')->suffix('章'),
                     TextEntry::make('chapter_length_policy.min_characters')->label('每章字数下限')->suffix('字')->placeholder('未设置'),
                     TextEntry::make('chapter_length_policy.max_characters')->label('每章字数上限')->suffix('字')->placeholder('未设置'),
                 ]),
-                Section::make('运行状态')->columns(3)->columnSpanFull()
+                Section::make('运行状态')->collapsible()->columns(3)->columnSpanFull()
                     ->description(fn (Novel $record): string => $record->generation_mode === GenerationMode::SettingReal ? '设定和大纲按显式操作执行；每次尝试消耗执行次数。成功大纲不代表正文已生成。' : '执行次数达到上限会暂停；开启细纲且上限为5时，通常在导出前暂停。')
                     ->schema([
                         TextEntry::make('status')->label('状态')->badge()
@@ -86,7 +86,7 @@ class NovelInfolist
                         TextEntry::make('created_at')->label('创建时间')->dateTime('Y-m-d H:i:s'),
                         TextEntry::make('updated_at')->label('最近活动')->dateTime('Y-m-d H:i:s'),
                     ]),
-                Section::make('最新确认设定版本')->columnSpanFull()
+                Section::make('最新确认设定版本')->collapsible()->columnSpanFull()
                     ->visible(fn (Novel $record): bool => $record->generation_mode === GenerationMode::SettingReal && $record->settingConfirmations()->exists())
                     ->description('这里保存作者修订与决定；下方供应商原始候选保留原样。确认不等于已经发送大纲请求。')
                     ->schema([

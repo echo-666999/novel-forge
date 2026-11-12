@@ -21,6 +21,7 @@ use App\Services\Pipeline\NovelProgressQuery;
 use App\Services\Pipeline\OutlineGenerationService;
 use App\Services\Pipeline\ProductionRunService;
 use App\Settings\GeneralSettings;
+use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Facades\Filament;
 use Filament\Forms\Components\Checkbox;
@@ -29,6 +30,8 @@ use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ViewRecord;
+use Illuminate\Contracts\Support\Htmlable;
+use Illuminate\Support\HtmlString;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use Symfony\Component\HttpFoundation\StreamedResponse;
@@ -43,6 +46,18 @@ class ViewNovel extends ViewRecord
 
     /** 子导航排序。 */
     protected static ?int $navigationSort = 0;
+
+    /** 子导航不用默认的眼睛图标，改用与分组内页面（如“设定与蓝图”）相同的圆点标记，保持左侧对齐一致。 */
+    public static function getNavigationIcon(): string|BackedEnum|Htmlable|null
+    {
+        return new HtmlString('<span class="fi-sidebar-item-grouped-border"><span class="fi-sidebar-item-grouped-border-part"></span></span>');
+    }
+
+    /** 当前页时圆点改用主色；圆点包在图标容器内，Filament 只匹配直接子元素的激活样式不会生效，这里直接着色。 */
+    public static function getActiveNavigationIcon(): string|BackedEnum|Htmlable|null
+    {
+        return new HtmlString('<span class="fi-sidebar-item-grouped-border"><span class="fi-sidebar-item-grouped-border-part" style="background-color: var(--primary-700)"></span></span>');
+    }
 
     /** 请求预算由已冻结的细纲开关和当前修订设置共同决定。 */
     private function contentRequestCap(): int
