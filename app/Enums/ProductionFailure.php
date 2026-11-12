@@ -29,6 +29,9 @@ enum ProductionFailure: string
     /** 评审与事件提取停止，详情为提交准备停止原因。 */
     case SubmissionStopped = 'SUBMISSION_STOPPED';
 
+    /** 按评审定点修订后又未通过推进或钩子检查：章纲要求与已提交正文互相否决，需作者修订章纲。 */
+    case OutlineCanonConflict = 'OUTLINE_CANON_CONFLICT';
+
     /** 领取超时后已完成本地对账。 */
     case InterruptedReconciled = 'INTERRUPTED_RECONCILED';
 
@@ -60,7 +63,8 @@ enum ProductionFailure: string
         'user_paused' => '作者已暂停', 'REVIEW_NOT_PASSED' => '独立评审未通过', 'EVENT_VALIDATION_BLOCKED' => '事件提取未通过确定性校验',
         'INVALID_RESPONSE' => '评审或提取响应无效', 'UNKNOWN_RESPONSE' => '评审或提取结果未知，可能已计费',
         'budget_exhausted' => '预算不足或未登记单价，已在请求前停止', 'BUDGET_EXHAUSTED' => '预算不足或未登记单价，已在请求前停止',
-        'context_capacity' => '上下文超出容量，已在请求前停止', 'PROVIDER_FAILED' => '模型服务明确返回失败',
+        'context_capacity' => '上下文超出容量，已在请求前停止', 'CONTEXT_CAPACITY' => '上下文超出容量，已在请求前停止', 'PROVIDER_FAILED' => '模型服务明确返回失败',
+        'insufficient_balance' => '模型服务账户余额不足（HTTP 402）', 'INSUFFICIENT_BALANCE' => '模型服务账户余额不足（HTTP 402）',
     ];
 
     /** 单个停止原因码的中文说明；未登记的码原样返回，空值返回空。 */
@@ -107,7 +111,8 @@ enum ProductionFailure: string
             self::ContentStopped => '正文生成停止'.$detailLabel,
             self::ContentParagraphIncomplete => '正文有段落在句中截断',
             self::SubmissionStopped => '评审与事件提取停止'.$detailLabel,
-            self::InterruptedReconciled => '运行超时中断，已完成本地对账',
+            self::OutlineCanonConflict => '章纲要求与已提交正文冲突：按评审修订后仍未通过推进检查',
+            self::InterruptedReconciled => '运行超时中断，已完成本地对账（在途请求记为结果未知）',
             self::WorkerInterrupted => '队列消费者中断，需要对账后恢复',
             self::DispatchFailed => '任务投递失败，尚未发送模型请求',
             self::UnknownStep => '运行步骤异常',
@@ -116,8 +121,11 @@ enum ProductionFailure: string
         $advice = match (true) {
             self::isAutomaticallyRecoverable($error, $step) => '系统会针对这类明确失败自动恢复一次；再次失败时请点击“恢复自动生成”。',
             $case === self::UserPaused => '确认后点击“恢复自动生成”从断点继续。',
+            $case === self::OutlineCanonConflict => '评审要求的改法与本章章纲（推进点或钩子）互相否决，继续重试只会消耗请求。请到「大纲规划」修订本章章纲，再点击“恢复自动生成”并选择整章重写。',
+            in_array($detail, ['insufficient_balance', 'INSUFFICIENT_BALANCE'], true) => '请到模型服务商后台充值，然后点击“恢复自动生成”从当前步骤继续；这次失败不占用自动恢复次数。',
+            in_array($detail, ['context_capacity', 'CONTEXT_CAPACITY'], true) => '本次请求在发送前因上下文超限被拦下，未产生费用。点击“恢复自动生成”并选择整章重写，会按当前上下文协议重新冻结前文。',
             $detail === 'REVIEW_NOT_PASSED' => '点击“恢复自动生成”会按评审意见做一次定点修订，再重新评审。',
-            in_array($detail, ['unknown', 'UNKNOWN_RESPONSE'], true) || $case === self::WorkerInterrupted => '先在成本明细核对未知请求，再勾选“已核查未知响应”后恢复。',
+            in_array($detail, ['unknown', 'UNKNOWN_RESPONSE'], true) || in_array($case, [self::WorkerInterrupted, self::InterruptedReconciled], true) => '先在成本明细核对未知请求，再勾选“已核查未知响应”后恢复。',
             $detail === 'execution_limit' => '在恢复时确认提高本小说执行上限并填写原因。',
             in_array($detail, ['budget_exhausted', 'BUDGET_EXHAUSTED'], true) => '在工作台“调整预算”提高预算，或在“模型单价”登记该模型的单价后，点击“恢复自动生成”。',
             default => '查看正文与评审详情后，点击“恢复自动生成”从断点继续；必要时选择整章重写或更换模型。',

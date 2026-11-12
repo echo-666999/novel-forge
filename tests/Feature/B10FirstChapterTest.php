@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Enums\ProductionFailure;
 use App\Filament\Resources\Novels\Pages\CreateNovel;
 use App\Filament\Resources\Novels\Pages\ViewNovelRun;
 use App\Jobs\AdvanceProductionRunJob;
@@ -12,8 +13,11 @@ use App\Models\CostLog;
 use App\Models\Novel;
 use App\Models\ProductionRun;
 use App\Models\User;
+use App\Services\Pipeline\ChapterProductionStepper;
 use App\Services\Pipeline\PlanningJson;
 use App\Services\Pipeline\ProductionRunService;
+use App\Services\Pipeline\ProductionWatchdog;
+use App\Services\Search\EmbeddingService;
 use App\Settings\GeneralSettings;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
@@ -25,6 +29,7 @@ use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 use Livewire\Livewire;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /** 通过真实SDK适配器的隔离响应验证从新创意到正式提交，不冒充文学验收。 */
@@ -43,6 +48,9 @@ class B10FirstChapterTest extends TestCase
 
     /** 首次提取返回事实类别错误，后继响应恢复正确类别。 */
     private bool $rejectFirstExtraction = false;
+
+    /** 供应商余额不足（HTTP 402）的阶段：content 或 submission，空值表示不触发。 */
+    private ?string $paymentRequiredAt = null;
 
     /** 项目迁移包含自动授权表，不加载供应商扩展。 */
     protected function migrateFreshUsing(): array
@@ -63,6 +71,10 @@ class B10FirstChapterTest extends TestCase
                 return Http::response(['error' => ['message' => '隔离拒绝']], 400);
             }
             $log = CostLog::latest('id')->firstOrFail();
+            $stage = isset($log->request_parameters['purpose']) ? 'submission' : (isset($log->request_parameters['step']) ? 'content' : null);
+            if ($this->paymentRequiredAt !== null && $this->paymentRequiredAt === $stage) {
+                return Http::response(['error' => ['message' => 'Insufficient Balance', 'type' => 'insufficient_balance_error']], 402);
+            }
             $version = $log->request_parameters['schema_version'];
             if ($version === 'b02-setting-v1') {
                 $data = B02SettingTest::setting();
@@ -294,10 +306,27 @@ class B10FirstChapterTest extends TestCase
     {
         $run = $this->start();
         $run->update(['status' => 'running', 'step' => 'decision', 'lease_token' => (string) Str::uuid7(), 'lease_expires_at' => now()->subMinute()]);
-        CostLog::factory()->create(['novel_id' => $run->novel_id, 'mode' => 'real', 'status' => 'pending']);
+        $inFlight = CostLog::factory()->create(['novel_id' => $run->novel_id, 'mode' => 'real', 'status' => 'pending', 'started_at' => now()->subMinutes(3)]);
+        // 租约未到期时拒绝接管，运行和在途请求保持不变。
+        $run->update(['lease_expires_at' => now()->addMinute()]);
+        try {
+            app(ProductionRunService::class)->reconcile($run->id, User::findOrFail($run->author_id));
+            $this->fail('租约未到期仍被接管');
+        } catch (InvalidArgumentException $exception) {
+            $this->assertSame('领取尚未超时，不能接管运行中的请求', $exception->getMessage());
+        }
+        $this->assertSame('running', $run->refresh()->status);
+        $this->assertSame('pending', $inFlight->refresh()->status);
+        $run->update(['lease_expires_at' => now()->subMinute()]);
+        // 领取之前开始的请求和同书检索嵌入不属于本次领取，不能被改成未知。
+        $earlier = CostLog::factory()->create(['novel_id' => $run->novel_id, 'mode' => 'real', 'status' => 'pending', 'started_at' => now()->subMinutes(30)]);
+        $embedding = CostLog::factory()->create(['novel_id' => $run->novel_id, 'mode' => 'real', 'status' => 'pending', 'started_at' => now()->subMinutes(3), 'route_version' => EmbeddingService::PROFILE]);
         app(ProductionRunService::class)->reconcile($run->id, User::findOrFail($run->author_id));
         $this->assertSame('failed', $run->refresh()->status);
-        $this->assertSame('unknown', CostLog::sole()->status);
+        $this->assertSame('unknown', $inFlight->refresh()->status);
+        $this->assertSame('pending', $earlier->refresh()->status);
+        $this->assertSame('pending', $embedding->refresh()->status);
+        $this->assertSame('author', collect($run->history)->last()['operator']);
         $this->assertNull($run->lease_token);
         Http::assertNothingSent();
     }
@@ -310,5 +339,136 @@ class B10FirstChapterTest extends TestCase
         (new AdvanceProductionRunJob($run->id))->handle(app(ProductionRunService::class));
         Http::assertNothingSent();
         Queue::assertNothingPushed();
+    }
+
+    /** 看门狗只在租约过期超过宽限期后对账，不重发请求，并说明恢复前须核对未知请求。 */
+    public function test_watchdog_reconciles_expired_claim_after_grace_without_reissuing(): void
+    {
+        $run = $this->start();
+        $token = (string) Str::uuid7();
+        $run->update(['status' => 'running', 'step' => 'decision', 'lease_token' => $token, 'lease_expires_at' => now()->subMinutes(ProductionWatchdog::RECONCILE_GRACE_MINUTES - 1)]);
+        $inFlight = CostLog::factory()->create(['novel_id' => $run->novel_id, 'mode' => 'real', 'status' => 'pending', 'started_at' => now()->subMinutes(12)]);
+
+        $this->artisan('app:watchdog')->assertSuccessful();
+        $this->assertSame('running', $run->refresh()->status);
+        $this->assertSame('pending', $inFlight->refresh()->status);
+
+        $run->update(['lease_expires_at' => now()->subMinutes(ProductionWatchdog::RECONCILE_GRACE_MINUTES + 1)]);
+        $this->artisan('app:watchdog')->assertSuccessful();
+        $run->refresh();
+        $this->assertSame('failed', $run->status);
+        $this->assertSame('INTERRUPTED_RECONCILED', $run->error);
+        $this->assertNull($run->lease_token);
+        $this->assertSame('watchdog', collect($run->history)->last()['operator']);
+        $this->assertSame('unknown', $inFlight->refresh()->status);
+        $this->assertStringContainsString('对账中断运行 1 个', app(ProductionWatchdog::class)->summary());
+        $this->assertStringContainsString('已核查未知响应', ProductionFailure::describe($run->error, $run->step)['advice']);
+        Http::assertNothingSent();
+        Queue::assertNothingPushed();
+    }
+
+    /** 消息丢失的待执行运行由看门狗重新投递一次；重复投递不会重复执行。 */
+    public function test_watchdog_redispatches_lost_pending_message_once(): void
+    {
+        $run = $this->start();
+        $this->artisan('app:watchdog')->assertSuccessful();
+        Queue::assertNothingPushed();
+
+        $this->travel(ProductionWatchdog::STALE_PENDING_MINUTES + 1)->minutes();
+        $this->artisan('app:watchdog')->assertSuccessful();
+        $this->artisan('app:watchdog')->assertSuccessful();
+        Queue::assertPushed(AdvanceProductionRunJob::class, fn (AdvanceProductionRunJob $job): bool => $job->runId === $run->id);
+        Queue::assertPushed(AdvanceProductionRunJob::class, 1);
+        $this->assertSame('watchdog_redispatch', collect($run->refresh()->history)->last()['action']);
+        $this->assertSame('pending', $run->status);
+        Http::assertNothingSent();
+    }
+
+    /** 正式提交已落库后消费者被杀：看门狗对账、作者恢复后按幂等键重放，不重复提交、不新增请求。 */
+    public function test_worker_killed_after_commit_resumes_from_checkpoint_without_duplicate_commit(): void
+    {
+        $service = app(ProductionRunService::class);
+        $run = $this->start();
+        for ($i = 0; $i < 20 && $run->status === 'pending' && $run->step !== 'commit'; $i++) {
+            $run = $service->advance($run->id);
+        }
+        $this->assertSame('commit', $run->step, $run->error ?? '');
+        $requests = $service->requestCount($run);
+        // 模拟消费者执行完提交事务、尚未保存运行断点即被杀死。
+        $novel = Novel::findOrFail($run->novel_id);
+        app(ChapterProductionStepper::class)->perform(clone $run, $novel, User::findOrFail($run->author_id), $run->artifacts);
+        $this->assertSame(1, CanonicalCommit::count());
+        $run->update(['status' => 'running', 'lease_token' => (string) Str::uuid7(), 'lease_expires_at' => now()->subMinutes(ProductionWatchdog::RECONCILE_GRACE_MINUTES + 1)]);
+
+        $this->artisan('app:watchdog')->assertSuccessful();
+        $this->assertSame('failed', $run->refresh()->status);
+        $run = $service->retry($run->id, User::findOrFail($run->author_id));
+        $run = $service->advance($run->id);
+
+        $this->assertSame('completed', $run->status, $run->error ?? '');
+        $this->assertSame(1, CanonicalCommit::count());
+        $this->assertSame(1, $novel->refresh()->chapters_done);
+        $this->assertSame($requests, $service->requestCount($run));
+    }
+
+    /** 按评审定点修订后又未通过推进检查：停为章纲冲突，不自动重试，提示作者修订章纲。 */
+    public function test_review_revision_failing_progression_stops_as_outline_conflict(): void
+    {
+        $service = app(ProductionRunService::class);
+        $run = $this->start();
+        $this->rejectReview = true;
+        for ($i = 0; $i < 20 && $run->status === 'pending'; $i++) {
+            $run = $service->advance($run->id);
+        }
+        $this->assertSame('SUBMISSION_STOPPED:REVIEW_NOT_PASSED', $run->error);
+        $this->rejectReview = false;
+        $run = $service->retry($run->id, User::findOrFail($run->author_id));
+        $body = ChapterGenerationRun::findOrFail($run->artifacts['body_run_id']);
+        $this->assertArrayHasKey('submission_review', $body->config);
+        // 模拟修订稿在推进与钩子检查上用尽修订次数。
+        ChapterGenerationRun::whereKey($body->id)->update(['status' => 'paused', 'stop_reason' => 'retry_limit']);
+        $requests = $service->requestCount($run);
+
+        $run = $service->advance($run->id);
+
+        $this->assertSame('failed', $run->status);
+        $this->assertSame('OUTLINE_CANON_CONFLICT', $run->error);
+        $this->assertFalse(collect($run->history)->contains(fn (array $entry): bool => ($entry['action'] ?? null) === 'automatic_recovery' && ($entry['reason'] ?? null) === 'OUTLINE_CANON_CONFLICT'));
+        $this->assertSame($requests, $service->requestCount($run));
+        $this->assertStringContainsString('修订本章章纲', ProductionFailure::describe($run->error, $run->step)['advice']);
+    }
+
+    /** 供应商余额不足（HTTP 402）单独标出，不自动重试，提示充值后恢复。
+     * @return array<string, array{string, string}>
+     */
+    public static function insufficientBalanceStages(): array
+    {
+        return ['正文' => ['content', 'CONTENT_STOPPED:insufficient_balance'], '评审与提取' => ['submission', 'SUBMISSION_STOPPED:INSUFFICIENT_BALANCE']];
+    }
+
+    #[DataProvider('insufficientBalanceStages')]
+    public function test_insufficient_balance_stops_with_readable_reason(string $stage, string $error): void
+    {
+        $service = app(ProductionRunService::class);
+        $run = $this->start();
+        $this->paymentRequiredAt = $stage;
+        for ($i = 0; $i < 20 && $run->status === 'pending'; $i++) {
+            $run = $service->advance($run->id);
+        }
+
+        $this->assertSame('failed', $run->status);
+        $this->assertSame($error, $run->error);
+        $this->assertFalse(collect($run->history)->contains('action', 'automatic_recovery'));
+        $this->assertSame('http_402', CostLog::latest('id')->firstOrFail()->error_category);
+        $description = ProductionFailure::describe($run->error, $run->step);
+        $this->assertStringContainsString('余额不足', $description['label']);
+        $this->assertStringContainsString('充值', $description['advice']);
+
+        $this->paymentRequiredAt = null;
+        $run = $service->retry($run->id, User::findOrFail($run->author_id));
+        for ($i = 0; $i < 20 && $run->status === 'pending'; $i++) {
+            $run = $service->advance($run->id);
+        }
+        $this->assertSame('completed', $run->status, $run->error ?? '');
     }
 }

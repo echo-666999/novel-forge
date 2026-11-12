@@ -629,6 +629,8 @@ class B04ExecutionTest extends TestCase
             $this->assertNotNull($content);
             $this->assertStringContainsString('queue:listen redis_content_acceptance --queue=content-acceptance', $content['command']);
             $this->assertStringContainsString('--timeout=225', $content['command']);
+            // 看门狗依赖调度器，本地开发入口须一并启动。
+            $this->assertStringContainsString('schedule:work', $commands->firstWhere('name', 'schedule')['command'] ?? '');
             Http::assertNothingSent();
         } finally {
             app()->instance('env', $previous);

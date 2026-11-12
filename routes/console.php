@@ -19,3 +19,6 @@ Artisan::command('app:prune-novel-exports', function (): void {
 })->purpose('清理过期的私有导出文件并隔离超时导出任务');
 
 Schedule::command('app:prune-novel-exports')->hourly()->withoutOverlapping();
+
+// 生产运行看门狗：只做本地对账和重新投递丢失的消息，不发送或重发任何付费请求。
+Schedule::command('app:watchdog')->everyMinute()->withoutOverlapping();

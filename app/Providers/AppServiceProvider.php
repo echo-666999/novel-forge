@@ -44,6 +44,8 @@ class AppServiceProvider extends ServiceProvider
             // 导出使用独立无付费队列，随标准开发入口启动消费者。
             DevCommands::artisan('queue:listen database --queue=novel-exports --tries=1 --timeout=75 --memory=256 --no-interaction', 'exports');
             DevCommands::artisan('queue:listen redis_content_acceptance --queue=content-acceptance --tries=1 --timeout=225 --memory=256 --no-interaction', 'content');
+            // 调度器驱动看门狗（每分钟本地对账）、检索投影与导出清理；均不发送付费请求。
+            DevCommands::artisan('schedule:work --no-interaction', 'schedule');
         }
     }
 }

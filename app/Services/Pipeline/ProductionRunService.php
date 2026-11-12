@@ -15,6 +15,7 @@ use App\Services\Ai\AiGenerationException;
 use App\Services\Ai\AiTextGenerationService;
 use App\Services\Ai\ModelProfiles;
 use App\Services\Ai\TextRequestOptions;
+use App\Services\Search\EmbeddingService;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -26,6 +27,9 @@ final class ProductionRunService
 {
     /** 全书规划步骤；章节步骤由 ChapterProductionStepper 负责。 */
     public const PLANNING_STEPS = ['setting', 'decision', 'outline'];
+
+    /** 单步领取租约。队列任务210秒超时先于租约到期，租约过期即可判定领取者已经不在。 */
+    public const LEASE_MINUTES = 5;
 
     public function __construct(private ChapterProductionStepper $stepper) {}
 
@@ -108,7 +112,7 @@ final class ProductionRunService
     public function advance(int $id): ProductionRun
     {
         $token = (string) Str::uuid7();
-        $claimed = ProductionRun::whereKey($id)->where('status', 'pending')->update(['status' => 'running', 'lease_token' => $token, 'lease_expires_at' => now()->addMinutes(5)]);
+        $claimed = ProductionRun::whereKey($id)->where('status', 'pending')->update(['status' => 'running', 'lease_token' => $token, 'lease_expires_at' => now()->addMinutes(self::LEASE_MINUTES)]);
         $run = ProductionRun::findOrFail($id);
         if (! $claimed) {
             return $run;
@@ -235,19 +239,23 @@ final class ProductionRunService
         $run->artifacts = $artifacts;
     }
 
-    /** 超时后显式核对各阶段中断，不自动发送任何模型请求。 */
-    public function reconcile(int $id, User $author): void
+    /** 超时后核对各阶段中断，不自动发送任何模型请求；作者为空表示由看门狗发起。 */
+    public function reconcile(int $id, ?User $author): void
     {
         // 全部为本地结算，事务失败时恢复原领取，避免遗留不可恢复的中间状态。
         DB::transaction(function () use ($id, $author): void {
             $run = ProductionRun::findOrFail($id);
-            $run->assertDelegation($run->novel_id, $author->id);
-            if ($run->status !== 'running' || $run->lease_expires_at === null || $run->lease_expires_at->isFuture()) {
+            if ($author !== null) {
+                $run->assertDelegation($run->novel_id, $author->id);
+            }
+            if ($run->status !== 'running' || $run->lease_expires_at === null) {
                 throw new InvalidArgumentException('领取尚未超时，不能接管运行中的请求');
             }
-            // 先独占中断核对，防止两个恢复请求互相覆盖状态。
-            if (! ProductionRun::whereKey($id)->where('status', 'running')->where('lease_token', $run->lease_token)->update(['status' => 'reconciling'])) {
-                throw new InvalidArgumentException('已有其他请求正在核对中断');
+            // 到期判断放在数据库内与写入时同一时区约定下比较；PHP侧读回的时间带数据库会话时区，换算后会把已过期的租约误判为未到期。
+            // 同一条件语句独占中断核对，防止两个恢复请求互相覆盖状态。
+            if (! ProductionRun::whereKey($id)->where('status', 'running')->where('lease_token', $run->lease_token)->where('lease_expires_at', '<=', now())->update(['status' => 'reconciling'])) {
+                throw new InvalidArgumentException(ProductionRun::whereKey($id)->where('status', 'running')->where('lease_expires_at', '>', now())->exists()
+                    ? '领取尚未超时，不能接管运行中的请求' : '已有其他请求正在核对中断');
             }
             $novel = Novel::findOrFail($run->novel_id);
             if ($run->step === 'setting') {
@@ -260,9 +268,13 @@ final class ProductionRunService
             } else {
                 $this->stepper->interrupt($run, $novel);
             }
-            CostLog::where('novel_id', $novel->id)->where('status', 'pending')->update(['status' => 'unknown', 'error_category' => 'automation_interrupted', 'error_message' => '自动流程中断，结果未知，未自动重发', 'finished_at' => now()]);
+            // 只结算本次领取期间发出的文本请求；同书检索嵌入等其他在途请求不受影响。
+            CostLog::where('novel_id', $novel->id)->where('status', 'pending')
+                ->where('started_at', '>=', $run->lease_expires_at->subMinutes(self::LEASE_MINUTES))
+                ->where(fn ($query) => $query->whereNull('route_version')->orWhere('route_version', '!=', EmbeddingService::PROFILE))
+                ->update(['status' => 'unknown', 'error_category' => 'automation_interrupted', 'error_message' => '自动流程中断，结果未知，未自动重发', 'finished_at' => now()]);
             $run->update(['status' => 'failed', 'error' => 'INTERRUPTED_RECONCILED', 'lease_token' => null, 'lease_expires_at' => null,
-                'history' => [...$run->history, ['action' => 'reconcile', 'operator_id' => $author->id, 'at' => now()->toIso8601String()]]]);
+                'history' => [...$run->history, ['action' => 'reconcile', 'operator_id' => $author?->id, 'operator' => $author === null ? 'watchdog' : 'author', 'at' => now()->toIso8601String()]]]);
         });
     }
 

@@ -2,6 +2,7 @@
 
 namespace App\Services\Pipeline;
 
+use App\Enums\ProductionFailure;
 use App\Models\ChapterEventExtraction;
 use App\Models\ChapterGenerationRun;
 use App\Models\ChapterReview;
@@ -54,6 +55,10 @@ final class ChapterProductionStepper
                     $artifacts['version_id'] = $body->chapter->current_candidate_version_id;
                     $run->step = 'submission';
                 } elseif ($body->status !== 'pending') {
+                    // 按独立评审定点修订后又未通过推进或钩子检查：评审与章纲互相否决，直接交作者修订章纲，不再消耗自动重试。
+                    if (isset($body->config['submission_review']) && in_array($body->stop_reason, ['retry_limit', 'progression_insufficient'], true)) {
+                        throw new InvalidArgumentException(ProductionFailure::OutlineCanonConflict->value);
+                    }
                     throw new InvalidArgumentException('CONTENT_STOPPED:'.$body->stop_reason);
                 }
                 break;

@@ -421,7 +421,14 @@ final class ContentExecutionService
             $log = $exception->costLogId === null ? null : CostLog::find($exception->costLogId);
             // 上下文容量与预算拦截都发生在请求前，保留原因，不当作供应商失败。
             $budget = in_array($exception->category, ['budget_exhausted', 'budget_price_unknown'], true);
-            $failure = $exception->category === 'context_capacity' ? 'context_capacity' : ($budget ? 'budget_exhausted' : ($exception->status === 'unknown' ? 'unknown' : 'provider_failed'));
+            // 供应商明确返回402（余额不足）单独标出，提示充值后恢复，不归入可自动重试的供应商失败。
+            $failure = match (true) {
+                $exception->category === 'context_capacity' => 'context_capacity',
+                $budget => 'budget_exhausted',
+                $exception->status === 'unknown' => 'unknown',
+                $exception->category === 'http_402' => 'insufficient_balance',
+                default => 'provider_failed',
+            };
             $error = $exception->category === 'context_capacity' || $budget ? $exception->getMessage() : null;
         } catch (Throwable $exception) {
             $failure = $log?->status === 'succeeded' ? 'invalid_schema' : (CostLog::where('novel_stage_id', $stage->id)->exists() ? 'unknown' : 'audit_failed');

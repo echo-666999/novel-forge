@@ -7,6 +7,7 @@ use App\Models\Novel;
 use App\Models\StoryOutboxEvent;
 use App\Services\Pipeline\BackendCapabilities;
 use App\Services\Pipeline\PlanningJson;
+use App\Services\Pipeline\ProductionWatchdog;
 use App\Services\Pipeline\WorkerHeartbeat;
 use App\Services\Search\SearchIndexStatus;
 use BackedEnum;
@@ -52,6 +53,7 @@ class SystemHealth extends Page implements HasTable
     {
         return $schema->components([Section::make('系统观测')->description('通知投递时间是全局标记；检索订阅者不会更新此字段，不能用它判断检索是否已经消费。')->schema([
             TextEntry::make('worker')->label('消费者心跳')->state(fn (): string => app(WorkerHeartbeat::class)->summary()),
+            TextEntry::make('watchdog')->label('生产看门狗')->state(fn (): string => app(ProductionWatchdog::class)->summary()),
             TextEntry::make('index')->label('检索投影覆盖')->state(fn (): string => app(SearchIndexStatus::class)->summary()),
             TextEntry::make('outbox')->label('未标记投递的事务通知')->state(fn (): int => StoryOutboxEvent::whereNull('published_at')->count()),
             TextEntry::make('oldest')->label('最早未标记投递时间')->state(fn (): ?string => StoryOutboxEvent::whereNull('published_at')->min('created_at'))->placeholder('没有待投递通知'),
