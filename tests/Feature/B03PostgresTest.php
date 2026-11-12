@@ -167,6 +167,11 @@ class B03PostgresTest extends TestCase
         $sceneMigration = require database_path('migrations/2026_11_07_132700_create_scene_plan_versions_table.php');
         // 章纲修订同样引用大纲章节，先撤销空修订表，恢复时最后重建。
         $outlineRevisionMigration = require database_path('migrations/2026_11_11_000518_create_outline_chapter_revisions_table.php');
+        // A-09 基线依赖正式提交与伏笔证据，最先撤销、最后重建。
+        $formalRevisionMigration = require database_path('migrations/2026_11_12_140653_create_formal_revisions_table.php');
+        $formalRevisionMigration->down();
+        $baselineMigration = require database_path('migrations/2026_11_12_133335_create_canonical_baselines_table.php');
+        $baselineMigration->down();
         $outlineRevisionMigration->down();
         $sceneMigration->down();
         $readingMigration->down();
@@ -193,6 +198,8 @@ class B03PostgresTest extends TestCase
         $readingMigration->up();
         $sceneMigration->up();
         $outlineRevisionMigration->up();
+        $baselineMigration->up();
+        $formalRevisionMigration->up();
         $this->assertSame($beforeNovel, Novel::findOrFail($stage->novel_id)->getRawOriginal());
         $this->assertSame($beforeStage, $stage->fresh()->getRawOriginal());
     }

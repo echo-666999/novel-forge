@@ -3,12 +3,17 @@
 namespace Tests\Feature;
 
 use App\Enums\ProductionFailure;
+use App\Enums\Stage;
 use App\Filament\Resources\Novels\Pages\CreateNovel;
+use App\Filament\Resources\Novels\Pages\FormalRevisions;
+use App\Filament\Resources\Novels\Pages\ManageBaselines;
 use App\Filament\Resources\Novels\Pages\ViewChapterContent;
 use App\Filament\Resources\Novels\Pages\ViewForeshadows;
 use App\Filament\Resources\Novels\Pages\ViewNovel;
 use App\Filament\Resources\Novels\Pages\ViewOutlinePlan;
 use App\Jobs\AdvanceProductionRunJob;
+use App\Jobs\FormalRevisionStepJob;
+use App\Models\CanonicalBaseline;
 use App\Models\CanonicalCommit;
 use App\Models\Chapter;
 use App\Models\ChapterEventExtraction;
@@ -19,18 +24,26 @@ use App\Models\ChapterVersion;
 use App\Models\ContextManifest;
 use App\Models\CostLog;
 use App\Models\Foreshadow;
+use App\Models\ForeshadowEvidence;
+use App\Models\FormalRevision;
 use App\Models\ModelPrice;
 use App\Models\Novel;
+use App\Models\NovelStage;
 use App\Models\OutlineChapterRevision;
 use App\Models\ProductionRun;
+use App\Models\StoryEvent;
 use App\Models\User;
 use App\Services\Ai\AiTextGenerationService;
+use App\Services\Pipeline\CanonicalBaselines;
 use App\Services\Pipeline\CanonicalChapterContext;
 use App\Services\Pipeline\ChapterSubmissionService;
 use App\Services\Pipeline\ContentExecutionService;
 use App\Services\Pipeline\ContentGenerationService;
 use App\Services\Pipeline\ContextBuilder;
 use App\Services\Pipeline\ForeshadowLedger;
+use App\Services\Pipeline\FormalChapterExport;
+use App\Services\Pipeline\FormalRevisionContract;
+use App\Services\Pipeline\FormalRevisionService;
 use App\Services\Pipeline\LegacyContentSources;
 use App\Services\Pipeline\NovelBudget;
 use App\Services\Pipeline\NovelProgressQuery;
@@ -39,6 +52,7 @@ use App\Services\Pipeline\OutlineRevisions;
 use App\Services\Pipeline\PlanningJson;
 use App\Services\Pipeline\ProductionRunService;
 use App\Services\Pipeline\StoryStateReplay;
+use App\Services\Pipeline\StyleSignals;
 use App\Settings\GeneralSettings;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
@@ -77,6 +91,9 @@ class C01SequenceTest extends TestCase
 
     /** 仅首次规划模拟结果未知，后续请求使用正常隔离响应。 */
     private bool $unknownFirstOutline = false;
+
+    /** 正式稿修订核对的假结果：equivalent、not_equivalent，或 new_facts（声称等价但列出新增事实）。 */
+    private string $formalVerdict = 'equivalent';
 
     /** 仅迁移项目业务表。 */
     protected function migrateFreshUsing(): array
@@ -128,6 +145,8 @@ class C01SequenceTest extends TestCase
                 // 按请求范围返回批次，支持超过十章的目标；原十章场景仍是1至10章。
                 $range = $log->request_parameters['range'];
                 $data = B03OutlineTest::batch($range['start'], $range['end'], $range['total']);
+            } elseif ($version === FormalRevisionContract::VERSION) {
+                $data = $this->formalRevisionResponse($request, $log);
             } elseif (isset($log->request_parameters['purpose'])) {
                 if ($this->assertForeshadows) {
                     $payload = json_decode(explode('冻结提交输入：', $request['input'][1]['content'][0]['text'], 2)[1], true, flags: JSON_THROW_ON_ERROR);
@@ -185,7 +204,8 @@ class C01SequenceTest extends TestCase
                 }
                 if ($number > 1) {
                     $this->assertCount($number - 1, $payload['prior_context']['chapters']);
-                    $this->assertSame($number - 1, $payload['prior_context']['prior_state_version']);
+                    // 前文状态序号来自活动基线上一章提交；基线切换后不再等于章号减一。
+                    $this->assertSame(app(CanonicalBaselines::class)->activeStateBefore(Novel::findOrFail($log->novel_id), $number), $payload['prior_context']['prior_state_version']);
                 }
                 $response = B04ContentTest::validResponse($request);
                 if (($log->request_parameters['step'] ?? null) === 'fine') {
@@ -812,6 +832,23 @@ class C01SequenceTest extends TestCase
         $legacyRun->snapshot = [...$snapshot, 'prior_context' => [...$snapshot['prior_context'], 'version' => CanonicalChapterContext::VERSION]];
         $legacyRun->input_hash = PlanningJson::hash([$legacyRun->snapshot, $twelfth->config]);
         $this->assertThrows(fn () => app(LegacyContentSources::class)->assertPlanningSources($legacyRun), \InvalidArgumentException::class);
+
+        // 跨章文风信号按近章正式正文冻结，只进入写作请求，篡改后来源核对拒绝。
+        $this->assertSame(PlanningJson::hash(app(StyleSignals::class)->context($novel, 12)), PlanningJson::hash($twelfth->snapshot['style_signals']));
+        $this->assertSame(['from' => 2, 'to' => 11], $twelfth->snapshot['style_signals']['window']);
+        $first = ChapterGenerationRun::whereHas('chapter', fn ($q) => $q->where('number', 1))->firstOrFail();
+        $this->assertArrayNotHasKey('style_signals', $first->snapshot);
+        $prompts = CostLog::where('novel_id', $novel->id)->get()->groupBy(fn (CostLog $log): string => (string) ($log->request_parameters['step'] ?? 'other'))
+            ->map(fn ($logs): bool => $logs->contains(fn (CostLog $log): bool => str_contains($log->request_parameters['prompt_audit']['user_prompt'] ?? '', '"style_signals"')));
+        $this->assertTrue($prompts['draft']);
+        $this->assertFalse($prompts['check'] ?? false);
+        $tampered = new ChapterGenerationRun;
+        $tampered->setRawAttributes($twelfth->getAttributes());
+        $forged = $twelfth->snapshot;
+        $forged['style_signals']['recent_endings'][0]['text'] = '伪造结尾';
+        $tampered->snapshot = $forged;
+        $tampered->input_hash = PlanningJson::hash([$forged, $twelfth->config]);
+        $this->assertThrows(fn () => app(LegacyContentSources::class)->assertPlanningSources($tampered), \InvalidArgumentException::class, '文风信号与正式来源');
     }
 
     /** 章纲页面为未提交章节提供修订入口，已提交章节不显示。 */
@@ -924,5 +961,246 @@ class C01SequenceTest extends TestCase
         $run->update(['status' => 'failed']);
         $this->expectException(\InvalidArgumentException::class);
         $service->retry($run->id, $author);
+    }
+
+    /** 生成并正式提交前四章，供基线测试使用。 */
+    private function committedFour(User $author): Novel
+    {
+        $service = app(ProductionRunService::class);
+        $run = $service->start([...B02SettingTest::input(), 'chapter_length_policy' => ['min_characters' => 20, 'max_characters' => 300]], $author, true, false, chapterLimit: 1);
+        app(ForeshadowLedger::class)->plan(Novel::findOrFail($run->novel_id), $author, '基线伏笔', '后续回收线索', 1, 5, (string) Str::uuid7());
+        $run = $this->drain($run);
+        $this->assertSame('completed', $run->status, $run->error ?? '');
+        $run = $this->drain($service->extend($run->novel_id, $author, 3, null, '基线测试续写', false));
+        $this->assertSame('completed', $run->status, $run->error ?? '');
+
+        return Novel::findOrFail($run->novel_id);
+    }
+
+    /** 在候选基线修订一章：在末段开头插入文字，事件与伏笔证据按偏移重新定位。 */
+    private function reviseCommitted(CanonicalBaseline $candidate, int $number, string $insert, User $author): CanonicalCommit
+    {
+        $baselines = app(CanonicalBaselines::class);
+        $source = $baselines->commitFor(CanonicalBaseline::findOrFail($candidate->parent_id), $number);
+        $old = ChapterVersion::findOrFail($source->version_id);
+        $paragraphs = explode("\n", $old->body);
+        $last = count($paragraphs);
+        $offset = $last > 1 ? mb_strlen(implode("\n", array_slice($paragraphs, 0, $last - 1))) + 1 : 0;
+        $paragraphs[$last - 1] = $insert.$paragraphs[$last - 1];
+        $body = implode("\n", $paragraphs);
+        $version = ChapterVersion::create(['chapter_id' => $old->chapter_id, 'run_id' => $old->run_id, 'source_stage_id' => NovelStage::factory()->create(['novel_id' => Chapter::findOrFail($old->chapter_id)->novel_id, 'stage' => Stage::Content])->id, 'parent_version_id' => $old->id,
+            'version' => (int) ChapterVersion::where('chapter_id', $old->chapter_id)->max('version') + 1, 'title' => $old->title, 'body' => $body, 'body_hash' => hash('sha256', $body),
+            'character_count' => mb_strlen($body), 'count_version' => $old->count_version, 'created_at' => now()]);
+        $shift = fn (array $evidence): array => $evidence['start'] >= $offset ? [...$evidence, 'start' => $evidence['start'] + mb_strlen($insert), 'end' => $evidence['end'] + mb_strlen($insert)] : $evidence;
+        $events = StoryEvent::where('commit_id', $source->id)->get()->mapWithKeys(fn (StoryEvent $event): array => [$event->event_key => array_map($shift, $event->evidence)])->all();
+        $foreshadows = ForeshadowEvidence::where('commit_id', $source->id)->where('baseline_id', $candidate->parent_id)->get()->mapWithKeys(fn (ForeshadowEvidence $entry): array => [$entry->id => $shift($entry->evidence)])->all();
+
+        return $baselines->commitRevision($candidate, $number, $version, $events, $foreshadows, $author, '测试润色');
+    }
+
+    /** 候选基线修订第2章并重挂下游：验证后切换，新旧基线都能回放和导出，旧运行快照仍可核对，之后续写接在新基线上。 */
+    public function test_candidate_baseline_revises_rebases_and_switches(): void
+    {
+        $author = User::factory()->create();
+        $novel = $this->committedFour($author);
+        $baselines = app(CanonicalBaselines::class);
+        $initial = $baselines->current($novel);
+        $this->assertSame([1, 2, 3, 4], array_map(fn (CanonicalCommit $commit): int => $commit->state_version, $baselines->chain($initial)));
+        $before = app(FormalChapterExport::class)->build($novel->id, 4, 'txt');
+        $evidenceBefore = ForeshadowEvidence::where('novel_id', $novel->id)->count();
+
+        $candidate = $baselines->createCandidate($novel, 2, 'formal_revision', '测试正式稿修订', $author);
+        $this->assertFalse($baselines->writable($novel->refresh(), 5));
+        $revised = $this->reviseCommitted($candidate, 2, '雨停了。', $author);
+        $this->assertSame('revision', $revised->origin);
+        $this->assertSame(2, $baselines->rebase($candidate, $author));
+        // 修订期间活动基线、导出与上下文都不变。
+        $this->assertSame($before['content'], app(FormalChapterExport::class)->build($novel->id, 4, 'txt')['content']);
+        $verification = $baselines->verify($candidate);
+        $this->assertSame([2], $verification['changed_chapters']);
+        $this->assertSame(4, $verification['chapters']);
+
+        // 通过“提交与基线”页面切换：只对已验证候选开放，并要求原因与确认。
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        $this->actingAs($author);
+        Livewire::test(ManageBaselines::class, ['record' => $novel->id])->assertSuccessful()->assertSee('正式稿修订')
+            ->assertTableActionHidden('switch', $initial)->assertTableActionVisible('switch', $candidate->refresh())
+            ->callTableAction('switch', $candidate, ['reason' => '确认润色', 'confirm' => true])->assertHasNoTableActionErrors()->assertNotified('已切换正式基线');
+        $novel->refresh();
+        $this->assertSame($candidate->id, $novel->active_baseline_id);
+        $this->assertSame('superseded', $initial->refresh()->status);
+        $this->assertSame(4, $novel->chapters_done);
+        $this->assertSame(7, $novel->state_version);
+        $chapterTwo = Chapter::where('novel_id', $novel->id)->where('number', 2)->firstOrFail();
+        $this->assertSame($revised->version_id, $chapterTwo->formal_version_id);
+        $after = app(FormalChapterExport::class)->build($novel->id, 4, 'txt');
+        $this->assertStringContainsString('雨停了。', $after['content']);
+        $this->assertSame($before['content'], app(FormalChapterExport::class)->build($novel->id, 4, 'txt', $initial->id)['content']);
+        $old = app(StoryStateReplay::class)->atChapter($novel, 4, $initial->refresh());
+        $new = app(StoryStateReplay::class)->atChapter($novel, 4);
+        $this->assertSame(array_column($old['events'], 'summary'), array_column($new['events'], 'summary'));
+        $this->assertSame(array_column($old['entities'], 'name'), array_column($new['entities'], 'name'));
+        $this->assertNotSame(array_column($old['events'], 'id'), array_column($new['events'], 'id'));
+        $context = app(CanonicalChapterContext::class)->build($novel, 5);
+        $this->assertSame($revised->id, $context['chapters'][1]['commit_id']);
+        $this->assertSame(7, $context['prior_state_version']);
+        app(ForeshadowLedger::class)->context($novel, 5);
+        $this->assertSame($evidenceBefore * 2, ForeshadowEvidence::where('novel_id', $novel->id)->count());
+        // 旧基线冻结的运行快照仍按原基线核对。
+        $fourth = ChapterGenerationRun::whereHas('chapter', fn ($q) => $q->where('novel_id', $novel->id)->where('number', 4))->latest('id')->firstOrFail();
+        app(LegacyContentSources::class)->assertPlanningSources($fourth);
+
+        // 续写第5章接在新基线上，状态序号继续单调递增。
+        $this->assertTrue($baselines->writable($novel, 5));
+        $run = app(ProductionRunService::class)->extend($novel->id, $author, 1, null, '基线切换后续写', false);
+        $run = $this->drain($run);
+        $this->assertSame('completed', $run->status, $run->error ?? '');
+        $fifth = $baselines->commitFor($candidate->refresh(), 5);
+        $this->assertSame($candidate->id, $fifth->baseline_id);
+        $this->assertSame(7, $fifth->previous_state_version);
+        $this->assertSame(8, $fifth->state_version);
+        $this->assertSame(5, count($baselines->chain($candidate)));
+    }
+
+    /** 引文对不上、篡改复制事件都不能通过；放弃候选后可以继续写作。 */
+    public function test_candidate_baseline_rejects_bad_evidence_and_can_be_abandoned(): void
+    {
+        $author = User::factory()->create();
+        $novel = $this->committedFour($author);
+        $baselines = app(CanonicalBaselines::class);
+        $candidate = $baselines->createCandidate($novel, 3, 'formal_revision', '测试', $author);
+        $this->assertThrows(fn () => $baselines->createCandidate($novel->refresh(), 2, 'formal_revision', '第二个候选', $author), \InvalidArgumentException::class);
+        $source = $baselines->commitFor($baselines->current($novel), 3);
+        $old = ChapterVersion::findOrFail($source->version_id);
+        $body = '换了开头。'.$old->body;
+        $version = ChapterVersion::create(['chapter_id' => $old->chapter_id, 'run_id' => $old->run_id, 'source_stage_id' => NovelStage::factory()->create(['novel_id' => Chapter::findOrFail($old->chapter_id)->novel_id, 'stage' => Stage::Content])->id, 'parent_version_id' => $old->id,
+            'version' => (int) ChapterVersion::where('chapter_id', $old->chapter_id)->max('version') + 1, 'title' => $old->title, 'body' => $body, 'body_hash' => hash('sha256', $body),
+            'character_count' => mb_strlen($body), 'count_version' => $old->count_version, 'created_at' => now()]);
+        // 证据未随正文偏移，引文与新位置不符，拒绝。
+        $events = StoryEvent::where('commit_id', $source->id)->get()->mapWithKeys(fn (StoryEvent $event): array => [$event->event_key => $event->evidence])->all();
+        $foreshadows = ForeshadowEvidence::where('commit_id', $source->id)->where('baseline_id', $candidate->parent_id)->get()->mapWithKeys(fn (ForeshadowEvidence $entry): array => [$entry->id => $entry->evidence])->all();
+        $this->assertThrows(fn () => $baselines->commitRevision($candidate, 3, $version, $events, $foreshadows, $author, '错误定位'), \InvalidArgumentException::class, '证据引文与修订正文位置不一致');
+
+        $this->reviseCommitted($candidate, 3, '夜深了。', $author);
+        $baselines->rebase($candidate, $author);
+        // 篡改复制事件的证据位置后，回放核对拒绝验证与切换。
+        $copy = StoryEvent::whereIn('commit_id', CanonicalCommit::where('baseline_id', $candidate->id)->pluck('id'))->orderBy('id')->firstOrFail();
+        $evidence = $copy->evidence;
+        $evidence[0]['quote'] = '伪造引文';
+        DB::table('story_events')->where('id', $copy->id)->update(['evidence' => json_encode($evidence, JSON_UNESCAPED_UNICODE)]);
+        $this->assertThrows(fn () => $baselines->switchTo($candidate, $author, '尝试切换'), \InvalidArgumentException::class);
+        $this->assertSame('candidate', $candidate->refresh()->status);
+
+        $baselines->abandon($candidate, '放弃测试');
+        $this->assertTrue($baselines->writable($novel->refresh(), 5));
+        $this->assertSame(4, count($baselines->chain($baselines->current($novel))));
+    }
+
+    /** 正式稿修订：建议逐条校验，只替换接受项；事实核对不通过不能提交；通过后进入候选基线，切换后正文更新、旧基线可读，请求上限生效。 */
+    public function test_formal_revision_polishes_committed_chapter_through_candidate_baseline(): void
+    {
+        $author = User::factory()->create();
+        $novel = $this->committedFour($author);
+        $before = app(FormalChapterExport::class)->build($novel->id, 4, 'txt');
+        $initial = app(CanonicalBaselines::class)->current($novel);
+        $service = app(FormalRevisionService::class);
+        $ai = app(AiTextGenerationService::class);
+        $this->assertThrows(fn () => $service->start($novel, $author, 2, 5, '越界', 8), \InvalidArgumentException::class);
+        $revision = $service->start($novel, $author, 2, 3, '去掉重复开头', 8);
+        $this->assertFalse(app(CanonicalBaselines::class)->writable($novel->refresh(), 5));
+        [$two, $three] = $revision->chapters()->get()->all();
+        $this->assertSame([2, 3], [$two->chapter_number, $three->chapter_number]);
+        $this->assertArrayHasKey('overused_phrases', $two->signals);
+
+        $two = $service->suggest($two->id, $ai);
+        $three = $service->suggest($three->id, $ai);
+        $this->assertSame('suggested', $two->status);
+        $this->assertSame([true, false], array_column($two->suggestions, 'valid'));
+        $this->assertSame('原句不在该段或在该段出现多次', $two->suggestions[1]['invalid_reason']);
+        $this->assertThrows(fn () => $service->decide($two->id, $author, ['s2' => 'accept']), \InvalidArgumentException::class);
+        $two = $service->decide($two->id, $author, ['s1' => 'accept', 's2' => 'reject']);
+        $three = $service->decide($three->id, $author, ['s1' => 'exception']);
+        $this->assertSame('decided', $two->status);
+        $this->assertSame('unchanged', $three->status);
+        $source = ChapterVersion::findOrFail($two->source_version_id)->body;
+        $candidate = ChapterVersion::findOrFail($two->candidate_version_id)->body;
+        $this->assertSame('雨停了，'.$source, $candidate);
+
+        // 核对不等价、或声称等价却列出新增事实，都不能通过，也不能提交候选基线。
+        $this->formalVerdict = 'not_equivalent';
+        $this->assertSame('failed', $service->verify($two->id, $ai)->status);
+        $this->formalVerdict = 'new_facts';
+        $two = $service->verify($two->id, $ai);
+        $this->assertSame('failed', $two->status);
+        $this->assertSame(['新增了雨停的天气事实'], $two->equivalence['new_facts']);
+        $this->assertThrows(fn () => $service->commitCandidate($revision, $author), \InvalidArgumentException::class);
+        $this->formalVerdict = 'equivalent';
+        $two = $service->verify($two->id, $ai);
+        $this->assertSame('verified', $two->status, (string) $two->error);
+        $this->assertSame(5, $revision->refresh()->requests_used);
+
+        $baseline = $service->commitCandidate($revision, $author);
+        $this->assertSame('verified', $baseline->status);
+        $this->assertSame([2], $baseline->verification['changed_chapters']);
+        $this->assertSame($before['content'], app(FormalChapterExport::class)->build($novel->id, 4, 'txt')['content']);
+        $service->switchTo($revision->refresh(), $author, '确认润色');
+        $this->assertSame('switched', $revision->refresh()->status);
+        $after = app(FormalChapterExport::class)->build($novel->id, 4, 'txt');
+        $this->assertStringContainsString('雨停了，', $after['content']);
+        $this->assertSame($before['content'], app(FormalChapterExport::class)->build($novel->id, 4, 'txt', $initial->id)['content']);
+        app(StoryStateReplay::class)->atChapter($novel->refresh(), 4);
+        app(ForeshadowLedger::class)->context($novel, 5);
+        $this->assertTrue(app(CanonicalBaselines::class)->writable($novel, 5));
+
+        // 第二次修订只授权一次请求：第二章建议之后再请求在发送前拒绝。
+        $second = $service->start($novel, $author, 1, 2, '再润色一次', 1);
+        [$one, $twoAgain] = $second->chapters()->get()->all();
+        $this->assertSame('suggested', $service->suggest($one->id, $ai)->status);
+        $requests = CostLog::count();
+        $this->assertThrows(fn () => $service->suggest($twoAgain->id, $ai), \InvalidArgumentException::class, '已用完本次修订授权的1次请求');
+        $this->assertSame($requests, CostLog::count());
+        $service->abandon($second, '测试放弃');
+        $this->assertTrue(app(CanonicalBaselines::class)->writable($novel->refresh(), 5));
+    }
+
+    /** 正式稿修订页面：发起、排队生成建议、逐条取舍并查看改动；修订进行中不能再发起新的修订。 */
+    public function test_formal_revision_page_drives_suggest_and_decide(): void
+    {
+        $author = User::factory()->create();
+        $novel = $this->committedFour($author);
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        $this->actingAs($author);
+        $page = Livewire::test(FormalRevisions::class, ['record' => $novel->id])->assertSuccessful()->assertSee('尚未发起')
+            ->callAction('start', ['from' => 1, 'to' => 2, 'intent' => '去掉重复开头', 'request_limit' => 4, 'accept' => true])->assertHasNoActionErrors()->assertNotified('已发起正式稿修订');
+        $revision = FormalRevision::sole();
+        $first = $revision->chapters()->firstOrFail();
+        $page = Livewire::test(FormalRevisions::class, ['record' => $novel->id])->assertActionHidden('start')
+            ->callTableAction('suggest', $first)->assertNotified('已排队生成建议');
+        Queue::assertPushed(FormalRevisionStepJob::class, fn (FormalRevisionStepJob $job): bool => $job->chapterId === $first->id && $job->step === 'suggest');
+        (new FormalRevisionStepJob($first->id, 'suggest'))->handle(app(FormalRevisionService::class), app(AiTextGenerationService::class));
+        Livewire::test(FormalRevisions::class, ['record' => $novel->id])
+            ->callTableAction('decide', $first->refresh(), ['s1' => 'accept', 's2' => 'reject'])->assertHasNoTableActionErrors()->assertNotified('已保存取舍')
+            ->assertTableActionVisible('diff', $first->refresh())->assertTableActionVisible('verify', $first);
+        $this->assertSame('decided', $first->status);
+    }
+
+    /** 正式稿修订的假供应商：建议把第1段整段加上开头语，并附一条引文不存在的建议；核对按设定给出结论并重新定位待定位证据。
+     * @return array<string, mixed>
+     */
+    private function formalRevisionResponse(Request $request, CostLog $log): array
+    {
+        $payload = json_decode(explode('冻结输入：', $request['input'][1]['content'][0]['text'], 2)[1], true, flags: JSON_THROW_ON_ERROR);
+        if ($log->request_parameters['revision_purpose'] === 'suggest') {
+            $first = $payload['paragraphs'][0]['text'];
+
+            return ['suggestions' => [['paragraph' => 1, 'quote' => $first, 'replacement' => '雨停了，'.$first, 'problem' => '开头与近章雷同'],
+                ['paragraph' => 1, 'quote' => '不存在的原句', 'replacement' => '改法', 'problem' => '无效建议']]];
+        }
+        $changed = $payload['changed_paragraphs'][0] ?? ['paragraph' => 1, 'after' => ''];
+
+        return ['verdict' => $this->formalVerdict === 'not_equivalent' ? 'not_equivalent' : 'equivalent', 'summary' => '隔离核对',
+            'event_checks' => array_map(fn (array $event): array => ['event_key' => $event['event_key'], 'holds' => $this->formalVerdict !== 'not_equivalent', 'reason' => '隔离核对'], $payload['events']),
+            'new_facts' => $this->formalVerdict === 'new_facts' ? ['新增了雨停的天气事实'] : [], 'lost_constraints' => [], 'literary_issues' => [],
+            'relocations' => array_map(fn (array $item): array => ['ref' => $item['ref'], 'paragraph' => $changed['paragraph'], 'quote' => mb_substr($changed['after'], 0, 6)], $payload['unresolved'])];
     }
 }

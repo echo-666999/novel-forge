@@ -65,6 +65,11 @@ class B04ContentTest extends TestCase
                 DB::table('outline_chapter_revisions')->where('id', $id)->delete();
             }
         }
+        // 正式稿修订记录引用提交、正文版本和基线，最先清理。
+        if (Schema::hasTable('formal_revision_chapters')) {
+            DB::table('formal_revision_chapters')->delete();
+            DB::table('formal_revisions')->delete();
+        }
         // 仅清理隔离夹具，先释放伏笔对正式提交的外键。
         if (Schema::hasTable('foreshadow_evidence')) {
             DB::table('foreshadow_evidence')->delete();
@@ -74,7 +79,8 @@ class B04ContentTest extends TestCase
             DB::table('chapters')->update(['formal_version_id' => null, 'canonical_commit_id' => null, 'committed_at' => null]);
             foreach (['story_outbox_events', 'story_state_projections', 'story_events', 'canonical_commits', 'chapter_submission_validations', 'chapter_event_extractions', 'chapter_reviews', 'chapter_submission_runs', 'story_entities'] as $table) {
                 // 隔离夹具先删除后继再删除前驱，保持真实外键约束开启。
-                if ($table === 'chapter_submission_runs') {
+                // 修订与重挂提交引用来源提交，同样按编号倒序删除。
+                if (in_array($table, ['chapter_submission_runs', 'canonical_commits'], true)) {
                     foreach (DB::table($table)->orderByDesc('id')->pluck('id') as $id) {
                         DB::table($table)->where('id', $id)->delete();
                     }
@@ -82,6 +88,13 @@ class B04ContentTest extends TestCase
                     continue;
                 }
                 DB::table($table)->delete();
+            }
+        }
+        // 基线在提交之后清理：先释放小说的活动基线指针，再按父子倒序删除。
+        if (Schema::hasTable('canonical_baselines')) {
+            DB::table('novels')->update(['active_baseline_id' => null]);
+            foreach (DB::table('canonical_baselines')->orderByDesc('id')->pluck('id') as $id) {
+                DB::table('canonical_baselines')->where('id', $id)->delete();
             }
         }
         DB::table('chapters')->update(['current_candidate_version_id' => null, 'progression_result' => null]);

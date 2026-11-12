@@ -152,6 +152,11 @@ class B04PostgresTest extends TestCase
         $foreshadowMigration = require database_path('migrations/2026_11_06_164613_create_foreshadow_ledger_tables.php');
         // C09 阅读证据引用正文版本，先撤销空阅读表再验证旧迁移。
         $readingMigration = require database_path('migrations/2026_11_07_014131_create_reading_records_table.php');
+        // A-09 基线与正式稿修订依赖正式提交、正文版本与伏笔证据，最先撤销、最后重建。
+        $formalRevisionMigration = require database_path('migrations/2026_11_12_140653_create_formal_revisions_table.php');
+        $formalRevisionMigration->down();
+        $baselineMigration = require database_path('migrations/2026_11_12_133335_create_canonical_baselines_table.php');
+        $baselineMigration->down();
         $readingMigration->down();
         // C09 实体版本依赖正式实体，专库回滚按子表优先执行，禁止级联删除。
         $entityDefinitionsMigration = require database_path('migrations/2026_11_07_133118_create_entity_definition_versions_table.php');
@@ -172,6 +177,8 @@ class B04PostgresTest extends TestCase
         $foreshadowContractMigration->up();
         $entityDefinitionsMigration->up();
         $readingMigration->up();
+        $baselineMigration->up();
+        $formalRevisionMigration->up();
         $this->assertSame($before, Novel::findOrFail($stage->novel_id)->getRawOriginal());
         $this->assertSame($stageBefore, $stage->fresh()->getRawOriginal());
     }

@@ -42,7 +42,7 @@ final class ContentGenerationService
             $fine = $plan->config['enable_fine_outline'];
             if (! is_bool($fine) || $novel->generation_mode !== GenerationMode::SettingReal || $novel->status !== NovelStatus::Paused
                 || ($chapterNumber === 1 && $novel->current_stage !== ($fine ? Stage::FineOutline : Stage::Content))
-                || $chapterNumber !== $novel->chapters_done + 1 || $novel->state_version !== $chapterNumber - 1
+                || ! app(CanonicalBaselines::class)->writable($novel, $chapterNumber)
                 || $novel->chapters()->where('number', '>=', $chapterNumber)->exists()) {
                 throw new InvalidArgumentException('不在首次正文生成边界');
             }
@@ -98,6 +98,11 @@ final class ContentGenerationService
             }
             $snapshot['context_policy'] = app(ContextBuilder::class)->policy();
             $snapshot['foreshadow_context'] = app(ForeshadowLedger::class)->context($novel, $chapterNumber);
+            // 跨章文风信号只在新运行冻结，来自已提交近章；历史运行不补写。
+            $styleSignals = app(StyleSignals::class)->context($novel, $chapterNumber);
+            if ($styleSignals !== null) {
+                $snapshot['style_signals'] = $styleSignals;
+            }
             $chapter = $novel->chapters()->create(['number' => $chapterNumber, 'title' => $snapshot['source_chapter']['title'], 'objective' => $snapshot['source_chapter']['objective'], 'status' => ChapterStatus::Pending]);
             $config['request_cap'] = $limit;
             $config['initial_step'] = $fine ? 'fine' : 'draft';

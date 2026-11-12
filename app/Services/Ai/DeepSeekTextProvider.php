@@ -34,6 +34,7 @@ final class DeepSeekTextProvider implements TextProvider
             $this->manager->textProvider('deepseek')->useTextGateway(new SingleAttemptDeepSeekGateway($this->events, $options->executionContext['deepseek_reasoning_effort'] ?? $options->submissionContext['deepseek_reasoning_effort'] ?? 'none'));
             $agent = match (true) {
                 $options->settingDecision => new SettingDecisionAgent($options),
+                $options->formalRevisionPurpose !== null => new FormalRevisionAgent($options),
                 $options->submissionPurpose !== null => new SubmissionAgent($options),
                 $options->chapterStep !== null => new ChapterGenerationAgent($options),
                 $options->outlineRange !== null => new OutlineGenerationAgent($options),

@@ -15,6 +15,7 @@ use App\Models\ChapterVersion;
 use App\Models\CostLog;
 use App\Models\NovelStage;
 use App\Models\ProductionRun;
+use App\Services\Pipeline\CanonicalBaselines;
 use App\Services\Pipeline\CanonicalCommitService;
 use App\Services\Pipeline\ChapterSubmissionService;
 use App\Services\Pipeline\ContentExecutionContract;
@@ -25,6 +26,7 @@ use App\Services\Pipeline\ContentSchema;
 use App\Services\Pipeline\NovelProgressQuery;
 use App\Services\Pipeline\PlanningJson;
 use App\Services\Pipeline\RevisionWorkbench;
+use App\Services\Pipeline\StyleSignals;
 use App\Settings\GeneralSettings;
 use Filament\Actions\Action;
 use Filament\Facades\Filament;
@@ -157,6 +159,13 @@ class ViewChapterContent extends Page implements HasTable
                             TextEntry::make('type')->label('线索类型')->formatStateUsing(fn (string $state): string => $state === 'repeated_text' ? '重复原文' : '可能的时序倒退'), TextEntry::make('reason')->label('复核说明'),
                             RepeatableEntry::make('evidence')->label('原文位置')->schema([TextEntry::make('paragraph')->label('段号'), TextEntry::make('quote')->label('重复片段或时序原文')]),
                         ]),
+                        RepeatableEntry::make('style_hints')->label('跨章文风提示（仅供参考，不作为问题判定）')->visible(fn (): bool => isset($this->run()?->snapshot['style_signals']))
+                            ->state(fn (): array => $this->candidate() === null ? [] : array_map(fn (array $hint): array => [...$hint, 'chapters' => '第'.implode('、', $hint['chapters']).'章'], StyleSignals::inspect($this->candidate()->body, $this->run()->snapshot['style_signals'])))->placeholder('当前正文未沿用近章反复出现的短语或开头结尾')->schema([
+                                TextEntry::make('type')->label('提示类型')->formatStateUsing(fn (string $state): string => match ($state) {
+                                    'overused_phrase' => '沿用近章反复出现的短语', 'similar_opening' => '开头与近章雷同', default => '结尾与近章雷同',
+                                }),
+                                TextEntry::make('text')->label('原文'), TextEntry::make('chapters')->label('出现过的章节'),
+                            ]),
                         RepeatableEntry::make('points')->label('逐点检查')->state(fn (): array => data_get($this->run()?->chapter->progression_result, 'points', []))->schema([
                             TextEntry::make('id')->label('推进点'), TextEntry::make('met')->label('是否完成')->formatStateUsing(fn (bool $state): string => $state ? '完成' : '不足'), TextEntry::make('reason')->label('判断理由'),
                             RepeatableEntry::make('evidence')->label('正文证据')->schema([TextEntry::make('paragraph')->label('段号'), TextEntry::make('quote')->label('原文引文')]),
@@ -439,7 +448,7 @@ class ViewChapterContent extends Page implements HasTable
                 Textarea::make('reason')->label('准备原因')->required(), Checkbox::make('accept_request')->label('批准上述最多两次请求及费用')->accepted()])
             ->action(function (array $data): void {
                 $this->performContentAction(fn () => app(ChapterSubmissionService::class)->prepare($this->candidate()->id, Filament::auth()->user(),
-                    $this->getRecord()->state_version, $data['reason'], (int) $data['execution_limit']));
+                    app(CanonicalBaselines::class)->activeStateBefore($this->getRecord(), $this->candidate()->chapter->number), $data['reason'], (int) $data['execution_limit']));
                 $this->getRecord()->refresh();
             }), Action::make('retrySubmission')->label('重跑失败评审 / 提取')
             ->visible(fn (): bool => $this->submission()?->status === 'failed')

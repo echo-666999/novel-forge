@@ -135,4 +135,14 @@ class B08RunRecoveryTest extends TestCase
         NovelStage::factory()->create(['error_message' => '外部小说独有错误']);
         Livewire::test(ViewNovelRun::class, ['record' => $novel->id])->assertSuccessful()->assertDontSee('外部小说独有错误')->assertSee('未执行');
     }
+
+    /** 真实流程没有独立的润色和导出阶段，无记录时不列出；模拟流程有记录时照常显示。 */
+    public function test_polish_and_export_rows_only_show_when_recorded(): void
+    {
+        $novel = Novel::factory()->create();
+        $stages = fn (): array => array_column((fn (): array => $this->stageSummary())->call(Livewire::test(ViewNovelRun::class, ['record' => $novel->id])->assertSuccessful()->instance()), 'name');
+        $this->assertSame(['设定', '大纲', '细纲', '正文'], $stages());
+        NovelStage::factory()->create(['novel_id' => $novel->id, 'stage' => Stage::Polish]);
+        $this->assertSame(['设定', '大纲', '细纲', '正文', '润色'], $stages());
+    }
 }

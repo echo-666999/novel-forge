@@ -113,7 +113,7 @@ class NovelResource extends Resource
             Pages\EntityLibrary::class, Pages\ViewCharacterKnowledge::class, Pages\ViewForeshadows::class,
             Pages\ChapterDirectory::class, ViewChapterContent::class, Pages\ReadChapter::class,
             Pages\ViewNovelRun::class, Pages\ViewContextManifests::class, Pages\SearchLab::class,
-            Pages\AcceptanceWorkbench::class, Pages\ExportCenter::class, Pages\ViewNovelCosts::class, Pages\ViewStoryState::class,
+            Pages\AcceptanceWorkbench::class, Pages\ExportCenter::class, Pages\ViewNovelCosts::class, Pages\FormalRevisions::class, Pages\ManageBaselines::class, Pages\ViewStoryState::class,
         ]);
     }
 
@@ -147,6 +147,8 @@ class NovelResource extends Resource
             'acceptanceReading' => Pages\AcceptanceReading::route('/{record}/acceptance/{batch}/read'),
             'knowledge' => Pages\ViewCharacterKnowledge::route('/{record}/knowledge'),
             'state' => Pages\ViewStoryState::route('/{record}/state'),
+            'baselines' => Pages\ManageBaselines::route('/{record}/baselines'),
+            'formalRevisions' => Pages\FormalRevisions::route('/{record}/formal-revisions'),
             'costs' => Pages\ViewNovelCosts::route('/{record}/costs'),
             'outline' => ViewOutlinePlan::route('/{record}/outline'),
             'content' => ViewChapterContent::route('/{record}/content'),

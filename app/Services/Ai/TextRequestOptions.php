@@ -3,6 +3,7 @@
 namespace App\Services\Ai;
 
 use App\Services\Pipeline\ContentExecutionContract;
+use App\Services\Pipeline\FormalRevisionContract;
 use App\Services\Pipeline\SubmissionContract;
 use InvalidArgumentException;
 
@@ -14,11 +15,15 @@ final readonly class TextRequestOptions
      * @param  string|null  $builtinInstructions  根运行冻结的固定提示词，空值兼容历史程序文本。
      * @param  array<string, mixed>|null  $executionContext
      */
-    private function __construct(public int $maxOutputTokens, public int $timeoutSeconds, public ?float $temperature, public bool $structuredSetting, public ?array $outlineRange = null, public ?string $chapterStep = null, public ?array $executionContext = null, public ?string $submissionPurpose = null, public ?array $submissionContext = null, public bool $settingDecision = false, public string $templateInstructions = '', public ?array $templateSnapshot = null, public ?string $builtinInstructions = null) {}
+    private function __construct(public int $maxOutputTokens, public int $timeoutSeconds, public ?float $temperature, public bool $structuredSetting, public ?array $outlineRange = null, public ?string $chapterStep = null, public ?array $executionContext = null, public ?string $submissionPurpose = null, public ?array $submissionContext = null, public bool $settingDecision = false, public string $templateInstructions = '', public ?array $templateSnapshot = null, public ?string $builtinInstructions = null, public ?string $formalRevisionPurpose = null, public ?array $formalRevisionContext = null) {}
 
     /** 复制不可变选项并附加根运行冻结模板；正文和审计引用使用同一份快照。 */
     public function withTemplates(array $snapshot, array $variables): self
     {
+        // 正式稿修订只使用程序固定指令，不套用设定或正文模板。
+        if ($this->formalRevisionPurpose !== null) {
+            return $this;
+        }
         $scope = match (true) {
             $this->settingDecision => 'decision',
             $this->submissionPurpose !== null => $this->submissionPurpose,
@@ -29,6 +34,16 @@ final readonly class TextRequestOptions
         $instructions = app(PromptTemplateManager::class)->instructions($snapshot, $scope, $variables);
 
         return new self(...[...get_object_vars($this), 'templateInstructions' => $instructions, 'templateSnapshot' => $snapshot, 'builtinInstructions' => $snapshot['items']['builtin_'.$scope]['body'] ?? null]);
+    }
+
+    /** 正式稿修订：suggest 给出逐条润色建议，equivalence 核对润色前后事实等价；均为零温度单次结构化请求。 */
+    public static function formalRevision(string $purpose, array $context): self
+    {
+        if (! in_array($purpose, ['suggest', 'equivalence'], true) || ($context['paragraph_count'] ?? 0) < 1) {
+            throw new InvalidArgumentException('正式稿修订用途或正文段落无效');
+        }
+
+        return new self($purpose === 'suggest' ? 6144 : 8192, 180, 0.0, false, formalRevisionPurpose: $purpose, formalRevisionContext: $context);
     }
 
     /** 自动授权下的设定决策仍经过独立结构化请求与计费审计。 */
@@ -104,7 +119,7 @@ final readonly class TextRequestOptions
     /** 区分结构化文本与原有短文本，不改变 B02 的布尔兼容属性。 */
     public function isStructured(): bool
     {
-        return $this->structuredSetting || $this->outlineRange !== null || $this->chapterStep !== null || $this->submissionPurpose !== null;
+        return $this->structuredSetting || $this->outlineRange !== null || $this->chapterStep !== null || $this->submissionPurpose !== null || $this->formalRevisionPurpose !== null;
     }
 
     /** 保存实际非敏感参数，默认请求保持原有三字段结构。
@@ -121,6 +136,11 @@ final readonly class TextRequestOptions
         if ($this->submissionPurpose !== null) {
             return [...$parameters, 'temperature' => 0.0, 'schema_version' => SubmissionContract::VERSION, 'purpose' => $this->submissionPurpose,
                 'submission_run_id' => $this->submissionContext['run_id'], 'version_id' => $this->submissionContext['version_id'], 'body_hash' => $this->submissionContext['body_hash'], 'strict' => true];
+        }
+
+        if ($this->formalRevisionPurpose !== null) {
+            return [...$parameters, 'temperature' => 0.0, 'schema_version' => FormalRevisionContract::VERSION, 'strict' => true, 'revision_purpose' => $this->formalRevisionPurpose,
+                'formal_revision_id' => $this->formalRevisionContext['revision_id'], 'chapter_number' => $this->formalRevisionContext['chapter_number']];
         }
 
         if ($this->chapterStep !== null) {

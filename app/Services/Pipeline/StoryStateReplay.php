@@ -3,7 +3,7 @@
 namespace App\Services\Pipeline;
 
 use App\Enums\FactCategory;
-use App\Models\CanonicalCommit;
+use App\Models\CanonicalBaseline;
 use App\Models\Chapter;
 use App\Models\ChapterVersion;
 use App\Models\Novel;
@@ -24,26 +24,30 @@ final class StoryStateReplay
             ->mapWithKeys(fn (Chapter $chapter): array => [$chapter->number => '第'.$chapter->number.'章 · '.$chapter->title])->all();
     }
 
-    /** 从首个正式事件重放至指定章；任何断链、证据或摘要不一致均拒绝展示可信状态。
+    /** 从首个正式事件重放至指定章；任何断链、证据或摘要不一致均拒绝展示可信状态。默认回放活动基线，也可回放候选或已被替换的基线。
      * @return array{chapter: int, state_version: int, state: array, entities: array, events: array, body: string}
      */
-    public function atChapter(Novel $novel, int $number): array
+    public function atChapter(Novel $novel, int $number, ?CanonicalBaseline $baseline = null): array
     {
-        $selected = $novel->chapters()->where('number', $number)->whereNotNull('canonical_commit_id')->first();
-        if ($selected === null) {
+        $baselines = app(CanonicalBaselines::class);
+        $baseline ??= $baselines->current($novel);
+        if ($baseline === null || $baseline->novel_id !== $novel->id || $number < 1 || $baselines->commitFor($baseline, $number) === null) {
             throw new InvalidArgumentException('所选章节尚未正式提交');
         }
+        $commits = $baselines->chain($baseline, $number);
+        // 活动基线还须与章节正式指针一致；其他基线只按自身提交链回放。
+        $active = $baseline->status === 'active';
         $state = ['entities' => []];
         $history = [];
         $entityIds = [];
         $body = '';
         $expected = 0;
-        $commits = CanonicalCommit::where('novel_id', $novel->id)->where('state_version', '<=', CanonicalCommit::findOrFail($selected->canonical_commit_id)->state_version)->orderBy('state_version')->get();
         foreach ($commits as $commit) {
             $chapter = Chapter::where('novel_id', $novel->id)->findOrFail($commit->chapter_id);
             $version = ChapterVersion::findOrFail($commit->version_id);
-            if ($commit->previous_state_version !== $expected || $commit->state_version !== ++$expected || $chapter->number !== $expected
-                || $chapter->canonical_commit_id !== $commit->id || $chapter->formal_version_id !== $version->id || $version->chapter_id !== $chapter->id
+            $expected = $commit->state_version;
+            if ($commit->novel_id !== $novel->id || $chapter->number !== $commit->chapter_number
+                || ($active && ($chapter->canonical_commit_id !== $commit->id || $chapter->formal_version_id !== $version->id)) || $version->chapter_id !== $chapter->id
                 || hash('sha256', $version->body) !== $version->body_hash || ($commit->result['body_hash'] ?? null) !== $version->body_hash) {
                 throw new InvalidArgumentException('正式提交链或正文摘要不一致');
             }
@@ -96,7 +100,7 @@ final class StoryStateReplay
                 throw new InvalidArgumentException('事件回放与正式状态快照不一致');
             }
         }
-        if ($expected !== $number) {
+        if (count($commits) !== $number) {
             throw new InvalidArgumentException('正式章节链不连续');
         }
         // 实体目录只取截至所选章出现的引用，防止未来章节新人物泄漏到旧状态。

@@ -59,7 +59,7 @@ final class ChapterProductionStepper
                 break;
             case 'submission':
                 $submission = ChapterSubmissionRun::where('novel_id', $novel->id)->where('version_id', $artifacts['version_id'])->whereHas('chapter', fn ($query) => $query->where('number', $number))->latest('id')->first()
-                    ?? app(ChapterSubmissionService::class)->prepare($artifacts['version_id'], $author, $number - 1, '第'.$number.'章自动授权评审与提取', dispatch: false, modelOverride: ChapterGenerationRun::findOrFail($artifacts['body_run_id'])->config['model']);
+                    ?? app(ChapterSubmissionService::class)->prepare($artifacts['version_id'], $author, app(CanonicalBaselines::class)->activeStateBefore($novel, $number), '第'.$number.'章自动授权评审与提取', dispatch: false, modelOverride: ChapterGenerationRun::findOrFail($artifacts['body_run_id'])->config['model']);
                 $artifacts['submission_run_id'] = $submission->id;
                 if ($submission->status === 'pending') {
                     app(ChapterSubmissionService::class)->execute($submission->id, $submission->invocation_id, false);
@@ -76,7 +76,7 @@ final class ChapterProductionStepper
                 $review = ChapterReview::where('submission_run_id', $submission->id)->firstOrFail();
                 $extraction = ChapterEventExtraction::where('submission_run_id', $submission->id)->firstOrFail();
                 $validation = ChapterSubmissionValidation::where('submission_run_id', $submission->id)->orderBy('id')->firstOrFail();
-                $commit = app(CanonicalCommitService::class)->commit($submission->version_id, $review->id, $extraction->id, $validation->id, $number - 1,
+                $commit = app(CanonicalCommitService::class)->commit($submission->version_id, $review->id, $extraction->id, $validation->id, app(CanonicalBaselines::class)->activeStateBefore($novel, $number),
                     $run->chapterCommitKey($number), $author, $number === 1 ? '首章自动授权正式提交' : '第'.$number.'章自动授权正式提交', array_column($extraction->result['proposed_entities'], 'key'), true, $run->id);
                 $artifacts['commit_id'] = $commit->id;
                 // 正式提交完成才推进章号；提交回执与每章产物保留在编排历史中。
@@ -145,7 +145,7 @@ final class ChapterProductionStepper
                     unset($artifacts['version_id'], $artifacts['submission_run_id']);
                     $run->artifacts = $artifacts;
                 } else {
-                    app(ChapterSubmissionService::class)->prepare($submission->version_id, $author, $number - 1, '恢复自动生成提交准备', $recoveryLimit, false, $submission->id, $model ?? $submission->config['model']);
+                    app(ChapterSubmissionService::class)->prepare($submission->version_id, $author, app(CanonicalBaselines::class)->activeStateBefore($novel, $number), '恢复自动生成提交准备', $recoveryLimit, false, $submission->id, $model ?? $submission->config['model']);
                 }
             }
         }

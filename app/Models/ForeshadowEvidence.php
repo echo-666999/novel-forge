@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\Model;
 use LogicException;
 
 /** 伏笔事实注释仅引用正式正文，原文、理由及操作者永不覆盖。 */
-#[Fillable(['foreshadow_id', 'novel_id', 'revision', 'from_status', 'to_status', 'commit_id', 'chapter_id', 'version_id', 'chapter_number', 'body_hash', 'evidence', 'reason', 'recorded_by', 'request_key', 'request_hash', 'created_at', 'source'])]
+#[Fillable(['foreshadow_id', 'novel_id', 'revision', 'from_status', 'to_status', 'commit_id', 'chapter_id', 'version_id', 'chapter_number', 'body_hash', 'evidence', 'reason', 'recorded_by', 'request_key', 'request_hash', 'created_at', 'source', 'baseline_id'])]
 class ForeshadowEvidence extends Model
 {
     /** 隔离测试工厂。
@@ -32,6 +32,6 @@ class ForeshadowEvidence extends Model
      */
     protected function casts(): array
     {
-        return ['foreshadow_id' => 'integer', 'novel_id' => 'integer', 'revision' => 'integer', 'commit_id' => 'integer', 'chapter_id' => 'integer', 'version_id' => 'integer', 'chapter_number' => 'integer', 'evidence' => 'array', 'created_at' => 'immutable_datetime'];
+        return ['foreshadow_id' => 'integer', 'novel_id' => 'integer', 'revision' => 'integer', 'commit_id' => 'integer', 'baseline_id' => 'integer', 'chapter_id' => 'integer', 'version_id' => 'integer', 'chapter_number' => 'integer', 'evidence' => 'array', 'created_at' => 'immutable_datetime'];
     }
 }

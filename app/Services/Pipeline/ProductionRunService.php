@@ -75,7 +75,7 @@ final class ProductionRunService
             if ($novel->generation_mode !== GenerationMode::SettingReal || $novel->archived_at !== null) {
                 throw new InvalidArgumentException('仅未归档的真实生成小说可以续写');
             }
-            if ($novel->status !== NovelStatus::Paused || $novel->pause_requested || $novel->state_version !== $novel->chapters_done) {
+            if ($novel->status !== NovelStatus::Paused || $novel->pause_requested || ! app(CanonicalBaselines::class)->writable($novel, $novel->chapters_done + 1)) {
                 throw new InvalidArgumentException('小说当前不在可续写的暂停边界，请先处理在途运行');
             }
             if ($novel->chapters_done < 1 || $end > $novel->target_chapters || $plan === null || $plan->chapters()->whereBetween('chapter_number', [$start, $end])->count() !== $count) {

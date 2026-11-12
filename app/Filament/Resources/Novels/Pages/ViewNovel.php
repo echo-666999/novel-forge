@@ -12,6 +12,7 @@ use App\Models\Novel;
 use App\Models\ProductionRun;
 use App\Services\Ai\CostForecast;
 use App\Services\Ai\ModelProfiles;
+use App\Services\Pipeline\CanonicalBaselines;
 use App\Services\Pipeline\ConfirmSettingService;
 use App\Services\Pipeline\ContentGenerationService;
 use App\Services\Pipeline\FormalChapterExport;
@@ -242,7 +243,7 @@ class ViewNovel extends ViewRecord
         $novel = $this->getRecord();
 
         return $novel->generation_mode === GenerationMode::SettingReal && $novel->archived_at === null && $novel->status === NovelStatus::Paused
-            && $novel->chapters_done >= 1 && $novel->chapters_done < $novel->target_chapters && $novel->state_version === $novel->chapters_done
+            && $novel->chapters_done >= 1 && $novel->chapters_done < $novel->target_chapters && app(CanonicalBaselines::class)->writable($novel, $novel->chapters_done + 1)
             && ! $novel->chapters()->where('number', '>', $novel->chapters_done)->exists()
             && $novel->outlinePlans()->where('status', 'completed')->exists() && ProductionRun::activeFor($novel->id) === null;
     }

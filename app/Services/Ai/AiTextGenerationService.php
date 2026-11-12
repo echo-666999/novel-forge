@@ -60,10 +60,11 @@ final class AiTextGenerationService
         if ($options->templateSnapshot !== null) {
             $parameters['prompt_templates'] = $options->templateSnapshot;
         }
-        if ($options->settingDecision || $options->chapterStep !== null || $options->submissionPurpose !== null || $options->templateSnapshot !== null) {
+        if ($options->settingDecision || $options->chapterStep !== null || $options->submissionPurpose !== null || $options->formalRevisionPurpose !== null || $options->templateSnapshot !== null) {
             // 同一不可变选项构造实际Agent和调用前审计；写入失败时绝不发送HTTP。
             $agent = match (true) {
                 $options->settingDecision => new SettingDecisionAgent($options),
+                $options->formalRevisionPurpose !== null => new FormalRevisionAgent($options),
                 $options->submissionPurpose !== null => new SubmissionAgent($options),
                 $options->chapterStep !== null => new ChapterGenerationAgent($options),
                 $options->outlineRange !== null => new OutlineGenerationAgent($options),

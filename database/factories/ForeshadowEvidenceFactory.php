@@ -24,6 +24,7 @@ class ForeshadowEvidenceFactory extends Factory
     {
         return ['commit_id' => CanonicalCommit::factory(),
             'novel_id' => fn (array $a): int => CanonicalCommit::findOrFail($a['commit_id'])->novel_id,
+            'baseline_id' => fn (array $a): ?int => CanonicalCommit::findOrFail($a['commit_id'])->baseline_id,
             'chapter_id' => fn (array $a): int => CanonicalCommit::findOrFail($a['commit_id'])->chapter_id,
             'version_id' => fn (array $a): int => CanonicalCommit::findOrFail($a['commit_id'])->version_id,
             'chapter_number' => fn (array $a): int => Chapter::findOrFail($a['chapter_id'])->number,

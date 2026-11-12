@@ -5,6 +5,8 @@ namespace App\Services\Pipeline;
 use App\Enums\GenerationMode;
 use App\Enums\Stage;
 use App\Enums\StageStatus;
+use App\Models\CanonicalBaseline;
+use App\Models\CanonicalCommit;
 use App\Models\Chapter;
 use App\Models\ChapterGenerationRun;
 use App\Models\ChapterProgressionCheck;
@@ -51,7 +53,12 @@ final class LegacyContentSources
         ];
         // 后续章摘要只能来自对应前序正式版本，篡改或误注入未来章节立即拒绝。
         if ($run->chapter->number > 1) {
-            $checks['前文摘要与正式来源'] = PlanningJson::hash($snapshot['prior_context'] ?? []) === PlanningJson::hash(app(CanonicalChapterContext::class)->build($run->chapter->novel, $run->chapter->number, $snapshot['prior_context']['version'] ?? CanonicalChapterContext::LEGACY_VERSION));
+            $checks['前文摘要与正式来源'] = PlanningJson::hash($snapshot['prior_context'] ?? []) === PlanningJson::hash(app(CanonicalChapterContext::class)->build($run->chapter->novel, $run->chapter->number, $snapshot['prior_context']['version'] ?? CanonicalChapterContext::LEGACY_VERSION, $this->frozenBaseline($snapshot)));
+        }
+        // 文风信号只能来自目标章之前的正式正文；旧运行没有该字段，不补核。
+        if (array_key_exists('style_signals', $snapshot)) {
+            $checks['文风信号与正式来源'] = ($snapshot['style_signals']['version'] ?? null) === StyleSignals::VERSION
+                && PlanningJson::hash($snapshot['style_signals']) === PlanningJson::hash(app(StyleSignals::class)->context($run->chapter->novel, $run->chapter->number, $this->frozenBaseline($snapshot)));
         }
         foreach ($checks as $label => $valid) {
             if (! $valid) {
@@ -169,5 +176,15 @@ final class LegacyContentSources
         }
 
         return $version;
+    }
+
+    /** 快照冻结时所依据的基线：取前文最后一章记录的提交所属基线；没有前文时用活动基线。切换后旧运行仍按原基线核对。 */
+    private function frozenBaseline(array $snapshot): ?CanonicalBaseline
+    {
+        $chapters = $snapshot['prior_context']['chapters'] ?? [];
+        $commitId = $chapters === [] ? null : ($chapters[array_key_last($chapters)]['commit_id'] ?? null);
+        $commit = $commitId === null ? null : CanonicalCommit::find($commitId);
+
+        return $commit === null ? null : CanonicalBaseline::find($commit->baseline_id);
     }
 }

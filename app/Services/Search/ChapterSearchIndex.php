@@ -2,11 +2,13 @@
 
 namespace App\Services\Search;
 
+use App\Models\CanonicalCommit;
 use App\Models\Chapter;
 use App\Models\ChapterVersion;
 use App\Models\Novel;
 use App\Models\StoryEntity;
 use App\Models\StoryOutboxEvent;
+use App\Services\Pipeline\CanonicalBaselines;
 use App\Services\Pipeline\CanonicalChapterContext;
 use App\Services\Pipeline\PlanningJson;
 use Illuminate\Support\Facades\Cache;
@@ -50,7 +52,8 @@ final class ChapterSearchIndex
                 if (! StoryOutboxEvent::where('commit_id', $chapter->canonical_commit_id)->where('event_type', 'chapter.committed')->exists()) {
                     throw new RuntimeException('正式提交缺少outbox，拒绝生成检索投影');
                 }
-                $knownCommits[] = $chapter->canonical_commit_id;
+                // 修订或重挂提交复制自原提交，原提交引入的实体同样可见。
+                array_push($knownCommits, ...app(CanonicalBaselines::class)->lineage(CanonicalCommit::findOrFail($chapter->canonical_commit_id)));
                 $body = ChapterVersion::findOrFail($chapter->formal_version_id)->body;
                 $names = $entities->filter(fn (StoryEntity $entity): bool => ($entity->origin['kind'] ?? '') === 'confirmed_setting' || in_array($entity->origin['commit_id'] ?? null, $knownCommits, true))
                     ->map(fn (StoryEntity $entity): array => array_values(array_unique([$entity->name, ...$entity->aliases])))->all();

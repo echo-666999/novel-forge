@@ -172,7 +172,7 @@ final class ContextBuilder
             'foreshadow_context', 'author_future_constraints', 'author_structure' => [6, '到期伏笔与终局约束'],
             'prior_context' => [7, '前文结尾与最近章节历史'],
             'long_term_memory', 'candidate_roadmap' => [8, '相关长期记忆与作者未来计划'],
-            'style_examples', 'writing_requirements' => [9, '文风样例与负面清单'],
+            'style_examples', 'style_signals', 'writing_requirements' => [9, '文风样例与负面清单'],
             default => [2, '不可丢失的硬约束与当前证据'],
         };
     }

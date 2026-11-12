@@ -235,10 +235,13 @@ class ViewNovelRun extends Page implements HasTable
     {
         $attempts = $this->getRecord()->stages()->orderBy('id')->get()->groupBy(fn (NovelStage $stage): string => $stage->stage->value);
 
-        return array_map(function (Stage $stage) use ($attempts): array {
+        // 润色和导出只是模拟流程的独立阶段；真实流程中润色在每章修订步骤内完成、导出单独执行，没有记录时不列出。
+        $stages = array_filter(Stage::cases(), fn (Stage $stage): bool => ! in_array($stage, [Stage::Polish, Stage::Export], true) || $attempts->has($stage->value));
+
+        return array_values(array_map(function (Stage $stage) use ($attempts): array {
             $rows = $attempts->get($stage->value, collect());
 
             return ['name' => $stage->label(), 'status' => $rows->last()?->status->label() ?? '未执行', 'attempts' => $rows->count(), 'error' => $rows->last()?->error_message];
-        }, Stage::cases());
+        }, $stages));
     }
 }

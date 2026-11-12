@@ -24,7 +24,7 @@ final class ManualContentDrafts
         $run = ChapterGenerationRun::findOrFail($version->run_id);
         if (! $actor->exists || ($run->config['author_id'] ?? null) !== $actor->id || $chapter->formal_version_id !== null
             || $chapter->current_candidate_version_id != $versionId || $chapter->novel->status !== NovelStatus::Paused
-            || $chapter->number !== $chapter->novel->chapters_done + 1 || $chapter->novel->state_version !== $chapter->number - 1
+            || ! app(CanonicalBaselines::class)->writable($chapter->novel, $chapter->number)
             || ! in_array($run->status, ['paused', 'completed', 'error'], true)
             || ChapterGenerationRun::where('chapter_id', $chapter->id)->latest('id')->value('id') !== $run->id
             || ProductionRun::coveringChapter($novelId, $chapter->number, true) !== null

@@ -28,8 +28,7 @@ final class RevisionWorkbench
     {
         $chapter = $parent->chapter;
         if (($parent->config['author_id'] ?? null) !== $author->id || $chapter->formal_version_id !== null
-            || $chapter->number !== $chapter->novel->chapters_done + 1
-            || $chapter->novel->state_version !== $chapter->number - 1
+            || ! app(CanonicalBaselines::class)->writable($chapter->novel, $chapter->number)
             || $chapter->current_candidate_version_id !== $versionId
             || ChapterGenerationRun::where('chapter_id', $chapter->id)->latest('id')->value('id') !== $parent->id
             || ProductionRun::coveringChapter($chapter->novel_id, $chapter->number, true) !== null

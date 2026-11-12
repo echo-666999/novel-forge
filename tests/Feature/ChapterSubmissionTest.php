@@ -464,7 +464,8 @@ class ChapterSubmissionTest extends TestCase
     public function test_stale_state_is_rejected_without_formal_writes(): void
     {
         [$run, $operator] = self::prepared();
-        DB::table('novels')->where('id', $run->novel_id)->update(['state_version' => 1]);
+        // 状态序号全书单调，失效以活动基线为准：已提交章数前进后，本章不再是下一章。
+        DB::table('novels')->where('id', $run->novel_id)->update(['state_version' => 1, 'chapters_done' => 1]);
         try {
             self::commit($run, $operator);
             $this->fail('失效版本仍提交');

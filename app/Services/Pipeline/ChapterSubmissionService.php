@@ -161,7 +161,8 @@ final class ChapterSubmissionService
         if ($novel->status !== NovelStatus::Paused) {
             throw new InvalidArgumentException('NOVEL_NOT_PAUSED');
         }
-        if ($novel->state_version !== $expectedState || $chapter->number !== $novel->chapters_done + 1) {
+        // 预期状态与活动基线链中上一章提交比较；状态序号全书单调，不再等于章号。
+        if (! app(CanonicalBaselines::class)->writable($novel, $chapter->number) || app(CanonicalBaselines::class)->activeStateBefore($novel, $chapter->number) !== $expectedState) {
             throw new InvalidArgumentException('STALE_STATE');
         }
         if ($chapter->current_candidate_version_id !== $version->id || $chapter->formal_version_id !== null || $bodyRun->stop_reason !== 'b04_accepted') {

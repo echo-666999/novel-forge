@@ -47,11 +47,19 @@ final class CanonicalCommitService
 
         return DB::transaction(function () use ($version, $reviewId, $extractionId, $validationId, $expectedState, $idempotencyKey, $operator, $reason, $approvedEntityKeys, $requestHash, $automationId): CanonicalCommit {
             $novel = Novel::lockForUpdate()->findOrFail($version->chapter->novel_id);
+            // 预期状态与活动基线链比较：上一章提交的状态序号，不再假定等于章号减一。
+            $baselines = app(CanonicalBaselines::class);
+            $baseline = $baselines->active($novel);
+            try {
+                $stateBefore = $baselines->stateBefore($baseline, $version->chapter->number);
+            } catch (InvalidArgumentException) {
+                $stateBefore = null;
+            }
             $delegation = null;
             if ($automationId !== null) {
                 $delegation = ProductionRun::findOrFail($automationId);
                 $delegation->assertDelegation($novel->id, $operator->id);
-                if ($version->chapter->number < $delegation->start_chapter || $version->chapter->number > $delegation->chapter_limit || $expectedState !== $version->chapter->number - 1 || $idempotencyKey !== $delegation->chapterCommitKey($version->chapter->number)) {
+                if ($version->chapter->number < $delegation->start_chapter || $version->chapter->number > $delegation->chapter_limit || $expectedState !== $stateBefore || $idempotencyKey !== $delegation->chapterCommitKey($version->chapter->number)) {
                     throw new InvalidArgumentException('AUTOMATION_SCOPE_MISMATCH');
                 }
             }
@@ -68,7 +76,7 @@ final class CanonicalCommitService
             $extraction = ChapterEventExtraction::findOrFail($extractionId);
             $validation = ChapterSubmissionValidation::findOrFail($validationId);
             $run = ChapterSubmissionRun::lockForUpdate()->findOrFail($review->submission_run_id);
-            if ($novel->state_version !== $expectedState || $run->expected_state_version !== $expectedState) {
+            if ($stateBefore !== $expectedState || $run->expected_state_version !== $expectedState || $chapter->number !== $novel->chapters_done + 1) {
                 throw new InvalidArgumentException('STALE_STATE');
             }
             if ($chapter->formal_version_id !== null || $chapter->canonical_commit_id !== null) {
@@ -92,13 +100,15 @@ final class CanonicalCommitService
             if ($verified->verdict !== 'pass') {
                 throw new InvalidArgumentException($verified->verdict === 'requires_approval' ? 'UNAPPROVED_ENTITY' : 'VALIDATION_BLOCKED');
             }
-            $nextState = $expectedState + 1;
+            // 状态序号全书单调递增，候选基线的提交也占用序号。
+            $nextState = $novel->state_version + 1;
             $receipt = ['novel_id' => $novel->id, 'chapter_id' => $chapter->id, 'version_id' => $version->id, 'body_hash' => $version->body_hash,
                 'previous_state_version' => $expectedState, 'state_version' => $nextState, 'chapters_done' => $novel->chapters_done + 1,
                 'author_story_approval' => $automationId === null, 'approval_mode' => $automationId === null ? 'manual' : 'delegated_policy', 'automation_id' => $automationId, 'event_count' => count($extraction->result['events'])];
             $commit = CanonicalCommit::create(['submission_run_id' => $run->id, 'novel_id' => $novel->id, 'chapter_id' => $chapter->id, 'version_id' => $version->id,
                 'validation_id' => $verified->id, 'previous_state_version' => $expectedState, 'state_version' => $nextState,
                 'idempotency_key' => $idempotencyKey, 'request_hash' => $requestHash, 'committed_by' => $operator->id, 'reason' => $reason,
+                'baseline_id' => $baseline->id, 'chapter_number' => $chapter->number, 'origin' => 'submission', 'source_commit_id' => null,
                 'approvals' => ['author_story_approval' => $automationId === null, 'approval_mode' => $automationId === null ? 'manual' : 'delegated_policy', 'automation_id' => $automationId, 'policy_hash' => $delegation?->policy_hash, 'approved_entity_keys' => $approvedEntityKeys, 'proposals_hash' => PlanningJson::hash($extraction->result['proposed_entities']),
                     'definitions' => $extraction->result['proposed_entities']], 'result' => $receipt, 'created_at' => now()]);
             $mapping = [];

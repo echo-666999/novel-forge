@@ -80,13 +80,16 @@ final class ForeshadowLedger
             // 必回收伏笔的回收只能由正式提交时的正文证据触发，不提供手工勾选。
             $this->require(! ($ledger->must_payoff && $status === 'resolved'), '必回收伏笔只能由正式提交的正文自动回收');
             $this->idle($novel);
+            // 候选基线复制的是建立时的证据链；修订期间登记的新证据不会进入候选基线，因此暂停登记。
+            $this->require(! app(CanonicalBaselines::class)->hasOpenCandidate($novel), '正式稿修订进行中，请切换或放弃候选基线后再登记伏笔证据');
             $this->require($ledger->revision === $revision, '伏笔已变更，请刷新后重试');
             $allowed = match ($ledger->status) {
                 'planned' => ['planted'], 'planted', 'reinforced' => ['reinforced', 'resolved'], default => []
             };
             $this->require(in_array($status, $allowed, true), '伏笔状态转换无效');
             $version = ChapterVersion::findOrFail($versionId);
-            $commit = CanonicalCommit::where('novel_id', $novel->id)->where('version_id', $versionId)->firstOrFail();
+            // 同一正文版本可能在多个基线中被提交，只认活动基线的正式指针。
+            $commit = CanonicalCommit::where('novel_id', $novel->id)->findOrFail(Chapter::where('novel_id', $novel->id)->findOrFail($version->chapter_id)->canonical_commit_id);
             $chapter = $this->formal($commit, $version);
             $this->require($chapter->number >= ($ledger->evidence()->max('chapter_number') ?? 1), '证据章节不能倒退');
             $parts = explode("\n", $version->body);
@@ -94,7 +97,7 @@ final class ForeshadowLedger
             $offset = $quote === '' ? false : mb_strpos($text, $quote);
             $this->require($paragraph > 0 && $offset !== false && trim($reason) !== '', '证据必须逐字匹配指定正文段落，并填写理由');
             $start = mb_strlen(implode("\n", array_slice($parts, 0, $paragraph - 1))) + ($paragraph > 1 ? 1 : 0) + $offset;
-            $evidence = ForeshadowEvidence::create(['source' => 'manual', 'foreshadow_id' => $ledger->id, 'novel_id' => $novel->id, 'revision' => $revision + 1, 'from_status' => $ledger->status, 'to_status' => $status, 'commit_id' => $commit->id, 'chapter_id' => $chapter->id, 'version_id' => $version->id, 'chapter_number' => $chapter->number, 'body_hash' => $version->body_hash, 'evidence' => ['paragraph' => $paragraph, 'start' => $start, 'end' => $start + mb_strlen($quote), 'quote' => $quote], 'reason' => $reason, 'recorded_by' => $author->id, 'request_key' => $key, 'request_hash' => $hash, 'created_at' => now()]);
+            $evidence = ForeshadowEvidence::create(['source' => 'manual', 'foreshadow_id' => $ledger->id, 'novel_id' => $novel->id, 'revision' => $revision + 1, 'from_status' => $ledger->status, 'to_status' => $status, 'commit_id' => $commit->id, 'baseline_id' => $commit->baseline_id, 'chapter_id' => $chapter->id, 'version_id' => $version->id, 'chapter_number' => $chapter->number, 'body_hash' => $version->body_hash, 'evidence' => ['paragraph' => $paragraph, 'start' => $start, 'end' => $start + mb_strlen($quote), 'quote' => $quote], 'reason' => $reason, 'recorded_by' => $author->id, 'request_key' => $key, 'request_hash' => $hash, 'created_at' => now()]);
             $ledger->update(['status' => $status, 'revision' => $revision + 1]);
 
             return $evidence;
@@ -171,7 +174,7 @@ final class ForeshadowLedger
         $evidence = $entry['evidence'][0];
         $key = (string) Uuid::uuid5($commitKey, 'foreshadow-'.$ledger->id);
         $record = ForeshadowEvidence::create(['source' => 'commit_extraction', 'foreshadow_id' => $ledger->id, 'novel_id' => $commit->novel_id, 'revision' => $ledger->revision + 1,
-            'from_status' => $ledger->status, 'to_status' => $to, 'commit_id' => $commit->id, 'chapter_id' => $chapter->id, 'version_id' => $version->id, 'chapter_number' => $chapter->number,
+            'from_status' => $ledger->status, 'to_status' => $to, 'commit_id' => $commit->id, 'baseline_id' => $commit->baseline_id, 'chapter_id' => $chapter->id, 'version_id' => $version->id, 'chapter_number' => $chapter->number,
             'body_hash' => $version->body_hash, 'evidence' => [...$evidence, 'all_evidence' => $entry['evidence']], 'reason' => '正式提交时自动提取：'.$entry['explanation'],
             'recorded_by' => $operator->id, 'request_key' => $key, 'request_hash' => PlanningJson::hash([$commit->id, $entry]), 'created_at' => now()]);
         $ledger->update(['status' => $to, 'revision' => $ledger->revision + 1]);

@@ -266,6 +266,10 @@ final class ContentExecutionService
         if (array_key_exists('foreshadow_context', $run->snapshot)) {
             $payload['foreshadow_context'] = $run->snapshot['foreshadow_context'];
         }
+        // 跨章文风信号只给写作和修订作避免模板化的提示，检查步骤不据此判定问题。
+        if (array_key_exists('style_signals', $run->snapshot) && in_array($step, ['draft', 'revise'], true)) {
+            $payload['style_signals'] = $run->snapshot['style_signals'];
+        }
 
         // 分支恢复按实测失败槽位逐段修复，其他段逐字保留，整章最终仍执行原契约。
         // 新运行按冻结的模型能力决定；旧运行没有该字段时沿用原验收分支判定。

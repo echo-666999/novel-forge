@@ -8,8 +8,8 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use LogicException;
 
-/** 不可变章节正式提交回执。 */
-#[Fillable(['submission_run_id', 'novel_id', 'chapter_id', 'version_id', 'validation_id', 'previous_state_version', 'state_version', 'idempotency_key', 'request_hash', 'committed_by', 'reason', 'approvals', 'result', 'created_at'])]
+/** 不可变章节正式提交回执；章位按所属基线解释，修订与重挂提交记录来源提交。 */
+#[Fillable(['submission_run_id', 'novel_id', 'chapter_id', 'version_id', 'validation_id', 'previous_state_version', 'state_version', 'idempotency_key', 'request_hash', 'committed_by', 'reason', 'approvals', 'result', 'created_at', 'baseline_id', 'chapter_number', 'origin', 'source_commit_id'])]
 class CanonicalCommit extends Model
 {
     /** 工厂只用于隔离测试，不触发外部请求。
@@ -31,6 +31,6 @@ class CanonicalCommit extends Model
      */
     protected function casts(): array
     {
-        return ['submission_run_id' => 'integer', 'novel_id' => 'integer', 'chapter_id' => 'integer', 'version_id' => 'integer', 'validation_id' => 'integer', 'previous_state_version' => 'integer', 'state_version' => 'integer', 'approvals' => 'array', 'result' => 'array', 'created_at' => 'immutable_datetime'];
+        return ['submission_run_id' => 'integer', 'novel_id' => 'integer', 'chapter_id' => 'integer', 'version_id' => 'integer', 'validation_id' => 'integer', 'previous_state_version' => 'integer', 'state_version' => 'integer', 'baseline_id' => 'integer', 'chapter_number' => 'integer', 'source_commit_id' => 'integer', 'approvals' => 'array', 'result' => 'array', 'created_at' => 'immutable_datetime'];
     }
 }

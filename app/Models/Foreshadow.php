@@ -42,7 +42,8 @@ class Foreshadow extends Model
      */
     public function evidence(): HasMany
     {
-        return $this->hasMany(ForeshadowEvidence::class)->orderBy('revision');
+        // 只取小说活动基线上的证据链；被替换基线的证据保留但不参与当前账本。
+        return $this->hasMany(ForeshadowEvidence::class)->whereIn('baseline_id', Novel::query()->select('active_baseline_id')->whereColumn('novels.id', 'foreshadow_evidence.novel_id'))->orderBy('revision');
     }
 
     /** 统一面向作者的状态名称。 */

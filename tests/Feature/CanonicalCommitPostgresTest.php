@@ -110,7 +110,8 @@ class CanonicalCommitPostgresTest extends TestCase
         $this->rejects(fn () => DB::table('chapter_submission_runs')->where('id', $first->id)->update(['requests_used' => 3]), '23514');
         $this->rejects(fn () => ChapterSubmissionValidation::factory()->create(['submission_run_id' => $second->id, 'review_id' => $review->id]), '23503');
         $commit = CanonicalCommit::factory()->create();
-        $this->rejects(fn () => DB::table('canonical_commits')->where('id', $commit->id)->update(['state_version' => 3]), '23514');
+        // 状态序号全书单调可跳号，但不能不前进。
+        $this->rejects(fn () => DB::table('canonical_commits')->where('id', $commit->id)->update(['state_version' => 0]), '23514');
         $entity = StoryEntity::factory()->create();
         $this->rejects(fn () => StoryEvent::factory()->create(['commit_id' => $commit->id, 'actor_entity_id' => $entity->id]), '23503');
         $this->rejects(fn () => DB::table('chapters')->where('id', $second->chapter_id)->update(['formal_version_id' => $first->version_id]), '23503');
@@ -187,6 +188,11 @@ class CanonicalCommitPostgresTest extends TestCase
         $foreshadowMigration = require database_path('migrations/2026_11_06_164613_create_foreshadow_ledger_tables.php');
         // C09 实体版本依赖正式实体，专库回滚按子表优先执行，禁止级联删除。
         $entityDefinitionsMigration = require database_path('migrations/2026_11_07_133118_create_entity_definition_versions_table.php');
+        // A-09 基线依赖正式提交与伏笔证据，最先撤销、最后重建。
+        $formalRevisionMigration = require database_path('migrations/2026_11_12_140653_create_formal_revisions_table.php');
+        $formalRevisionMigration->down();
+        $baselineMigration = require database_path('migrations/2026_11_12_133335_create_canonical_baselines_table.php');
+        $baselineMigration->down();
         $entityDefinitionsMigration->down();
         // D01 伏笔长程契约字段依附于伏笔表，先撤销再撤销原账本表，恢复时按相反顺序重建。
         $foreshadowContractMigration = require database_path('migrations/2026_11_10_201335_add_long_range_contract_to_foreshadows.php');
@@ -199,6 +205,8 @@ class CanonicalCommitPostgresTest extends TestCase
         $foreshadowMigration->up();
         $foreshadowContractMigration->up();
         $entityDefinitionsMigration->up();
+        $baselineMigration->up();
+        $formalRevisionMigration->up();
         $this->assertSame($beforeNovel, Novel::findOrFail($stage->novel_id)->getRawOriginal());
         $this->assertSame($beforeStage, $stage->fresh()->getRawOriginal());
         ChapterSubmissionRun::factory()->create();
@@ -236,6 +244,14 @@ class CanonicalCommitPostgresTest extends TestCase
         $migration = require database_path('migrations/2026_11_06_164613_create_foreshadow_ledger_tables.php');
         $this->expectExceptionMessage('伏笔账本已有历史，拒绝回滚');
         $migration->down();
+    }
+
+    /** 状态序号全书单调：候选基线提交可以跳号，但必须严格前进。 */
+    public function test_commit_state_may_skip_but_must_advance(): void
+    {
+        $commit = CanonicalCommit::factory()->create(['previous_state_version' => 1, 'state_version' => 5]);
+        $this->assertSame(5, $commit->fresh()->state_version);
+        $this->rejects(fn () => CanonicalCommit::factory()->create(['previous_state_version' => 3, 'state_version' => 3]), '23514');
     }
 
     /** 约束失败独立回滚，避免PostgreSQL事务错误污染后续断言。 */

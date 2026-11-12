@@ -2,6 +2,7 @@
 
 namespace App\Services\Pipeline;
 
+use App\Models\CanonicalBaseline;
 use App\Models\CanonicalCommit;
 use App\Models\Chapter;
 use App\Models\ChapterVersion;
@@ -15,32 +16,31 @@ final class FormalChapterExport
     /** 在正式提交使用的小说锁内构造完整文件，任何缺章或来源损坏均拒绝整次导出。
      * @return array{filename: string, mime: string, content: string, manifest: array}
      */
-    public function build(int $novelId, int $endChapter, string $format): array
+    public function build(int $novelId, int $endChapter, string $format, ?int $baselineId = null): array
     {
         if (! in_array($format, ['txt', 'md'], true) || $endChapter < 1) {
             throw new InvalidArgumentException('请选择TXT或Markdown格式，并指定有效的截至章号');
         }
 
-        return DB::transaction(function () use ($novelId, $endChapter, $format): array {
+        return DB::transaction(function () use ($novelId, $endChapter, $format, $baselineId): array {
             $novel = Novel::lockForUpdate()->findOrFail($novelId);
-            if ($endChapter > $novel->chapters_done || $endChapter > $novel->state_version) {
+            // 默认导出活动基线；也可导出已被替换或候选的基线，正文按该基线提交链取。
+            $baselines = app(CanonicalBaselines::class);
+            $baseline = $baselineId === null ? $baselines->current($novel) : CanonicalBaseline::where('novel_id', $novel->id)->findOrFail($baselineId);
+            if ($baseline === null || $endChapter > $baselines->length($baseline)) {
                 throw new InvalidArgumentException('导出范围超出已正式提交的连续章节');
             }
-            $chapters = $novel->chapters()->whereBetween('number', [1, $endChapter])->orderBy('number')->get();
-            if ($chapters->count() !== $endChapter) {
-                throw new InvalidArgumentException('正式章节存在缺口，不能跳章导出');
-            }
+            $active = $baseline->status === 'active';
             $manifest = [];
             $toc = [];
             $sections = [];
-            foreach ($chapters as $index => $chapter) {
+            foreach ($baselines->chain($baseline, $endChapter) as $index => $commit) {
                 $number = $index + 1;
-                $commit = CanonicalCommit::find($chapter->canonical_commit_id);
-                $version = ChapterVersion::find($chapter->formal_version_id);
-                if ($chapter->number !== $number || $commit === null || $version === null
-                    || $commit->novel_id !== $novel->id || $commit->chapter_id !== $chapter->id
-                    || $commit->version_id !== $version->id || $version->chapter_id !== $chapter->id
-                    || $commit->previous_state_version !== $number - 1 || $commit->state_version !== $number
+                $chapter = Chapter::where('novel_id', $novel->id)->find($commit->chapter_id);
+                $version = ChapterVersion::find($commit->version_id);
+                if ($chapter === null || $chapter->number !== $number || $version === null
+                    || $commit->novel_id !== $novel->id || $version->chapter_id !== $chapter->id
+                    || ($active && ($chapter->canonical_commit_id !== $commit->id || $chapter->formal_version_id !== $version->id))
                     || ($commit->result['body_hash'] ?? null) !== $version->body_hash
                     || hash('sha256', $version->body) !== $version->body_hash) {
                     throw new InvalidArgumentException('第'.$number.'章正式回执、版本或正文摘要不一致');
@@ -74,6 +74,7 @@ final class FormalChapterExport
         }
         $toc = [];
         $sections = [];
+        $previousState = 0;
         foreach ($manifest as $index => $entry) {
             $number = $index + 1;
             $version = ChapterVersion::find($entry['version_id']);
@@ -81,11 +82,12 @@ final class FormalChapterExport
             if ($entry['number'] !== $number || $version === null || $commit === null || $commit->novel_id !== $novelId
                 || $commit->version_id !== $version->id || $commit->chapter_id !== $version->chapter_id
                 || ! Chapter::where('novel_id', $novelId)->where('number', $number)->whereKey($commit->chapter_id)->exists()
-                || $commit->previous_state_version !== $number - 1 || $commit->state_version !== $number
+                || $commit->chapter_number !== $number || $commit->previous_state_version !== $previousState
                 || $version->title !== $entry['title'] || $version->body_hash !== $entry['body_hash']
                 || ($commit->result['body_hash'] ?? null) !== $version->body_hash || hash('sha256', $version->body) !== $version->body_hash) {
                 throw new InvalidArgumentException('冻结清单与正式来源不一致');
             }
+            $previousState = $commit->state_version;
             $name = preg_replace('/^第[〇零一二三四五六七八九十百千万两0-9]+[章节回][\s：:、.\-]*/u', '', $this->singleLine($version->title));
             $title = '第'.$number.'章 '.$name;
             $toc[] = $format === 'md' ? '- '.$this->markdown($title) : $title;
