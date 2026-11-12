@@ -128,6 +128,7 @@ class AcceptanceReading extends Page
 
         return $schema->statePath('data')->components([
             ...$fields,
+            // 点击脚本原样写入双引号属性 x-on:click，脚本内只能使用单引号，否则属性被截断、点击无反应。
             Textarea::make('quote')->label('本章原文依据')->rows(5)->required()->maxLength(10000)
                 ->helperText('在左侧正文中选中文字后点击“引用选中文字”，可多次引用，系统自动用空行分隔。评分锚点：'.$anchors.'。')
                 ->hintAction(Action::make('quoteSelection')->label('引用选中文字')->icon('heroicon-m-chat-bubble-bottom-center-text')->alpineClickHandler(<<<'JS'
@@ -137,7 +138,7 @@ class AcceptanceReading extends Page
                     if (! text) { text = (window.novelForgeAcceptanceSelection || '').trim(); }
                     if (! text) { new FilamentNotification().title('请先在左侧正文中选中要引用的文字').warning().send(); return; }
                     const current = ($wire.get('data.quote') || '').trim();
-                    $wire.set('data.quote', current ? current + "\n\n" + text : text);
+                    $wire.set('data.quote', current ? current + '\n\n' + text : text);
                     window.novelForgeAcceptanceSelection = '';
                     JS)),
             Textarea::make('reason')->label('评分原因')->rows(3)->required()->maxLength(10000),

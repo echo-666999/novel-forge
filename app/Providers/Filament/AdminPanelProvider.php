@@ -28,6 +28,8 @@ class AdminPanelProvider extends PanelProvider
             ->id('admin')
             ->path('admin')
             ->brandName(config('app.name'))
+            // 矢量图标随主色绘制；不支持SVG的浏览器回退到根目录favicon.ico。
+            ->favicon(asset('favicon.svg'))
             ->login()
             ->profile(EditProfile::class)
             ->colors([

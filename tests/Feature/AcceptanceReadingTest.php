@@ -82,6 +82,8 @@ class AcceptanceReadingTest extends TestCase
             ->assertSeeHtml('data-acceptance-body')
             ->assertSee('引用选中文字')
             ->assertSeeHtml('novelForgeAcceptanceSelection')
+            // 处理脚本写在 x-on:click 双引号属性中，必须完整保留到最后一句，不能被双引号截断。
+            ->assertSeeHtml("current + '\\n\\n' + text : text);\nwindow.novelForgeAcceptanceSelection = '';")
             ->assertSet('data.scores.plot', null)
             ->assertSet('data.read_confirmed', false);
     }

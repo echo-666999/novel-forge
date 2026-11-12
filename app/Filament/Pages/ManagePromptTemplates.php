@@ -4,12 +4,14 @@ namespace App\Filament\Pages;
 
 use App\Services\Ai\BuiltinPromptTemplates;
 use App\Services\Ai\PromptTemplateManager;
+use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Pages\Page;
 use Filament\Schemas\Schema;
+use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Concerns\InteractsWithTable;
 use Filament\Tables\Contracts\HasTable;
@@ -26,6 +28,9 @@ class ManagePromptTemplates extends Page implements HasTable
 
     /** 导航和页面名称。 */
     protected static ?string $title = 'Prompt 模板管理';
+
+    /** 侧栏图标。 */
+    protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedDocumentText;
 
     /** 侧栏分组。 */
     protected static string|UnitEnum|null $navigationGroup = '配置与运维';
@@ -108,11 +113,11 @@ class ManagePromptTemplates extends Page implements HasTable
             foreach ($data['groups'] as $scope => $group) {
                 foreach ($group['versions'] as $version) {
                     $rows->put($version->id, [
-                        'id'         => $version->id,
-                        'identity'   => $group['title'],
-                        'version'    => 'V' . $version->version_number,
-                        'status'     => $version->status,
-                        'notes'      => $version->notes,
+                        'id' => $version->id,
+                        'identity' => $group['title'],
+                        'version' => 'V'.$version->version_number,
+                        'status' => $version->status,
+                        'notes' => $version->notes,
                         'created_at' => $version->created_at,
                         'references' => $data['references'][$version->id] ?? 0,
                     ]);

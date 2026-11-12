@@ -5,12 +5,14 @@ namespace App\Filament\Pages;
 use App\Filament\Resources\Novels\NovelResource;
 use App\Models\ChapterGenerationRun;
 use App\Models\Novel;
+use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Forms\Components\DatePicker;
 use Filament\Pages\Page;
 use Filament\Schemas\Components\EmbeddedTable;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
+use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Concerns\InteractsWithTable;
 use Filament\Tables\Contracts\HasTable;
@@ -27,6 +29,9 @@ class GenerationRuns extends Page implements HasTable
 
     /** 侧栏与页面标题明确只包含章节生成运行。 */
     protected static ?string $title = '章节生成运行中心';
+
+    /** 侧栏图标。 */
+    protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedQueueList;
 
     /** 侧栏分组。 */
     protected static string|UnitEnum|null $navigationGroup = '生产与质量';

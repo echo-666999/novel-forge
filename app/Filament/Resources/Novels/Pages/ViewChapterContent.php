@@ -5,6 +5,7 @@ namespace App\Filament\Resources\Novels\Pages;
 use App\Enums\ProductionFailure;
 use App\Filament\Resources\Novels\NovelResource;
 use App\Models\CanonicalCommit;
+use App\Models\Chapter;
 use App\Models\ChapterEventExtraction;
 use App\Models\ChapterGenerationRun;
 use App\Models\ChapterProgressionCheck;
@@ -74,12 +75,20 @@ class ViewChapterContent extends Page implements HasTable
 
     protected static ?string $title = '章节候选与推进检查';
 
+    /** 自定义视图先渲染动作弹窗，避免弹窗落入隐藏标签内的表格。 */
+    protected string $view = 'filament.resources.novels.pages.view-chapter-content';
+
     /** 阅读指定章节，查询仍固定在当前小说范围。 */
     #[Url(as: 'chapter')]
     public int $chapterNumber = 1;
 
     /** 当前请求内缓存所选章节运行，切换章节时清空。 */
     private ?ChapterGenerationRun $resolvedRun = null;
+
+    /** 当前请求内按章节号缓存正式版本，切换章节后自动失效。
+     * @var array{number: int, version: ?ChapterVersion}|null
+     */
+    private ?array $resolvedFormalVersion = null;
 
     /** 路由先解析小说权限，再限制所有运行和版本的所属章节。 */
     public function mount(int|string $record): void
@@ -147,20 +156,24 @@ class ViewChapterContent extends Page implements HasTable
             ]),
             Tabs::make('chapter-workbench')->persistTabInQueryString()->tabs([
                 Tab::make('正文')->schema([
-                    Section::make('当前正文候选')->schema([
-                        TextEntry::make('origin')->label('正文来源')->state(fn (): string => $this->candidate()?->run_id === $this->run()?->id ? '本运行已保存的候选版本' : '保留的源版本；新扩写候选保存后才切换'),
-                        TextEntry::make('body')->label('正文')->state(fn (): ?string => $this->candidate()?->body)->extraAttributes(['style' => 'white-space: pre-wrap; line-height: 1.9']),
-                        TextEntry::make('count')->label('正文可见非空白字符数')->state(fn (): ?int => $this->candidate()?->character_count),
+                    Section::make(fn (): string => $this->formalVersion() !== null ? '正式稿正文' : '当前正文候选')->schema([
+                        TextEntry::make('origin')->label('正文来源')->state(fn (): string => match (true) {
+                            $this->formalVersion() !== null => '已正式提交的版本（只读）；下方检查结果来自生成运行的候选',
+                            $this->candidate()?->run_id === $this->run()?->id => '本运行已保存的候选版本',
+                            default => '保留的源版本；新扩写候选保存后才切换',
+                        }),
+                        TextEntry::make('body')->label('正文')->state(fn (): ?string => $this->displayedVersion()?->body)->extraAttributes(['style' => 'white-space: pre-wrap; line-height: 1.9']),
+                        TextEntry::make('count')->label('正文可见非空白字符数')->state(fn (): ?int => $this->displayedVersion()?->character_count),
                         TextEntry::make('verdict')->label('推进检查结论')->state(fn (): string => match (data_get($this->run()?->chapter->progression_result, 'verdict')) {
                             'pass' => '通过，仍待后续评审', 'insufficient' => '推进不足', 'blocked' => '存在核心设定冲突', default => '尚无可信检查结果'
                         }),
-                        TextEntry::make('reading_status')->label('本地全文复核提示')->state(fn (): string => $this->candidate() !== null && ContentReadingAudit::inspect($this->candidate()->body)['requires_review'] ? '发现重复或时序风险，须人工复核；模型通过不能视为全文验收通过。' : '未命中有限规则；仍须阅读全文，不能据此认定没有问题。'),
-                        RepeatableEntry::make('reading_issues')->label('可定位的阅读线索')->state(fn (): array => $this->candidate() === null ? [] : ContentReadingAudit::inspect($this->candidate()->body)['issues'])->schema([
+                        TextEntry::make('reading_status')->label('本地全文复核提示')->state(fn (): string => $this->displayedVersion() !== null && ContentReadingAudit::inspect($this->displayedVersion()->body)['requires_review'] ? '发现重复或时序风险，须人工复核；模型通过不能视为全文验收通过。' : '未命中有限规则；仍须阅读全文，不能据此认定没有问题。'),
+                        RepeatableEntry::make('reading_issues')->label('可定位的阅读线索')->state(fn (): array => $this->displayedVersion() === null ? [] : ContentReadingAudit::inspect($this->displayedVersion()->body)['issues'])->schema([
                             TextEntry::make('type')->label('线索类型')->formatStateUsing(fn (string $state): string => $state === 'repeated_text' ? '重复原文' : '可能的时序倒退'), TextEntry::make('reason')->label('复核说明'),
                             RepeatableEntry::make('evidence')->label('原文位置')->schema([TextEntry::make('paragraph')->label('段号'), TextEntry::make('quote')->label('重复片段或时序原文')]),
                         ]),
                         RepeatableEntry::make('style_hints')->label('跨章文风提示（仅供参考，不作为问题判定）')->visible(fn (): bool => isset($this->run()?->snapshot['style_signals']))
-                            ->state(fn (): array => $this->candidate() === null ? [] : array_map(fn (array $hint): array => [...$hint, 'chapters' => '第'.implode('、', $hint['chapters']).'章'], StyleSignals::inspect($this->candidate()->body, $this->run()->snapshot['style_signals'])))->placeholder('当前正文未沿用近章反复出现的短语或开头结尾')->schema([
+                            ->state(fn (): array => $this->displayedVersion() === null ? [] : array_map(fn (array $hint): array => [...$hint, 'chapters' => '第'.implode('、', $hint['chapters']).'章'], StyleSignals::inspect($this->displayedVersion()->body, $this->run()->snapshot['style_signals'])))->placeholder('当前正文未沿用近章反复出现的短语或开头结尾')->schema([
                                 TextEntry::make('type')->label('提示类型')->formatStateUsing(fn (string $state): string => match ($state) {
                                     'overused_phrase' => '沿用近章反复出现的短语', 'similar_opening' => '开头与近章雷同', default => '结尾与近章雷同',
                                 }),
@@ -261,6 +274,24 @@ class ViewChapterContent extends Page implements HasTable
                 ]),
             ]),
         ]);
+    }
+
+    /** 已正式提交的章节返回正式版本；正式稿可能是候选之后再修订的版本，不能用候选正文代替。 */
+    private function formalVersion(): ?ChapterVersion
+    {
+        if (($this->resolvedFormalVersion['number'] ?? null) !== $this->chapterNumber) {
+            $chapter = $this->getRecord()->chapters()->where('number', $this->chapterNumber)->first();
+            $this->resolvedFormalVersion = ['number' => $this->chapterNumber, 'version' => $chapter?->formal_version_id === null
+                ? null : ChapterVersion::query()->where('chapter_id', $chapter->id)->find($chapter->formal_version_id)];
+        }
+
+        return $this->resolvedFormalVersion['version'];
+    }
+
+    /** 正文标签展示的版本：正式稿优先，否则为当前候选。 */
+    private function displayedVersion(): ?ChapterVersion
+    {
+        return $this->formalVersion() ?? $this->candidate();
     }
 
     /** 当前候选必须属于当前运行章节，不允许跨小说读取。 */
@@ -407,12 +438,14 @@ class ViewChapterContent extends Page implements HasTable
     {
         // 自动授权范围内的章节统一从恢复台推进，避免手动与自动任务并发接管同一候选；范围外的章节使用手动工作台。
         if (ProductionRun::coveringChapter($this->getRecord()->id, $this->chapterNumber) !== null) {
-            return [Action::make('selectChapter')->label('选择阅读章节')->schema([Select::make('number')->label('章节')->options(fn (): array => $this->getRecord()->chapters()->orderBy('number')->get()->mapWithKeys(fn ($chapter): array => [$chapter->number => '第'.$chapter->number.'章 '.$chapter->title])->all())->required()])->action(function (array $data): void {
+            return [Action::make('selectChapter')->label('选择阅读章节')->schema([Select::make('number')->label('章节')->options(fn (): array => $this->getRecord()->chapters()->orderBy('number')->get()->mapWithKeys(fn (Chapter $chapter): array => [$chapter->number => $chapter->numberedTitle()])->all())->required()])->action(function (array $data): void {
                 $this->chapterNumber = (int) $data['number'];
                 $this->resolvedRun = null;
+                $this->resolvedFormalVersion = null;
             }), Action::make('automationRun')->label('自动生成进度 / 恢复')->url(fn (): string => NovelResource::getUrl('run', ['record' => $this->getRecord()])),
                 Action::make('refresh')->label('刷新状态')->action(function (): void {
                     $this->resolvedRun = null;
+                    $this->resolvedFormalVersion = null;
                     $this->getRecord()->refresh();
                 }), Action::make('back')->label('返回小说')->url(fn (): string => NovelResource::getUrl('view', ['record' => $this->getRecord()]))];
         }
@@ -440,6 +473,7 @@ class ViewChapterContent extends Page implements HasTable
                         (int) $data['execution_limit'], issues: $issues, expectedVersionId: (int) $data['version_id']);
                 });
                 $this->resolvedRun = null;
+                $this->resolvedFormalVersion = null;
                 $this->getRecord()->refresh();
             }), Action::make('prepareSubmission')->label('准备正式提交')->visible(fn (): bool => $this->run()?->stop_reason === 'b04_accepted' && $this->submission() === null)
             ->modalHeading('授权一次评审及一次事件提取')->modalDescription('当前正文保持冻结；最多两次模型请求。任何失败立即停止，不自动续写或重试。新实体另待作者批准。')
@@ -487,6 +521,7 @@ class ViewChapterContent extends Page implements HasTable
                         $run->expected_state_version, $data['idempotency_key'], Filament::auth()->user(), $data['reason'], $data['approved_entities'] ?? [], (bool) $data['acknowledge']);
                 });
                 $this->resolvedRun = null;
+                $this->resolvedFormalVersion = null;
                 $this->getRecord()->refresh();
             }), Action::make('recoverContent')->label('恢复首章候选')->modalHeading('显式授权有限恢复')
             ->visible(fn (): bool => data_get($this->run()?->config, 'workbench') === null && in_array($this->run()?->status, ['paused', 'error', 'completed'], true) && $this->run()?->stop_reason !== 'b04_accepted' && ! ChapterGenerationRun::where('parent_run_id', $this->run()?->id)->exists())
@@ -502,6 +537,7 @@ class ViewChapterContent extends Page implements HasTable
             ])->action(function (array $data): void {
                 $this->performContentAction(fn () => app(ContentGenerationService::class)->recover($this->run()->id, Filament::auth()->user(), $data['reason'], (int) $data['request_limit'], (int) $data['execution_limit'], (bool) ($data['confirm_unknown'] ?? false), (bool) ($data['rewrite'] ?? false), $data['model']));
                 $this->resolvedRun = null;
+                $this->resolvedFormalVersion = null;
                 $this->getRecord()->refresh();
             }), Action::make('fullReading')->label('记录全文核对')->modalHeading('核对当前正文与独立检查')
             ->visible(fn (): bool => $this->run()?->status === 'completed' && $this->run()?->stop_reason === 'awaiting_review')
@@ -511,6 +547,7 @@ class ViewChapterContent extends Page implements HasTable
                 $notes = array_values(array_filter(array_map('trim', explode("\n", $data['notes']))));
                 $this->performContentAction(fn () => app(ContentGenerationService::class)->recordReading($this->run()->id, Filament::auth()->user(), (bool) ($data['accepted'] ?? false), $notes));
                 $this->resolvedRun = null;
+                $this->resolvedFormalVersion = null;
                 $this->getRecord()->refresh();
             }), Action::make('continueContent')->label('在原额度内继续')->modalHeading('继续未执行步骤')
             ->visible(fn (): bool => ($this->run()?->config['version'] ?? null) === ContentExecutionContract::VERSION && $this->run()?->status === 'paused' && in_array($this->run()?->stop_reason, ['execution_limit', 'dispatch_failed', 'reading_failed', 'user_paused'], true))
@@ -518,9 +555,11 @@ class ViewChapterContent extends Page implements HasTable
             ->action(function (array $data): void {
                 $this->performContentAction(fn () => app(ContentGenerationService::class)->continue($this->run()->id, reason: $data['reason'], authorId: Filament::auth()->id()));
                 $this->resolvedRun = null;
+                $this->resolvedFormalVersion = null;
                 $this->getRecord()->refresh();
             }), Action::make('refresh')->label('刷新状态')->action(function (): void {
                 $this->resolvedRun = null;
+                $this->resolvedFormalVersion = null;
                 $this->getRecord()->refresh();
             }),
             Action::make('back')->label('返回小说')->url(fn (): string => NovelResource::getUrl('view', ['record' => $this->getRecord()]))];

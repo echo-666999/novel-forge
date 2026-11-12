@@ -49,4 +49,12 @@ class Chapter extends Model
     {
         return $this->belongsTo(Novel::class);
     }
+
+    /** 选择列表等处的展示名：统一以本章编号开头，去掉章名里已自带的中文章号，避免出现「第4章 第4章」。 */
+    public function numberedTitle(): string
+    {
+        $name = trim((string) preg_replace('/^第[〇零一二三四五六七八九十百千万两0-9]+[章节回][\s：:、.\-]*/u', '', trim((string) $this->title)));
+
+        return trim('第'.$this->number.'章 '.$name);
+    }
 }

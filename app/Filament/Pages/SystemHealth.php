@@ -9,6 +9,7 @@ use App\Services\Pipeline\BackendCapabilities;
 use App\Services\Pipeline\PlanningJson;
 use App\Services\Pipeline\WorkerHeartbeat;
 use App\Services\Search\SearchIndexStatus;
+use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Facades\Filament;
 use Filament\Infolists\Components\RepeatableEntry;
@@ -18,6 +19,7 @@ use Filament\Pages\Page;
 use Filament\Schemas\Components\EmbeddedTable;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
+use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Concerns\InteractsWithTable;
 use Filament\Tables\Contracts\HasTable;
@@ -35,6 +37,9 @@ class SystemHealth extends Page implements HasTable
 
     /** 系统观测页面中文标题。 */
     protected static ?string $title = '系统健康与事务通知';
+
+    /** 侧栏图标。 */
+    protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedServerStack;
 
     /** 侧栏分组。 */
     protected static string|UnitEnum|null $navigationGroup = '配置与运维';
