@@ -47,7 +47,7 @@ class ManageModelPrices extends Page implements HasTable
     public function content(Schema $schema): Schema
     {
         return $schema->components([
-            Section::make('当前生效的单价')->description('请求结束后按实际响应模型匹配单价（先精确匹配，再匹配最长的“标识-”前缀，例如 gpt-4.1-mini 可匹配 gpt-4.1-mini-2025-04-14）。只登记从官方价格页核实过的单价；历史请求的金额不会因新登记而改变。')->schema([
+            Section::make('当前生效的单价')->collapsible()->collapsed()->description('请求结束后按实际响应模型匹配单价（先精确匹配，再匹配最长的“标识-”前缀，例如 gpt-4.1-mini 可匹配 gpt-4.1-mini-2025-04-14）。只登记从官方价格页核实过的单价；历史请求的金额不会因新登记而改变。')->schema([
                 TextEntry::make('coverage')->hiddenLabel()->state(fn (): array => $this->coverage())->listWithLineBreaks(),
             ]),
             EmbeddedTable::make(),

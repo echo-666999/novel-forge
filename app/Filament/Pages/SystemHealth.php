@@ -58,15 +58,7 @@ class SystemHealth extends Page implements HasTable
             TextEntry::make('outbox')->label('未标记投递的事务通知')->state(fn (): int => StoryOutboxEvent::whereNull('published_at')->count()),
             TextEntry::make('oldest')->label('最早未标记投递时间')->state(fn (): ?string => StoryOutboxEvent::whereNull('published_at')->min('created_at'))->placeholder('没有待投递通知'),
         ]), EmbeddedTable::make(),
-            Section::make('功能覆盖（UI01～UI32）')->description('开发验收用：PRD 后台页面的入口与当前开放范围。小说相关入口打开最近活动的小说。')->collapsed()->schema([
-                RepeatableEntry::make('capabilities')->hiddenLabel()->state(fn (): array => $this->capabilities())
-                    ->table([TableColumn::make('需求编号'), TableColumn::make('功能'), TableColumn::make('入口'), TableColumn::make('当前范围')])
-                    ->schema([
-                        TextEntry::make('id'), TextEntry::make('name'),
-                        TextEntry::make('url')->url(fn (?string $state): ?string => $state)->formatStateUsing(fn (): string => '打开页面')->placeholder('尚无小说'),
-                        TextEntry::make('scope'),
-                    ]),
-            ]),
+
         ]);
     }
 
