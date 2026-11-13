@@ -60,7 +60,7 @@ enum ProductionFailure: string
         'blocked' => '检查发现与核心设定冲突', 'progression_insufficient' => '独立检查判定情节推进或章末钩子不足',
         'body_quality_insufficient' => '有限预算内未能修好篇幅或写作问题', 'reading_failed' => '全文核对未通过',
         'dispatch_failed' => '队列投递失败', 'batch_failed' => '大纲批次生成失败', 'queue_interrupted' => '队列任务中断',
-        'user_paused' => '作者已暂停', 'REVIEW_NOT_PASSED' => '独立评审未通过', 'EVENT_VALIDATION_BLOCKED' => '事件提取未通过确定性校验',
+        'user_paused' => '作者已暂停', 'running_elsewhere' => '本章正文正由单独的恢复任务执行，等它结束后再恢复自动流程', 'REVIEW_NOT_PASSED' => '独立评审未通过', 'EVENT_VALIDATION_BLOCKED' => '事件提取未通过确定性校验',
         'INVALID_RESPONSE' => '评审或提取响应无效', 'UNKNOWN_RESPONSE' => '评审或提取结果未知，可能已计费',
         'budget_exhausted' => '预算不足或未登记单价，已在请求前停止', 'BUDGET_EXHAUSTED' => '预算不足或未登记单价，已在请求前停止',
         'context_capacity' => '上下文超出容量，已在请求前停止', 'CONTEXT_CAPACITY' => '上下文超出容量，已在请求前停止', 'PROVIDER_FAILED' => '模型服务明确返回失败',

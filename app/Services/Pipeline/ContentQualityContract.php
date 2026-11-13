@@ -34,6 +34,43 @@ final class ContentQualityContract
         return $rules;
     }
 
+    /** 正文与细纲句子逐字相同达到此可见字数，即视为把提纲搬进正文。 */
+    public const PLAN_COPY_CHARACTERS = 14;
+
+    /** 细纲中用叙述者口吻写成的字段；key_dialogue是台词要点，允许原样写成对白。 */
+    private const PLAN_PROSE_FIELDS = ['action', 'goal', 'obstacle', 'emotional_beat', 'change'];
+
+    /** 检测正文逐字照搬细纲句子，按段给出原文片段，交由模型改写而非程序删除。
+     * @return list<array<string, mixed>>
+     */
+    public static function planCopies(string $body, ?array $plan): array
+    {
+        $fragments = [];
+        foreach ($plan['scenes'] ?? [] as $scene) {
+            foreach (self::PLAN_PROSE_FIELDS as $field) {
+                if (! is_string($scene[$field] ?? null)) {
+                    continue;
+                }
+                // 按句读与引号切成短句；引号内的台词设想不参与比对。
+                foreach (preg_split('/“[^”]*”|[，。；：！？…（）《》\s]+/u', $scene[$field]) as $fragment) {
+                    if (ContentSchema::count($fragment) >= self::PLAN_COPY_CHARACTERS) {
+                        $fragments[$fragment] = true;
+                    }
+                }
+            }
+        }
+        $issues = [];
+        foreach (ContentSchema::paragraphs($body) as $paragraph) {
+            $quotes = array_values(array_filter(array_keys($fragments), fn (string $fragment): bool => str_contains($paragraph['text'], $fragment)));
+            if ($quotes !== []) {
+                $issues[] = ['type' => 'plan_copy', 'paragraph' => $paragraph['paragraph'], 'anchor_id' => 'p'.$paragraph['paragraph'], 'quotes' => $quotes,
+                    'reason' => '正文逐字照搬细纲句子「'.implode('」「', $quotes).'」，须改写为人物的言行、反应或自然叙述，不保留提纲口吻'];
+            }
+        }
+
+        return $issues;
+    }
+
     /** 检测已确认的写作说明模式及篇幅问题，不静默删除文本。
      * @return list<array<string, mixed>>
      */

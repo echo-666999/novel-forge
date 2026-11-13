@@ -12,7 +12,7 @@ use Throwable;
 /** 后台与CLI共用有限恢复服务，历史不限次数选项不再执行。 */
 class ContinueContent extends Command
 {
-    protected $signature = 'app:continue-content {run : 首章运行编号} {--recover : 明确授权新建v14有限恢复运行} {--continuous : 已弃用，不会发送请求} {--rewrite : 仅新恢复运行整章重写} {--model= : 仅新恢复运行模型} {--reject-reading : 仅保存全文未通过意见，不发送请求} {--confirm-unknown : 已核查未知结果及额外费用风险} {--max-requests= : 本次请求总上限} {--max-execution-count= : 明确确认小说总执行上限} {--reason= : 操作原因或全文核对意见}';
+    protected $signature = 'app:continue-content {run : 首章运行编号} {--recover : 明确授权按当前协议新建有限恢复运行} {--continuous : 已弃用，不会发送请求} {--rewrite : 仅新恢复运行整章重写} {--replan : 整章重写时丢弃旧细纲并重新规划} {--model= : 仅新恢复运行模型} {--reject-reading : 仅保存全文未通过意见，不发送请求} {--confirm-unknown : 已核查未知结果及额外费用风险} {--max-requests= : 本次请求总上限} {--max-execution-count= : 明确确认小说总执行上限} {--reason= : 操作原因或全文核对意见}';
 
     protected $description = '保留首章历史，通过统一入口有限恢复或在原预算内继续';
 
@@ -35,14 +35,14 @@ class ContinueContent extends Command
             $requests = $this->option('max-requests') === null ? null : (int) $this->option('max-requests');
             $executions = $this->option('max-execution-count') === null ? null : (int) $this->option('max-execution-count');
             if ($this->option('reject-reading')) {
-                if ($this->option('recover') || $this->option('rewrite') || $this->option('model') !== null || $requests !== null || $executions !== null) {
+                if ($this->option('recover') || $this->option('rewrite') || $this->option('replan') || $this->option('model') !== null || $requests !== null || $executions !== null) {
                     throw new InvalidArgumentException('全文意见记录不能混用新请求参数');
                 }
                 $run = $service->recordReading($parent->id, $author, false, [$reason]);
             } elseif ($this->option('recover')) {
-                $run = $service->recover($parent->id, $author, $reason, $requests, $executions, (bool) $this->option('confirm-unknown'), (bool) $this->option('rewrite'), $this->option('model'));
+                $run = $service->recover($parent->id, $author, $reason, $requests, $executions, (bool) $this->option('confirm-unknown'), (bool) $this->option('rewrite'), $this->option('model'), replan: (bool) $this->option('replan'));
             } else {
-                if ($this->option('rewrite') || $this->option('model') !== null || $this->option('confirm-unknown')) {
+                if ($this->option('rewrite') || $this->option('replan') || $this->option('model') !== null || $this->option('confirm-unknown')) {
                     throw new InvalidArgumentException('新模型、重写及未知结果确认必须使用 --recover');
                 }
                 $run = $service->continue($parent->id, requestLimit: $requests, executionLimit: $executions, reason: $reason, authorId: $author->id);

@@ -40,15 +40,16 @@ final class ContentExecutionService
         $endingRecheck = $initial === 'check' && isset($config['automated_ending_recheck']);
         $base = ($manual || $imported || $endingRecheck) ? 1 : ($initial === 'fine' ? 3 : 2);
         $cap = $base + ($initial === 'revise' ? 0 : 2 * ($config['max_retries'] ?? 0));
-        if (($config['version'] ?? null) !== ContentExecutionContract::VERSION || $run->request_limit !== ($config['request_cap'] ?? null)
+        if (! ContentExecutionContract::readable($config['version'] ?? null) || $run->request_limit !== ($config['request_cap'] ?? null)
             || ! in_array($config['max_retries'] ?? null, [0, 1], true) || $run->retry_count > $config['max_retries']
             || ! in_array($initial, ['fine', 'draft', 'revise', 'check'], true) || ($initial === 'check' && ((! $manual && ! $imported && ! $endingRecheck) || $config['max_retries'] !== 0 || (($manual || $endingRecheck) && $run->parent_run_id === null) || ($imported && $run->parent_run_id !== null))) || ($initial === 'fine' && ! $config['enable_fine_outline'])
             || $run->requests_used < 0 || $run->requests_used > $run->request_limit || $run->request_limit < $base || $run->request_limit > $cap || $run->length_repair_count !== 0
             || data_get($config, 'authorization.scope') !== 'bounded_content') {
             throw new InvalidArgumentException('正文协议或冻结额度无效');
         }
-        foreach (['fine', 'draft', 'revise', 'check'] as $step) {
-            if (($config['protocol'][$step] ?? null) !== hash('sha256', ContentExecutionContract::instructions($step))) {
+        // 冻结版本运行只读核验其冻结摘要；新请求只由当前版本发出。
+        foreach (ContentExecutionContract::protocol($config['version']) as $step => $hash) {
+            if (($config['protocol'][$step] ?? null) !== $hash) {
                 throw new InvalidArgumentException('冻结指令已变化');
             }
         }
@@ -143,12 +144,25 @@ final class ContentExecutionService
         return $version;
     }
 
+    /** 确定性质量问题；照搬细纲与可读性极端值只对当前协议运行检查，冻结运行的已保存结论不因新规则改变。
+     * @return list<array<string, mixed>>
+     */
+    private function qualityIssues(ChapterGenerationRun $run, string $body): array
+    {
+        $issues = ContentQualityContract::issues($body, $run->snapshot['novel']['chapter_length_policy']);
+        if (($run->config['version'] ?? null) === ContentExecutionContract::VERSION) {
+            $issues = [...$issues, ...ContentQualityContract::planCopies($body, $run->plan_data), ...ContentReadabilityMetrics::issues(ContentReadabilityMetrics::measure($body))];
+        }
+
+        return $issues;
+    }
+
     /** 合并当前风险和已保存意见；规则提示不直接裁定语义错误。
      * @return array<string, array<string, mixed>>
      */
     public function findings(ChapterGenerationRun $run, ?ChapterVersion $version): array
     {
-        $issues = $version === null ? [] : [...ContentQualityContract::issues($version->body, $run->snapshot['novel']['chapter_length_policy']), ...ContentReadingAudit::inspect($version->body)['issues']];
+        $issues = $version === null ? [] : [...$this->qualityIssues($run, $version->body), ...ContentReadingAudit::inspect($version->body)['issues']];
         foreach ($run->control_history as $control) {
             if (($control['action'] ?? null) === 'automated_finding' && ($control['body_hash'] ?? null) === $version?->body_hash) {
                 $issues[] = ['type' => 'automated_finding', 'reason' => $control['reason'], 'quote' => $control['quote']];
@@ -221,6 +235,11 @@ final class ContentExecutionService
         if ($step === 'draft' && isset($run->config['recovery_draft'])) {
             $payload['previous_failed_draft'] = $run->config['recovery_draft'];
         }
+        if ($step === 'fine') {
+            // 场景数随冻结篇幅确定，细纲不能排出每场只够写流程摘要的密集场景。
+            $context['scene_range'] = ContentExecutionContract::sceneRange($run->snapshot['novel']['chapter_length_policy']);
+            $payload['scene_range'] = $context['scene_range'];
+        }
         if ($step === 'check') {
             // 复核同一证据不等于重演行动；疑问必须保留为张力，不能伪装成已确认缺陷。
             $payload['evaluation_guidance'] = ['逐项以当前evidence_catalog阅读全文判断，不复述前轮findings作为本轮事实。',
@@ -232,9 +251,9 @@ final class ContentExecutionService
             $payload['budget'] = $budget;
             $payload['slot_plan'] = [];
             foreach ($budget['slots'] as $index => $slot) {
-                $payload['slot_plan'][$slot] = ['paragraph' => $index + 1, 'role' => $index === $budget['count'] - 1 ? '本章推进完成后停在冻结钩子的当下悬念' : '推进新的行动、信息及结果，不重演已经完成的动作'];
+                $payload['slot_plan'][$slot] = ['order' => $index + 1, 'role' => $index === $budget['count'] - 1 ? '本章推进完成后停在冻结钩子的当下悬念' : '推进新的冲突、信息及结果，不重演已经完成的动作'];
                 if ($fine) {
-                    $payload['slot_plan'][$slot] += $run->plan_data['scenes'][intdiv($index, 2)];
+                    $payload['slot_plan'][$slot] += $run->plan_data['scenes'][$index];
                 }
             }
             $payload['effective_chapter_contract'] = ['progression_points' => $run->snapshot['source_chapter']['progression_points'], 'hook' => $run->plan_data['hook'], 'hook_transition' => $run->plan_data['hook_transition'] ?? null];
@@ -273,9 +292,10 @@ final class ContentExecutionService
 
         // 分支恢复按实测失败槽位逐段修复，其他段逐字保留，整章最终仍执行原契约。
         // 新运行按冻结的模型能力决定；旧运行没有该字段时沿用原验收分支判定。
-        if ($step === 'draft' && ($run->config['slot_repair'] ?? isset($run->snapshot['acceptance_branch'])) && isset($run->config['recovery_draft']['response']['paragraphs'])) {
+        // 来自冻结版本的失败草稿按旧槽位或旧文本格式切分，与当前段落列表不一致时只作参考，改为整章重写。
+        if ($step === 'draft' && ($run->config['slot_repair'] ?? isset($run->snapshot['acceptance_branch'])) && isset($run->config['recovery_draft']['response']['paragraphs'])
+            && self::sameSlots($run->config['recovery_draft']['response']['paragraphs'], $budget['slots'])) {
             $draft = $run->config['recovery_draft']['response'];
-            ContentSchema::keys($draft['paragraphs'], $budget['slots']);
             foreach ($budget['slots'] as $slot) {
                 try {
                     ContentExecutionContract::body(['title' => $draft['title'], 'paragraphs' => [$slot => $draft['paragraphs'][$slot]]], ContentExecutionContract::repairBudget($budget, $slot));
@@ -290,21 +310,40 @@ final class ContentExecutionService
                     $payload['draft_repair_slot'] = $slot;
                     // 最近完整单段即使字数未达标也可继续压缩，避免每次从更长的初稿重做。
                     $repairSource = $run->config['recovery_repair']['paragraphs'][$slot] ?? $draft['paragraphs'][$slot];
-                    $payload['repair_source'] = ['slot' => $slot, 'text' => $repairSource, 'instruction' => '只修复此处完整单段；其余段只作上下文，不得改写或复制。'];
+                    $payload['repair_source'] = ['slot' => $slot, 'text' => $repairSource, 'instruction' => '只修复此处完整场景；其余场景只作上下文，不得改写或复制。'];
                     $payload['original_title'] = $draft['title'];
                     $payload['surrounding_paragraphs'] = array_diff_key($draft['paragraphs'], [$slot => true]);
-                    $currentCount = ContentSchema::count($repairSource);
+                    $currentCount = ContentSchema::count(ContentExecutionContract::slotText($repairSource));
                     $targetCount = intdiv($budget['min'] + $budget['max'], 2);
                     $context['repair_current_count'] = $currentCount;
-                    $context['repair_direction'] = $currentCount > $budget['max'] ? 'shorten' : 'expand';
+                    // 字数合格而分段规则失败时只调格式，不能被误导成扩写或压缩。
+                    $context['repair_direction'] = match (true) {
+                        $currentCount > $budget['max'] => 'shorten',
+                        $currentCount < $budget['min'] => 'expand',
+                        default => 'format',
+                    };
                     $payload['repair_measurement'] = ['slot' => $slot, 'actual_characters' => $currentCount, 'target_characters' => $targetCount,
-                        'required_change' => $targetCount - $currentCount, 'direction' => $context['repair_direction'],
-                        'instruction' => $context['repair_direction'] === 'shorten' ? '本段超长，只做压缩，删除重复描述与非必要动作，保留当前段已有关键行动，不新增对话或把后段动作提前写入。' : '本段过短，补足当前动作的阻力与结果，不重复前后段事件。'];
+                        'required_change' => $context['repair_direction'] === 'format' ? 0 : $targetCount - $currentCount, 'direction' => $context['repair_direction'],
+                        'instruction' => match ($context['repair_direction']) {
+                            'shorten' => '本场景超长，只做压缩，删除重复描述、流程细节与非必要动作，保留已有关键行动和对白，不把后文动作提前写入。',
+                            'expand' => '本场景过短，补足在场人物的对白、反应与行动后果，不重复前后场景事件。',
+                            default => '本场景字数合格，只按previous_response_failure修正分段：对白独立成段，碎句合并为完整叙述段，不增删情节。',
+                        }];
                     // 局部修复保留整份草稿作邻段上下文，不重复发送未来大纲、历史事件与全量设定。
                     // 这些来源仍冻结在运行中，完成后整章检查会重新读取，不能借此跳过事实校验。
                     $payload = array_intersect_key($payload, array_flip(['chapter_number', 'author_idea', 'writing_requirements', 'rule_catalog',
                         'count_rule', 'previous_response_failure', 'original_title', 'surrounding_paragraphs', 'budget', 'slot_plan', 'draft_repair_slot', 'repair_source', 'repair_measurement']));
                     break;
+                }
+            }
+            // 各场景都已合格时整份草稿再按完整预算复验；通过即直接采用，不再为已合格的草稿重新付费生成。
+            if (! isset($context['draft_repair_slot'])) {
+                try {
+                    ContentExecutionContract::body($draft, $budget);
+                    $context['reused_draft'] = ['cost_log_id' => $run->config['recovery_draft']['cost_log_id'] ?? null, 'merged_stage_id' => $run->config['recovery_draft']['merged_stage_id'] ?? null,
+                        'hash' => PlanningJson::hash($draft)];
+                } catch (InvalidArgumentException) {
+                    // 整章仍不合格（如总字数）时照常整章重写。
                 }
             }
         }
@@ -316,6 +355,21 @@ final class ContentExecutionService
         }
 
         return ['payload' => $payload, 'context' => $context];
+    }
+
+    /** 失败草稿的字段与当前预算槽位完全一致、且每个槽位都是段落列表时才能逐场景修复。
+     * @param  list<string>  $slots
+     */
+    private static function sameSlots(mixed $paragraphs, array $slots): bool
+    {
+        if (! is_array($paragraphs) || array_filter($paragraphs, fn (mixed $slot): bool => ! is_array($slot) || ! array_is_list($slot)) !== []) {
+            return false;
+        }
+        $keys = array_keys($paragraphs);
+        sort($keys);
+        sort($slots);
+
+        return $keys === $slots;
     }
 
     /** 单次领用先提交费用所需来源；HTTP绝不处于业务事务内。 */
@@ -349,7 +403,8 @@ final class ContentExecutionService
 
                 return null;
             }
-            if ($run->requests_used >= $run->request_limit || $novel->execution_count >= $novel->max_execution_count) {
+            $reuse = isset($request['context']['reused_draft']);
+            if (! $reuse && ($run->requests_used >= $run->request_limit || $novel->execution_count >= $novel->max_execution_count)) {
                 $this->stop($run, $novel, 'execution_limit');
 
                 return null;
@@ -367,9 +422,11 @@ final class ContentExecutionService
                 'input' => ['pipeline' => ['version' => ContentExecutionContract::VERSION], 'run_id' => $run->id, 'step' => $step, 'invocation_id' => $token,
                     'input_hash' => $run->input_hash, 'version_id' => $version?->id, 'body_hash' => $version?->body_hash, 'request_ordinal' => $run->requests_used + 1,
                     // C04组装前来源摘要与供应商实际用户提示摘要分别保存。
-                    (isset($request['context']['context_policy']) ? 'source_payload_hash' : 'payload_hash') => PlanningJson::hash($request['payload'])], 'started_at' => now()]);
-            $run->update(['status' => 'running', 'requests_used' => $run->requests_used + 1, 'retry_count' => $run->retry_count + ($step === 'revise' ? 1 : 0)]);
-            $novel->update(['status' => NovelStatus::Running, 'current_stage' => $stageType, 'execution_count' => $novel->execution_count + 1]);
+                    (isset($request['context']['context_policy']) ? 'source_payload_hash' : 'payload_hash') => PlanningJson::hash($request['payload']),
+                    ...($reuse ? ['reused_draft' => $request['context']['reused_draft']] : [])], 'started_at' => now()]);
+            // 采用已合格的保存草稿不发送请求，不占用运行请求额度和小说执行次数。
+            $run->update(['status' => 'running', 'requests_used' => $run->requests_used + ($reuse ? 0 : 1), 'retry_count' => $run->retry_count + ($step === 'revise' ? 1 : 0)]);
+            $novel->update(['status' => NovelStatus::Running, 'current_stage' => $stageType, 'execution_count' => $novel->execution_count + ($reuse ? 0 : 1)]);
             $run->chapter->update(['status' => $step === 'check' ? ChapterStatus::Checking : ChapterStatus::Generating]);
 
             return [$run, $novel, $version, $stage, $request];
@@ -385,6 +442,8 @@ final class ContentExecutionService
         $error = null;
         $started = hrtime(true);
         $repairedDraft = null;
+        $droppedRanges = [];
+        $reusedDraft = $request['context']['reused_draft'] ?? null;
         try {
             $tokens = isset($request['context']['draft_repair_slot']) ? ($run->config['repair_max_output_tokens'] ?? $run->config['max_output_tokens']) : $run->config['max_output_tokens'];
             // 首次正文的推理容量只来自新运行冻结配置，单段修复仍使用独立预算。
@@ -397,21 +456,33 @@ final class ContentExecutionService
             if ($step === 'check') {
                 $tokens = $run->config['check_max_output_tokens'] ?? $tokens;
             }
-            $options = TextRequestOptions::executionChapter($step, $run->config['temperature'], $request['context'], $tokens);
-            $log = $ai->generate('本次步骤 '.$step.'；冻结输入：'.PlanningJson::encode($request['payload']), 'real', $run->config['model'], $novel->id, $stage->id, 'b04-'.$step.'-prompt-v14', $options);
-            if (preg_match('/^'.preg_quote($run->config['model'], '/').'(-\d{4}-\d{2}-\d{2})?$/D', $log->model ?? '') !== 1) {
-                throw new InvalidArgumentException('响应模型与冻结模型不一致');
+            if (isset($request['context']['reused_draft'])) {
+                // 冻结在运行配置中的合格草稿原样采用，费用记录仍在原请求，不另行调用模型。
+                $response = $run->config['recovery_draft']['response'];
+            } else {
+                $options = TextRequestOptions::executionChapter($step, $run->config['temperature'], $request['context'], $tokens);
+                $log = $ai->generate('本次步骤 '.$step.'；冻结输入：'.PlanningJson::encode($request['payload']), 'real', $run->config['model'], $novel->id, $stage->id, 'b04-'.$step.'-prompt-v17', $options);
+                if (preg_match('/^'.preg_quote($run->config['model'], '/').'(-\d{4}-\d{2}-\d{2})?$/D', $log->model ?? '') !== 1) {
+                    throw new InvalidArgumentException('响应模型与冻结模型不一致');
+                }
+                $response = ContentSchema::decode($log->response_text);
             }
-            $response = ContentSchema::decode($log->response_text);
             if ($step === 'draft' && isset($request['context']['draft_repair_slot'])) {
                 $repairedDraft = ContentExecutionContract::mergeParagraphRepair($run->config['recovery_draft']['response'], $response,
                     $request['context']['full_draft_budget'], $request['context']['draft_repair_slot']);
                 $response = $repairedDraft;
             }
             $data = match ($step) {
-                'fine' => ContentSchema::fine($response, array_column($run->snapshot['source_chapter']['progression_points'], 'id')),
+                'fine' => ContentExecutionContract::fine($response, array_column($run->snapshot['source_chapter']['progression_points'], 'id'), $run->snapshot['novel']['chapter_length_policy']),
                 'draft' => ContentExecutionContract::body($response, $request['context']['full_draft_budget'] ?? $request['context']['budget']),
-                'revise' => ContentSchema::body(['title' => $source->title, 'body' => ContentContinuationContract::revise($response, $source->body, $request['context']['findings'])]),
+                'revise' => (function () use ($response, $source, $request, &$droppedRanges): array {
+                    // 没有问题编号的范围不是授权修订，丢弃并留档；其余范围仍按原契约严格校验。
+                    [$response, $droppedRanges] = ContentExecutionContract::authorizedRanges($response);
+                    // 替换文本与正文同样按段落列表校验分段规则，避免修订把对白重新塞回叙述段。
+                    $response = ContentExecutionContract::revisionText($response, $request['context']['budget']['complete_paragraphs'] ?? false);
+
+                    return ContentSchema::body(['title' => $source->title, 'body' => ContentContinuationContract::revise($response, $source->body, $request['context']['findings'])]);
+                })(),
                 'check' => ContentContinuationContract::check($response, $source->body, array_column($run->snapshot['source_chapter']['progression_points'], 'id'), $request['context']['rules'], $request['context']['findings']),
             };
             if ($step === 'fine') {
@@ -435,7 +506,7 @@ final class ContentExecutionService
             $error = $exception instanceof InvalidArgumentException ? $exception->getMessage() : '本地处理异常，保留证据后显式恢复';
         }
         try {
-            $next = DB::transaction(function () use ($id, $token, $stage, $source, $step, $data, $failure, $error, $log, $started, $repairedDraft): bool {
+            $next = DB::transaction(function () use ($id, $token, $stage, $source, $step, $data, $failure, $error, $log, $started, $repairedDraft, $droppedRanges, $reusedDraft): bool {
                 $reference = ChapterGenerationRun::findOrFail($id);
                 $novel = Novel::lockForUpdate()->findOrFail($reference->chapter->novel_id);
                 $run = ChapterGenerationRun::lockForUpdate()->findOrFail($id);
@@ -449,6 +520,12 @@ final class ContentExecutionService
                 }
                 $stop = $failure;
                 $output = ['step' => $step, 'cost_log_id' => $log?->id, 'result' => $data, 'validation_error' => $error];
+                if ($droppedRanges !== []) {
+                    $output['dropped_ranges'] = $droppedRanges;
+                }
+                if ($reusedDraft !== null) {
+                    $output['reused_draft'] = $reusedDraft;
+                }
                 if ($repairedDraft !== null) {
                     $output['repaired_draft'] = ['response' => $repairedDraft, 'hash' => PlanningJson::hash($repairedDraft), 'source_input_hash' => $run->input_hash];
                 }
@@ -461,8 +538,9 @@ final class ContentExecutionService
                         'version' => (int) ChapterVersion::where('chapter_id', $run->chapter_id)->max('version') + 1, 'title' => $data['title'], 'body' => $data['body'],
                         'body_hash' => hash('sha256', $data['body']), 'character_count' => ContentSchema::count($data['body']), 'count_version' => ContentSchema::COUNT_VERSION, 'created_at' => now()]);
                     $run->chapter->update(['title' => $version->title, 'current_candidate_version_id' => $version->id, 'progression_result' => null, 'status' => ChapterStatus::Checking]);
-                    $issues = ContentQualityContract::issues($version->body, $run->snapshot['novel']['chapter_length_policy']);
-                    $output += ['version_id' => $version->id, 'quality_issues' => $issues, 'reading_audit' => ContentReadingAudit::inspect($version->body)];
+                    $issues = $this->qualityIssues($run, $version->body);
+                    $output += ['version_id' => $version->id, 'quality_issues' => $issues, 'reading_audit' => ContentReadingAudit::inspect($version->body),
+                        'readability' => ContentReadabilityMetrics::measure($version->body)];
                     if ($issues !== [] || $source?->body_hash === $version->body_hash) {
                         $run->next_step = 'revise';
                         $stop = $this->canRevise($run) ? null : 'body_quality_insufficient';
@@ -580,8 +658,8 @@ final class ContentExecutionService
     /** 派发失败尚未发送HTTP，不能把零调用误标为未知付费。 */
     public function dispatch(ChapterGenerationRun $run): void
     {
-        // 生产运行范围内的章节由持久化编排器推进，禁止同时派发旧步骤任务。
-        if (ProductionRun::coveringChapter($run->chapter->novel_id, $run->chapter->number, true) !== null) {
+        // 编排器正在推进本章时由它执行，禁止同时派发步骤任务；已失败的编排不会推进，恢复运行必须自行投递，否则停在待执行。
+        if (ProductionRun::drivingChapter($run->chapter->novel_id, $run->chapter->number) !== null) {
             return;
         }
 
@@ -596,7 +674,7 @@ final class ContentExecutionService
     public function interrupted(int $id, string $token): void
     {
         $reference = ChapterGenerationRun::find($id);
-        if ($reference === null || ($reference->config['version'] ?? null) !== ContentExecutionContract::VERSION) {
+        if ($reference === null || ! ContentExecutionContract::readable($reference->config['version'] ?? null)) {
             return;
         }
         DB::transaction(function () use ($id, $token): void {

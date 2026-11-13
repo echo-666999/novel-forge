@@ -125,12 +125,12 @@ final class ContentGenerationService
     /** 旧产物只能通过此入口转为新协议；工作台问题冻结在新运行，旧授权绝不自动续用。
      * @param  list<string>|null  $issues  作者明确指定的问题，空值沿用原恢复入口。
      */
-    public function recover(int $parentId, User $author, string $reason, ?int $requestLimit = null, ?int $executionLimit = null, bool $confirmUnknown = false, bool $rewrite = false, ?string $model = null, ?array $issues = null, ?int $expectedVersionId = null, ?int $submissionReviewId = null): ChapterGenerationRun
+    public function recover(int $parentId, User $author, string $reason, ?int $requestLimit = null, ?int $executionLimit = null, bool $confirmUnknown = false, bool $rewrite = false, ?string $model = null, ?array $issues = null, ?int $expectedVersionId = null, ?int $submissionReviewId = null, bool $replan = false): ChapterGenerationRun
     {
         $this->outsideTransaction();
         ContentSchema::text($reason);
         $reference = ChapterGenerationRun::findOrFail($parentId);
-        [$run, $created] = DB::transaction(function () use ($reference, $author, $reason, $requestLimit, $executionLimit, $confirmUnknown, $rewrite, $model, $issues, $expectedVersionId, $submissionReviewId): array {
+        [$run, $created] = DB::transaction(function () use ($reference, $author, $reason, $requestLimit, $executionLimit, $confirmUnknown, $rewrite, $model, $issues, $expectedVersionId, $submissionReviewId, $replan): array {
             $novel = Novel::lockForUpdate()->findOrFail($reference->chapter->novel_id);
             $parent = ChapterGenerationRun::lockForUpdate()->findOrFail($reference->id);
             $review = $submissionReviewId === null ? null : ChapterReview::findOrFail($submissionReviewId);
@@ -179,6 +179,14 @@ final class ContentGenerationService
             if ($outlineRevision !== null && $outlineRevision['revision'] !== null && ($snapshot['outline_revision']['id'] ?? null) !== $outlineRevision['revision']['id']) {
                 $snapshot['source_chapter'] = $outlineRevision['source_chapter'];
                 $snapshot['outline_revision'] = $outlineRevision['revision'];
+                $plan = null;
+                $fineStageId = null;
+            }
+            // 作者明确要求时整章重写一并丢弃旧细纲，按当前细纲契约重新规划；定点修订不能重排场景。
+            if ($replan) {
+                if (! $rewrite || $workbench !== null || ! $fine) {
+                    throw new InvalidArgumentException('只有开启细纲的整章重写可以重新生成细纲');
+                }
                 $plan = null;
                 $fineStageId = null;
             }
@@ -264,11 +272,11 @@ final class ContentGenerationService
                     if (is_array($parts) && count($parts) === 1) {
                         $slot = array_key_first($parts);
                         $previous = $config['recovery_repair']['paragraphs'][$slot] ?? $config['recovery_draft']['response']['paragraphs'][$slot] ?? null;
-                        if (is_string($parts[$slot]) && is_string($previous)) {
+                        if (is_array($parts[$slot]) && is_array($previous)) {
                             $budget = ContentExecutionContract::budget($parent->snapshot['novel']['chapter_length_policy'], $plan, $fine);
-                            $distance = fn (string $text): int => max($budget['min'] - ContentSchema::count($text), ContentSchema::count($text) - $budget['max'], 0);
-                            // 失败仍保留费用原文，但不能用离预算更远的新尝试替换更好的修复输入。
-                            if ($distance($parts[$slot]) < $distance($previous)) {
+                            $distance = fn (array $paragraphs): int => max($budget['min'] - ContentSchema::count(ContentExecutionContract::slotText($paragraphs)), ContentSchema::count(ContentExecutionContract::slotText($paragraphs)) - $budget['max'], 0);
+                            // 失败仍保留费用原文，但不能用离预算更远的新尝试替换更好的修复输入；字数同样合格时取最近一次分段修正。
+                            if ($distance($parts[$slot]) <= $distance($previous)) {
                                 $config['recovery_repair'] = ['cost_log_id' => $failedLog->id, 'paragraphs' => $parts];
                             }
                         }
@@ -411,7 +419,8 @@ final class ContentGenerationService
     /** 新旧协议共同核对规划来源；历史解析器没有生成能力。 */
     public function assertFrozenSources(ChapterGenerationRun $run): void
     {
-        if (($run->config['version'] ?? null) === ContentExecutionContract::VERSION) {
+        // 冻结版本与当前协议共用同一执行器核验；冻结版本只读，不能直接继续。
+        if (ContentExecutionContract::readable($run->config['version'] ?? null)) {
             app(ContentExecutionService::class)->validate($run);
         } else {
             app(LegacyContentSources::class)->assertSources($run);

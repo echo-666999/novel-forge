@@ -31,7 +31,7 @@ final class ChapterGenerationAgent implements Agent, HasStructuredOutput
     {
         // 单段修复属于编辑任务，不能同时要求重写整章，否则会诱发扩写或照抄旧段。
         if (isset($this->options->executionContext['draft_repair_slot'])) {
-            return '你正在编辑已有小说的一个段落，不是创作新章节。仅修改repair_source.text，保留关键行动、人物立场、因果顺序和事实类别。surrounding_paragraphs只用于衔接，不得重复其事件。按repair_measurement实测差额完成压缩或扩写；优先删除重复解释和非必要细节，不能删除推进所必需的行动。标题使用original_title。遵守作者原始创意和rule_catalog。'
+            return '你正在编辑已有小说的一个场景，不是创作新章节。仅修改repair_source.text，保留关键行动、对白、人物立场、因果顺序和事实类别，保持段落列表结构：叙述段按节拍成段、不夹带原话，对白段一人一次发言。surrounding_paragraphs只用于衔接，不得重复其事件。按repair_measurement实测差额完成压缩或扩写；优先删除重复解释和非必要细节，不能删除推进所必需的行动。标题使用original_title。遵守作者原始创意和rule_catalog。'
                 .ContentExecutionContract::outputInstructions($this->options->chapterStep, $this->options->executionContext);
         }
 

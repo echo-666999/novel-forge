@@ -232,22 +232,24 @@ class DeepSeekAiGenerationTest extends TestCase
         Http::assertSentCount(1);
     }
 
-    /** 正文Schema显式声明段长，不只依赖供应商对复杂正则的支持。 */
+    /** 正文Schema按段落列表声明场景长度、段落类型和单段格式，不只依赖供应商对复杂正则的支持。 */
     public function test_draft_schema_carries_explicit_length_limits(): void
     {
         Http::fake(['api.deepseek.com/*' => function (Request $request) {
             $schema = json_decode(explode('说明：', $request['instructions'], 2)[1], true, flags: JSON_THROW_ON_ERROR);
-            $field = $schema['properties']['paragraphs']['properties']['scene_1_part_1'];
-            $this->assertSame(344, $field['minLength']);
-            $this->assertSame(406, $field['maxLength']);
-            $this->assertArrayHasKey('pattern', $field);
+            $field = $schema['properties']['paragraphs']['properties']['scene_1'];
+            $this->assertSame('array', $field['type']);
+            $this->assertSame(['narration', 'dialogue'], $field['items']['properties']['kind']['enum']);
+            $pattern = $field['items']['properties']['text']['pattern'];
+            $this->assertSame(1, preg_match('/'.$pattern.'/u', '“走吧。”'));
+            $this->assertSame(0, preg_match('/'.$pattern.'/u', "她来了。\n“走吧。”"));
             $this->assertStringContainsString('344至406', $field['description']);
-            $this->assertStringContainsString('每段约375字', json_encode($request->data(), JSON_UNESCAPED_UNICODE));
+            $this->assertStringContainsString('建议约390字', json_encode($request->data(), JSON_UNESCAPED_UNICODE));
             $this->assertSame(['effort' => 'low'], $request['reasoning']);
 
-            return Http::response($this->response('{"title":"样本","paragraphs":{"scene_1_part_1":"正文"}}'));
+            return Http::response($this->response('{"title":"样本","paragraphs":{"scene_1":[{"kind":"narration","text":"正文"}]}}'));
         }]);
-        $options = TextRequestOptions::executionChapter('draft', 0.5, ['anchors' => [], 'rules' => [], 'findings' => [], 'deepseek_reasoning_effort' => 'low', 'budget' => ['slots' => ['scene_1_part_1'], 'min' => 344, 'max' => 406]]);
+        $options = TextRequestOptions::executionChapter('draft', 0.5, ['anchors' => [], 'rules' => [], 'findings' => [], 'deepseek_reasoning_effort' => 'low', 'budget' => ['slots' => ['scene_1'], 'min' => 344, 'max' => 406]]);
         $log = app(AiTextGenerationService::class)->generate('测试JSON正文', 'real', 'deepseek-flash', options: $options);
         $this->assertSame(['effort' => 'low'], $log->request_parameters['reasoning']);
         Http::assertSentCount(1);

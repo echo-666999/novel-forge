@@ -256,8 +256,13 @@ final class ContentSchema
         }
         $covered = [];
         foreach ($data['scenes'] as $scene) {
-            self::keys($scene, ['time', 'place', 'action', 'change', 'point_ids']);
-            foreach (['time', 'place', 'action', 'change'] as $key) {
+            // v15场景额外携带写戏字段；v14细纲只有基础字段，复用时仍可核验。
+            $fields = ['time', 'place', 'action', 'change'];
+            if (is_array($scene) && array_key_exists('goal', $scene)) {
+                $fields = [...$fields, ...ContentExecutionContract::DRAMA_FIELDS];
+            }
+            self::keys($scene, [...$fields, 'point_ids']);
+            foreach ($fields as $key) {
                 self::text($scene[$key]);
             }
             self::listing($scene['point_ids']);

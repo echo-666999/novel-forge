@@ -39,6 +39,10 @@ final class ChapterProductionStepper
                     app(ContentExecutionService::class)->runStep($body->id, $body->invocation_id, app(AiTextGenerationService::class));
                     $body->refresh();
                 }
+                // 编排停止期间建立的恢复运行由自身队列任务推进；被其领取时不能误报为正文停止，待其结束后再恢复编排。
+                if ($body->status === 'running') {
+                    throw new InvalidArgumentException('CONTENT_STOPPED:running_elsewhere');
+                }
                 if ($body->stop_reason === 'awaiting_review') {
                     // 任何句中截断都必须先修复；独立模型通过不能豁免确定性完整性检查。
                     $version = ChapterVersion::findOrFail($body->chapter->current_candidate_version_id);
@@ -124,7 +128,8 @@ final class ChapterProductionStepper
         $number = $run->artifacts['chapter_number'] ?? $run->start_chapter;
         if ($run->step === 'content') {
             $body = ChapterGenerationRun::whereHas('chapter', fn ($query) => $query->where('novel_id', $novel->id)->where('number', $number))->latest('id')->first();
-            if ($body !== null && $body->stop_reason !== 'b04_accepted' && $body->status !== 'pending') {
+            // 已通过推进检查、待核对的候选由步骤机直接接手验收，不能再建修订运行改写已通过的正文。
+            if ($body !== null && ! in_array($body->stop_reason, ['b04_accepted', 'awaiting_review'], true) && $body->status !== 'pending') {
                 app(ContentGenerationService::class)->recover($body->id, $author, '恢复自动生成，保留前序失败证据', executionLimit: $recoveryLimit, confirmUnknown: $confirmUnknown, rewrite: $rewrite, model: $model);
             }
         } elseif ($run->step === 'submission') {

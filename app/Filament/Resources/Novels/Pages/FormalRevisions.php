@@ -100,6 +100,13 @@ class FormalRevisions extends Page implements HasTable
             Action::make('verify')->label('事实核对')->visible(fn (FormalRevisionChapter $record): bool => $this->open() && in_array($record->status, ['decided', 'failed'], true) && $record->candidate_version_id !== null)
                 ->requiresConfirmation()->modalDescription('发送1次请求，核对润色前后事实是否等价。')
                 ->action(fn (FormalRevisionChapter $record) => $this->perform(fn () => app(FormalRevisionService::class)->dispatch([$record->id], 'verify'), '已排队事实核对')),
+            Action::make('confirmFactChanges')->label('确认事实变化')->color('warning')
+                ->visible(fn (FormalRevisionChapter $record): bool => $this->open() && $record->status === 'failed' && ($record->equivalence['failed_events'] ?? null) === []
+                    && ($record->equivalence['unrelocated'] ?? null) === [] && [...($record->equivalence['new_facts'] ?? []), ...($record->equivalence['lost_constraints'] ?? [])] !== [])
+                ->modalDescription(fn (FormalRevisionChapter $record): string => '核对列出的事实变化——新增：'.(implode('；', $record->equivalence['new_facts'] ?? []) ?: '无')
+                    .'。改变或删去的约束：'.(implode('；', $record->equivalence['lost_constraints'] ?? []) ?: '无').'。确认后本章视为核对通过，不重新抽取事件；确认人、理由和每一条会留档。')
+                ->schema([Textarea::make('reason')->label('确认原因')->required(), Checkbox::make('confirm')->label('这些变化都是我有意修改的，不影响已提交的事件与状态')->accepted()])
+                ->action(fn (FormalRevisionChapter $record, array $data) => $this->perform(fn () => app(FormalRevisionService::class)->confirmFactChanges($record->id, auth()->user(), $data['reason']), '已确认事实变化')),
             Action::make('diff')->label('查看改动')->visible(fn (FormalRevisionChapter $record): bool => $record->candidate_version_id !== null)->modalSubmitAction(false)->modalCancelActionLabel('关闭')->modalWidth('5xl')
                 ->schema(fn (FormalRevisionChapter $record): array => [
                     // 事实核对分项展示：新增事实与丢失约束是需要处理的问题，单独列出并标红。

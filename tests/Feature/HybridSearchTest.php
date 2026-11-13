@@ -85,7 +85,7 @@ class HybridSearchTest extends TestCase
             $data = json_decode($response['output'][0]['content'][0]['text'], true, flags: JSON_THROW_ON_ERROR);
             foreach ($data['paragraphs'] as &$paragraph) {
                 $prefix = '林澈走进档案室。';
-                $paragraph = $prefix.mb_substr($paragraph, mb_strlen($prefix), -1).'。';
+                $paragraph[0]['text'] = $prefix.mb_substr($paragraph[0]['text'], mb_strlen($prefix), -1).'。';
             }
             unset($paragraph);
             $response['output'][0]['content'][0]['text'] = PlanningJson::encode($data);

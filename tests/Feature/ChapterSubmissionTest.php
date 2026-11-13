@@ -79,14 +79,6 @@ class ChapterSubmissionTest extends TestCase
             $purpose = $log->request_parameters['purpose'] ?? null;
             if ($purpose === null) {
                 $response = B04ContentTest::validResponse($request);
-                if (($log->request_parameters['step'] ?? null) === 'draft') {
-                    $data = json_decode($response['output'][0]['content'][0]['text'], true, flags: JSON_THROW_ON_ERROR);
-                    foreach ($data['paragraphs'] as &$text) {
-                        $text = mb_substr($text, 0, -1).'。';
-                    }
-                    unset($text);
-                    $response['output'][0]['content'][0]['text'] = PlanningJson::encode($data);
-                }
 
                 return Http::response($response);
             }

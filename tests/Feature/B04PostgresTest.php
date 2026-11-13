@@ -11,6 +11,7 @@ use App\Models\Novel;
 use App\Models\NovelStage;
 use App\Models\User;
 use App\Services\Ai\AiTextGenerationService;
+use App\Services\Pipeline\ContentExecutionContract;
 use App\Services\Pipeline\ContentGenerationService;
 use App\Services\Pipeline\PlanningJson;
 use App\Services\Pipeline\ProgressionChecker;
@@ -210,7 +211,7 @@ class B04PostgresTest extends TestCase
     }
 
     /** 新默认入口经过真实JSONB往返，检查与阅读回执仍绑定同一正文。 */
-    public function test_v14_generation_and_reading_survive_jsonb_roundtrip(): void
+    public function test_current_generation_and_reading_survive_jsonb_roundtrip(): void
     {
         Http::fake(['*' => fn ($request) => Http::response(B04ContentTest::validResponse($request))]);
         $novel = B04ContentTest::readyNovel();
@@ -263,7 +264,7 @@ class B04PostgresTest extends TestCase
     }
 
     /** 冻结旧协议配置只读接纳后统一恢复，旧消息不再消费外部请求。 */
-    public function test_frozen_legacy_candidate_recovers_to_v14_in_postgres(): void
+    public function test_frozen_legacy_candidate_recovers_to_current_protocol_in_postgres(): void
     {
         Http::fake(['*' => fn ($request) => Http::response(B04ContentTest::validResponse($request))]);
         $service = app(ContentGenerationService::class);
@@ -277,7 +278,7 @@ class B04PostgresTest extends TestCase
         $service->runStep($parent->id, $parent->invocation_id, app(AiTextGenerationService::class), app(ProgressionChecker::class));
         $next = $service->recover($parent->id, User::firstOrFail(), '隔离库旧候选有限恢复');
         $this->drain(3);
-        $this->assertSame('b04-content-v14', $next->config['version']);
+        $this->assertSame(ContentExecutionContract::VERSION, $next->config['version']);
         $this->assertSame('awaiting_review', $next->fresh()->stop_reason);
         $this->assertSame($before, $parent->fresh()->getRawOriginal());
         $this->assertSame($parent->fine_stage_id, $next->fine_stage_id);

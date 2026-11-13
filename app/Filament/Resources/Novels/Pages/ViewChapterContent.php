@@ -24,6 +24,7 @@ use App\Services\Pipeline\ChapterSubmissionService;
 use App\Services\Pipeline\ContentExecutionContract;
 use App\Services\Pipeline\ContentGenerationService;
 use App\Services\Pipeline\ContentPromptAudit;
+use App\Services\Pipeline\ContentReadabilityMetrics;
 use App\Services\Pipeline\ContentReadingAudit;
 use App\Services\Pipeline\ContentSchema;
 use App\Services\Pipeline\NovelProgressQuery;
@@ -170,6 +171,8 @@ class ViewChapterContent extends Page implements HasTable
                         }),
                         TextEntry::make('body')->label('正文')->state(fn (): ?string => $this->displayedVersion()?->body)->extraAttributes(['style' => 'white-space: pre-wrap; line-height: 1.9']),
                         TextEntry::make('count')->label('正文可见非空白字符数')->state(fn (): ?int => $this->displayedVersion()?->character_count),
+                        TextEntry::make('readability')->label('可读性指标')->state(fn (): ?string => $this->readabilitySummary())
+                            ->helperText('对白低于'.round(100 * ContentReadabilityMetrics::MIN_DIALOGUE_SHARE).'%或流程词每千字超过'.ContentReadabilityMetrics::MAX_PROCESS_DENSITY.'时自动送修订；其余指标只作观察。'),
                         TextEntry::make('verdict')->label('推进检查结论')->state(fn (): string => match (data_get($this->run()?->chapter->progression_result, 'verdict')) {
                             'pass' => '通过，仍待后续评审', 'insufficient' => '推进不足', 'blocked' => '存在核心设定冲突', default => '尚无可信检查结果'
                         }),
@@ -306,6 +309,21 @@ class ViewChapterContent extends Page implements HasTable
         return $run === null ? null : ChapterVersion::query()->where('chapter_id', $run->chapter_id)->where(fn ($query) => $query->where('run_id', $run->id)->orWhere('id', $run->source_version_id))->find($run->chapter->current_candidate_version_id);
     }
 
+    /** 当前展示正文的可读性指标，越线项标出。 */
+    private function readabilitySummary(): ?string
+    {
+        $body = $this->displayedVersion()?->body;
+        if ($body === null) {
+            return null;
+        }
+        $metrics = ContentReadabilityMetrics::measure($body);
+        $flags = array_column(ContentReadabilityMetrics::issues($metrics), 'type');
+
+        return '直接对白 '.round(100 * $metrics['dialogue_share'], 1).'%'.(in_array('readability_dialogue', $flags, true) ? '（过低）' : '')
+            .' · 流程词 '.$metrics['process_density'].'/千字'.(in_array('readability_process', $flags, true) ? '（过高）' : '')
+            .' · “没……也没……” '.$metrics['disclaimers'].' 处 · 转述对白约 '.$metrics['reported_speech'].' 处';
+    }
+
     /** 预算预览与运行使用同一分配算法，显示可核验的整章范围。 */
     private function budgetDescription(): string
     {
@@ -313,7 +331,7 @@ class ViewChapterContent extends Page implements HasTable
         if ($run !== null && ($run->config['version'] ?? null) === ContentExecutionContract::VERSION && $run->plan_data !== null) {
             $budget = ContentExecutionContract::budget($run->snapshot['novel']['chapter_length_policy'], $run->plan_data, $run->config['enable_fine_outline']);
 
-            return '整章生成预算：'.$budget['count'].'段，每段'.$budget['min'].'～'.$budget['max'].'字符；局部修订遵守整章篇幅';
+            return '整章生成预算：'.$budget['count'].($run->config['enable_fine_outline'] ? '个场景，每个场景' : '个分节，每节').$budget['min'].'～'.$budget['max'].'字符；局部修订遵守整章篇幅';
         }
         if ($run === null || $this->candidate() === null) {
             return '尚无可分配的源正文';

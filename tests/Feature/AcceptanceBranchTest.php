@@ -243,28 +243,28 @@ class AcceptanceBranchTest extends B04ExecutionTest
             $payload = json_decode(explode('冻结输入：', $log->request_parameters['prompt_audit']['user_prompt'], 2)[1], true);
             $parts = [];
             foreach ($payload['budget']['slots'] as $slot) {
-                $parts[$slot] = str_repeat('甲', intdiv($payload['budget']['min'] + $payload['budget']['max'], 2) - 1).'。';
+                $parts[$slot] = B04ContentTest::sceneParagraphs(intdiv($payload['budget']['min'] + $payload['budget']['max'], 2), '甲');
             }
             if (count($parts) > 1) {
                 $keys = array_keys($parts);
-                $parts[$keys[0]] = '短。';
-                $parts[$keys[1]] = '短。';
+                $parts[$keys[0]] = [['kind' => 'narration', 'text' => '短。']];
+                $parts[$keys[1]] = [['kind' => 'narration', 'text' => '短。']];
                 $original = $parts;
             } elseif (++$repairAttempts === 1) {
-                $this->assertStringContainsString('编辑已有小说的一个段落', $log->request_parameters['prompt_audit']['system_prompt']);
+                $this->assertStringContainsString('编辑已有小说的一个场景', $log->request_parameters['prompt_audit']['system_prompt']);
                 $this->assertStringNotContainsString('写完整中文', $log->request_parameters['prompt_audit']['system_prompt']);
                 $this->assertArrayNotHasKey('candidate_roadmap', $payload);
                 $this->assertSame(array_diff_key($original, [$payload['draft_repair_slot'] => true]), $payload['surrounding_paragraphs']);
                 $this->assertArrayNotHasKey('previous_failed_draft', $payload);
                 // 第一次单段仍不达标，后继请求必须收到它，不能误当成可提交正文。
-                $parts[array_key_first($parts)] = '仍然太短。';
+                $parts[array_key_first($parts)] = [['kind' => 'narration', 'text' => '仍然太短。']];
             } elseif ($repairAttempts === 2) {
-                $this->assertSame('仍然太短。', $payload['repair_source']['text']);
+                $this->assertSame([['kind' => 'narration', 'text' => '仍然太短。']], $payload['repair_source']['text']);
                 $this->assertSame(5, $payload['repair_measurement']['actual_characters']);
-                $parts[array_key_first($parts)] = '短。';
+                $parts[array_key_first($parts)] = [['kind' => 'narration', 'text' => '短。']];
             } elseif ($repairAttempts === 3) {
                 // 更差的新尝试不能覆盖此前更接近预算的完整单段。
-                $this->assertSame('仍然太短。', $payload['repair_source']['text']);
+                $this->assertSame([['kind' => 'narration', 'text' => '仍然太短。']], $payload['repair_source']['text']);
             }
             $response = B02SettingTest::response(json_encode(['title' => '修复测试', 'paragraphs' => $parts], JSON_UNESCAPED_UNICODE));
             $response['model'] = $request['model'];
@@ -287,6 +287,6 @@ class AcceptanceBranchTest extends B04ExecutionTest
         $this->assertSame('check', $run->next_step);
         $paragraphs = explode("\n", $version->body);
         $this->assertCount(6, $paragraphs);
-        $this->assertSame(array_slice(array_values($original), 2), array_slice($paragraphs, 2));
+        $this->assertSame(array_column(array_merge(...array_slice(array_values($original), 2)), 'text'), array_slice($paragraphs, 4));
     }
 }

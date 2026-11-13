@@ -218,14 +218,6 @@ class C01SequenceTest extends TestCase
                     $data['hook_transition']['point_ids'] = $ids;
                     $response['output'][0]['content'][0]['text'] = PlanningJson::encode($data);
                 }
-                if (($log->request_parameters['step'] ?? null) === 'draft') {
-                    $data = json_decode($response['output'][0]['content'][0]['text'], true, flags: JSON_THROW_ON_ERROR);
-                    foreach ($data['paragraphs'] as &$paragraph) {
-                        $paragraph = mb_substr($paragraph, 0, -1).'。';
-                    }
-                    unset($paragraph);
-                    $response['output'][0]['content'][0]['text'] = PlanningJson::encode($data);
-                }
 
                 return Http::response($response);
             }
@@ -1097,6 +1089,45 @@ class C01SequenceTest extends TestCase
     }
 
     /** 正式稿修订：建议逐条校验，只替换接受项；事实核对不通过不能提交；通过后进入候选基线，切换后正文更新、旧基线可读，请求上限生效。 */
+    /** 事件全部成立时，核对列出的新增事实或约束变化可由作者确认为有意修改；没有可确认的变化或理由为空不能确认。 */
+    public function test_author_confirms_intended_new_facts_in_formal_revision(): void
+    {
+        $author = User::factory()->create();
+        $novel = $this->committedFour($author);
+        $service = app(FormalRevisionService::class);
+        $ai = app(AiTextGenerationService::class);
+        $revision = $service->start($novel, $author, 2, 2, '补一处衔接动作', 4);
+        $this->formalVerdict = 'equivalent';
+        $two = $revision->chapters()->sole();
+        $two = $service->suggest($two->id, $ai);
+        $two = $service->decide($two->id, $author, ['s1' => 'accept']);
+
+        // 不等价的核对结果不能由作者确认放行。
+        $this->formalVerdict = 'not_equivalent';
+        $two = $service->verify($two->id, $ai);
+        $this->assertThrows(fn () => $service->confirmFactChanges($two->id, $author, '有意修改'), \InvalidArgumentException::class);
+
+        // 只有新增事实时保留平移后的证据，作者确认后视为通过，确认记录留档并可提交、切换。
+        $this->formalVerdict = 'new_facts';
+        $two = $service->verify($two->id, $ai);
+        $this->assertSame('failed', $two->status);
+        $this->assertIsArray($two->equivalence['event_evidence']);
+        $this->assertThrows(fn () => $service->confirmFactChanges($two->id, $author, ' '), \InvalidArgumentException::class);
+        // 改变的约束同样可确认；早于本功能、未保留证据的核对在证据可确定性平移时由程序补算。
+        $this->formalVerdict = 'lost';
+        $two = $service->verify($two->id, $ai);
+        $this->assertSame(['原有的阴雨背景被改变'], $two->equivalence['lost_constraints']);
+        $two->update(['equivalence' => [...$two->equivalence, 'event_evidence' => null, 'foreshadow_evidence' => null]]);
+        $two = $service->confirmFactChanges($two->id, $author, '天气是有意补充的衔接');
+        $this->assertSame(['原有的阴雨背景被改变'], $two->equivalence['author_confirmed_changes']['lost_constraints']);
+        $this->assertIsArray($two->equivalence['event_evidence']);
+        $this->assertSame('verified', $two->status);
+        $this->assertSame($author->id, $two->equivalence['author_confirmed_changes']['actor_id']);
+        $this->assertSame('verified', $service->commitCandidate($revision, $author)->status);
+        $service->switchTo($revision->refresh(), $author, '确认修订');
+        $this->assertStringContainsString('雨停了，', app(FormalChapterExport::class)->build($novel->id, 4, 'txt')['content']);
+    }
+
     public function test_formal_revision_polishes_committed_chapter_through_candidate_baseline(): void
     {
         $author = User::factory()->create();
@@ -1200,7 +1231,7 @@ class C01SequenceTest extends TestCase
 
         return ['verdict' => $this->formalVerdict === 'not_equivalent' ? 'not_equivalent' : 'equivalent', 'summary' => '隔离核对',
             'event_checks' => array_map(fn (array $event): array => ['event_key' => $event['event_key'], 'holds' => $this->formalVerdict !== 'not_equivalent', 'reason' => '隔离核对'], $payload['events']),
-            'new_facts' => $this->formalVerdict === 'new_facts' ? ['新增了雨停的天气事实'] : [], 'lost_constraints' => [], 'literary_issues' => [],
+            'new_facts' => $this->formalVerdict === 'new_facts' ? ['新增了雨停的天气事实'] : [], 'lost_constraints' => $this->formalVerdict === 'lost' ? ['原有的阴雨背景被改变'] : [], 'literary_issues' => [],
             'relocations' => array_map(fn (array $item): array => ['ref' => $item['ref'], 'paragraph' => $changed['paragraph'], 'quote' => mb_substr($changed['after'], 0, 6)], $payload['unresolved'])];
     }
 }

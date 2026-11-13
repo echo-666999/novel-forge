@@ -67,6 +67,16 @@ class ProductionRun extends Model
         return self::where('novel_id', $novelId)->where('status', '!=', 'completed')->latest('id')->first();
     }
 
+    /** 会自行推进章节的状态；已失败的运行只有显式恢复后才重新推进。 */
+    public const DRIVING_STATUSES = ['pending', 'running', 'recovering', 'reconciling'];
+
+    /** 正在推进该章的生产运行；为空时正文运行需由自身队列任务推进，避免恢复运行无人消费。 */
+    public static function drivingChapter(int $novelId, int $number): ?self
+    {
+        return self::where('novel_id', $novelId)->where('start_chapter', '<=', $number)->where('chapter_limit', '>=', $number)
+            ->whereIn('status', self::DRIVING_STATUSES)->latest('id')->first();
+    }
+
     /** 授权范围包含该章的生产运行；activeOnly 时只看未完成的运行。手动生成的章节不被任何运行覆盖。 */
     public static function coveringChapter(int $novelId, int $number, bool $activeOnly = false): ?self
     {

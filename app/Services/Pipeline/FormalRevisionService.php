@@ -173,10 +173,48 @@ final class FormalRevisionService
             $missing = array_values(array_filter($unresolved, fn (array $item): bool => $item['kind'] === 'event' ? ! isset($eventEvidence[$item['key']][$item['index']]) || $eventEvidence[$item['key']][$item['index']] === null : $this->foreshadowMissing($foreshadowEvidence[$item['key']], $item)));
             $failed = $events->filter(fn (StoryEvent $event): bool => ! ($checks->get($event->event_key)['holds'] ?? false))->pluck('event_key')->all();
             $passed = ($response['verdict'] ?? null) === 'equivalent' && $failed === [] && ($response['new_facts'] ?? []) === [] && ($response['lost_constraints'] ?? []) === [] && $missing === [];
-            $record->update(['status' => $passed ? 'verified' : 'failed', 'error' => $passed ? null : '事实等价核对未通过，请调整取舍后重新核对',
+            // 事件全部成立、证据全部定位时，剩下的新增事实或改变的约束可能正是作者要的修改：保留证据，交作者逐条确认。
+            $factChanges = ! $passed && $failed === [] && $missing === [] && (($response['new_facts'] ?? []) !== [] || ($response['lost_constraints'] ?? []) !== []);
+            $keepEvidence = $passed || $factChanges;
+            $record->update(['status' => $passed ? 'verified' : 'failed', 'error' => $passed ? null : ($factChanges ? '核对发现事实变化，确认属有意修改后可由作者确认通过' : '事实等价核对未通过，请调整取舍后重新核对'),
                 'equivalence' => ['verdict' => $response['verdict'] ?? null, 'summary' => $response['summary'] ?? '', 'failed_events' => $failed, 'auto_held_events' => $autoHeld,
                     'new_facts' => $response['new_facts'] ?? [], 'lost_constraints' => $response['lost_constraints'] ?? [], 'literary_issues' => $response['literary_issues'] ?? [],
-                    'unrelocated' => array_column($missing, 'ref'), 'event_evidence' => $passed ? $eventEvidence : null, 'foreshadow_evidence' => $passed ? $foreshadowEvidence : null]]);
+                    'unrelocated' => array_column($missing, 'ref'), 'event_evidence' => $keepEvidence ? $eventEvidence : null, 'foreshadow_evidence' => $keepEvidence ? $foreshadowEvidence : null]]);
+        });
+    }
+
+    /** 作者确认核对列出的新增事实与改变的约束属有意修改：仅当事件全部成立、证据全部定位时可用；不重新抽取事件，确认人、理由和逐条原文随核对结果留档。 */
+    public function confirmFactChanges(int $chapterId, User $actor, string $reason): FormalRevisionChapter
+    {
+        if (trim($reason) === '') {
+            throw new InvalidArgumentException('请写明确认原因');
+        }
+
+        return DB::transaction(function () use ($chapterId, $actor, $reason): FormalRevisionChapter {
+            $record = FormalRevisionChapter::lockForUpdate()->findOrFail($chapterId);
+            $revision = FormalRevision::lockForUpdate()->findOrFail($record->formal_revision_id);
+            $equivalence = $record->equivalence;
+            $changes = [...($equivalence['new_facts'] ?? []), ...($equivalence['lost_constraints'] ?? [])];
+            if ($revision->status !== 'open' || $record->status !== 'failed' || ! is_array($equivalence) || $changes === []
+                || ($equivalence['failed_events'] ?? []) !== [] || ($equivalence['unrelocated'] ?? []) !== []) {
+                throw new InvalidArgumentException('只有事件全部成立、证据全部定位且仅有新增事实或约束变化的核对结果可以由作者确认');
+            }
+            // 早于本功能的核对未保留证据时，只在全部证据可由程序确定性平移的情况下重新计算，需模型定位的不能补算。
+            if (! is_array($equivalence['event_evidence'] ?? null)) {
+                [$eventEvidence, $foreshadowEvidence, $unresolved] = $this->relocateAll(StoryEvent::where('commit_id', $record->source_commit_id)->orderBy('narrative_order')->get()->all(),
+                    ForeshadowEvidence::where('commit_id', $record->source_commit_id)->where('baseline_id', CanonicalBaseline::findOrFail(CanonicalBaseline::findOrFail($revision->baseline_id)->parent_id)->id)->orderBy('id')->get()->all(),
+                    ChapterVersion::findOrFail($record->source_version_id)->body, ChapterVersion::findOrFail($record->candidate_version_id)->body);
+                if ($unresolved !== []) {
+                    throw new InvalidArgumentException('本次核对未保留需模型定位的证据，请重新核对后再确认');
+                }
+                $equivalence['event_evidence'] = $eventEvidence;
+                $equivalence['foreshadow_evidence'] = $foreshadowEvidence;
+            }
+            $equivalence['author_confirmed_changes'] = ['new_facts' => $equivalence['new_facts'] ?? [], 'lost_constraints' => $equivalence['lost_constraints'] ?? [],
+                'actor_id' => $actor->id, 'reason' => trim($reason), 'at' => now()->toIso8601String()];
+            $record->update(['status' => 'verified', 'error' => null, 'equivalence' => $equivalence]);
+
+            return $record;
         });
     }
 

@@ -21,6 +21,7 @@ use App\Services\Pipeline\ContentExecutionContract;
 use App\Services\Pipeline\ContentExecutionService;
 use App\Services\Pipeline\ContentGenerationService;
 use App\Services\Pipeline\ContentPromptAudit;
+use App\Services\Pipeline\ContentSchema;
 use App\Services\Pipeline\PlanningJson;
 use App\Services\Pipeline\ProgressionChecker;
 use App\Services\Pipeline\RunControlService;
@@ -39,7 +40,7 @@ use LogicException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
-/** 真实应用入口与SDK HTTP夹具覆盖v14边界，合成正文不冒充文学或真实模型验收。 */
+/** 真实应用入口与SDK HTTP夹具覆盖当前正文协议边界，合成正文不冒充文学或真实模型验收。 */
 class B04ExecutionTest extends TestCase
 {
     use DatabaseMigrations;
@@ -49,6 +50,9 @@ class B04ExecutionTest extends TestCase
     protected int $checks = 0;
 
     protected string $scenario = 'pass';
+
+    /** 夹具细纲obstacle中的叙述句，用于模拟正文照搬提纲。 */
+    protected const COPIED_PLAN = '守塔人劝她别多管闲事并提醒旧航线的事早就没人在意';
 
     /** 仅迁移隔离库及设置。 */
     protected function migrateFreshUsing(): array
@@ -104,24 +108,37 @@ class B04ExecutionTest extends TestCase
                 $this->assertArrayNotHasKey('last_attempt', $payload);
                 $paragraphs = [];
                 foreach ($payload['budget']['slots'] as $i => $slot) {
-                    $text = str_repeat(mb_chr(0x4E00 + $i + 16 * NovelStage::findOrFail($log->novel_stage_id)->input['run_id']), intdiv($payload['budget']['min'] + $payload['budget']['max'], 2));
-                    if ($this->scenario === 'meta' && $i === 0) {
-                        $text = '此段约350字。'.mb_substr($text, 8);
+                    // 每个场景一段叙述加一段对白，拼接后各占一行。
+                    $items = B04ContentTest::sceneParagraphs(intdiv($payload['budget']['min'] + $payload['budget']['max'], 2), mb_chr(0x4E00 + $i + 16 * NovelStage::findOrFail($log->novel_stage_id)->input['run_id']));
+                    if (in_array($this->scenario, ['meta', 'meta_extra', 'meta_buried'], true) && $i === 0) {
+                        $items[0]['text'] = '此段约350字。'.mb_substr($items[0]['text'], 8);
                     }
-                    if ($this->scenario === 'complete') {
-                        $text = mb_substr($text, 0, -1).'。';
+                    // 模拟流程记录式正文：没有任何对白，可读性指标越线。
+                    if ($this->scenario === 'flat') {
+                        $items = [['kind' => 'narration', 'text' => mb_substr($items[0]['text'], 0, -1).str_repeat('甲', ContentSchema::count($items[1]['text'])).'。']];
                     }
-                    $paragraphs[$slot] = $text;
+                    if ($this->scenario === 'copy' && $i === 0) {
+                        $items[0]['text'] = self::COPIED_PLAN.mb_substr($items[0]['text'], mb_strlen(self::COPIED_PLAN));
+                    }
+                    $paragraphs[$slot] = $items;
                 }
                 $data = ['title' => '隔离首章候选', 'paragraphs' => array_reverse($paragraphs, true)];
                 if ($this->scenario === 'schema') {
-                    $data['paragraphs'][array_key_first($paragraphs)] = '短文';
+                    $data['paragraphs'][array_key_first($paragraphs)] = [['kind' => 'narration', 'text' => '短文']];
                 }
             } elseif ($step === 'revise') {
                 $id = array_key_first($payload['available_anchors']);
                 $text = $payload['available_anchors'][$id]['text'];
-                $text = str_replace('此段约350字。', '核对原档完成调查。', $text).'修订后取得新证据。';
-                $data = ['ranges' => [['start_id' => $id, 'end_id' => $id, 'text' => $text, 'reason' => '隔离修复待解决问题', 'addresses' => array_keys($payload['findings'])]]];
+                $text = str_replace(['此段约350字。', self::COPIED_PLAN], ['核对原档完成调查。', '守塔人摆摆手说那条航线早没人管'], $text).'修订后取得新证据。';
+                $data = ['ranges' => [['start_id' => $id, 'end_id' => $id, 'text' => [['kind' => 'narration', 'text' => $text]], 'reason' => '隔离修复待解决问题', 'addresses' => array_keys($payload['findings'])]]];
+                // 模拟模型顺手改写无问题段落：该范围没有问题编号，应被丢弃留档。
+                // 模拟修订把对白重新塞回叙述段：替换文本同样受分段规则约束。
+                if ($this->scenario === 'meta_buried') {
+                    $data['ranges'][0]['text'] = [['kind' => 'narration', 'text' => '她拨回去说：“这不是随手锉的。”母亲沉默了几秒。']];
+                }
+                if ($this->scenario === 'meta_extra') {
+                    $data['ranges'][] = ['start_id' => array_key_last($payload['available_anchors']), 'end_id' => array_key_last($payload['available_anchors']), 'text' => [['kind' => 'narration', 'text' => '无关改写。']], 'reason' => '顺手润色', 'addresses' => []];
+                }
             } else {
                 $this->checks++;
                 $id = array_key_first($payload['evidence_catalog']);
@@ -181,7 +198,9 @@ class B04ExecutionTest extends TestCase
         $version = ChapterVersion::sole();
         $this->assertGreaterThanOrEqual(2500, $version->character_count);
         $this->assertLessThanOrEqual(3500, $version->character_count);
-        $this->assertCount($fine ? 6 : 8, explode("\n", $version->body));
+        // 3000字目标下细纲排3个场景、关闭细纲分3节，每槽叙述与对白各占一行。
+        $this->assertCount(6, explode("\n", $version->body));
+        $this->assertStringContainsString("。\n“好", $version->body);
         $this->assertSame('pass', ChapterProgressionCheck::sole()->verdict);
         $this->assertSame(2 + $calls, $run->chapter->novel->fresh()->execution_count);
         $this->assertSame(0, $run->chapter->novel->fresh()->state_version);
@@ -259,6 +278,64 @@ class B04ExecutionTest extends TestCase
         Http::assertSentCount(4);
     }
 
+    /** 正文逐字照搬细纲叙述句时先交修订改写，独立检查只看改写后的正文。 */
+    public function test_plan_copy_is_revised_before_independent_check(): void
+    {
+        $this->scenario = 'copy';
+        $run = $this->start();
+        $this->drain();
+        $draft = NovelStage::where('input->run_id', $run->id)->where('input->step', 'draft')->sole();
+        $issue = $draft->output['data']['quality_issues'][0];
+        $this->assertSame('plan_copy', $issue['type']);
+        $this->assertSame([self::COPIED_PLAN], $issue['quotes']);
+        $revise = CostLog::where('request_parameters->step', 'revise')->sole();
+        $this->assertStringContainsString(self::COPIED_PLAN, $revise->request_parameters['prompt_audit']['user_prompt']);
+        $this->assertSame('awaiting_review', $run->fresh()->stop_reason);
+        $this->assertStringContainsString(self::COPIED_PLAN, ChapterVersion::oldest('id')->firstOrFail()->body);
+        $this->assertStringNotContainsString(self::COPIED_PLAN, ChapterVersion::latest('id')->firstOrFail()->body);
+    }
+
+    /** 修订中没有问题编号的范围被丢弃并留档，其余授权范围照常应用，不因此作废整次修订。 */
+    public function test_revise_drops_ranges_without_findings(): void
+    {
+        $this->scenario = 'meta_extra';
+        $run = $this->start();
+        $this->drain();
+        $this->assertSame('awaiting_review', $run->fresh()->stop_reason);
+        $revise = NovelStage::where('input->run_id', $run->id)->where('input->step', 'revise')->sole();
+        $this->assertSame('completed', $revise->status->value);
+        $this->assertSame([['kind' => 'narration', 'text' => '无关改写。']], $revise->output['data']['dropped_ranges'][0]['text']);
+        $final = ChapterVersion::latest('id')->firstOrFail()->body;
+        $this->assertStringNotContainsString('无关改写。', $final);
+        $this->assertStringNotContainsString('此段约350字。', $final);
+        $this->assertSame(explode("\n", ChapterVersion::oldest('id')->firstOrFail()->body)[5], explode("\n", $final)[5]);
+    }
+
+    /** 修订替换文本同样按段落列表校验，把对白塞回叙述段的修订被拒绝，原候选保持不变。 */
+    public function test_revise_rejects_dialogue_buried_in_narration(): void
+    {
+        $this->scenario = 'meta_buried';
+        $run = $this->start();
+        $this->drain();
+        $this->assertSame('invalid_schema', $run->fresh()->stop_reason);
+        $revise = NovelStage::where('input->run_id', $run->id)->where('input->step', 'revise')->sole();
+        $this->assertStringContainsString('是叙述段却夹带人物原话', $revise->output['data']['validation_error']);
+        $this->assertSame(1, ChapterVersion::count());
+    }
+
+    /** 对白占比过低的正文先交修订；修订后仍越线则停在质量不足，不进入独立检查。 */
+    public function test_flat_body_is_sent_to_revision_by_readability_metrics(): void
+    {
+        $this->scenario = 'flat';
+        $run = $this->start();
+        $this->drain();
+        $draft = NovelStage::where('input->run_id', $run->id)->where('input->step', 'draft')->sole();
+        $this->assertSame(['readability_dialogue'], array_column($draft->output['data']['quality_issues'], 'type'));
+        $this->assertSame(0.0, (float) $draft->output['data']['readability']['dialogue_share']);
+        $this->assertSame('body_quality_insufficient', $run->fresh()->stop_reason);
+        $this->assertSame(0, CostLog::where('request_parameters->step', 'check')->count());
+    }
+
     /** 技术错误、非法响应、核心冲突及未知结果不得自动探测或重试。 */
     #[DataProvider('failureCases')]
     public function test_failures_stop_without_hidden_successor(string $scenario, string $reason, int $calls): void
@@ -291,7 +368,7 @@ class B04ExecutionTest extends TestCase
         $child = app(ContentGenerationService::class)->recover($parent->id, User::firstOrFail(), '按原段实测字数恢复');
         $this->assertSame($failed->id, $child->config['recovery_draft']['cost_log_id']);
         $this->assertSame($failed->structured_output, $child->config['recovery_draft']['response']);
-        $this->assertStringContainsString('paragraph_1实际2字', $child->config['recovery_validation_error']);
+        $this->assertStringContainsString('section_1实际2字', $child->config['recovery_validation_error']);
         $this->drain();
         $next = CostLog::where('id', '>', $failed->id)->oldest('id')->firstOrFail();
         $prompt = $next->request_parameters['prompt_audit']['user_prompt'];
@@ -301,6 +378,116 @@ class B04ExecutionTest extends TestCase
         $this->assertSame('invalid_schema', $parent->fresh()->stop_reason);
         $this->assertSame('awaiting_review', $child->fresh()->stop_reason);
         Http::assertSentCount(3);
+    }
+
+    /** 冻结版本运行升版后仍可只读核验；旧槽位或旧文本格式的失败草稿不能逐场景修复，恢复后改为按段落列表整章重写。 */
+    #[DataProvider('frozenDrafts')]
+    public function test_previous_protocol_run_recovers_to_scene_slots(string $version, array $paragraphs): void
+    {
+        $this->scenario = 'schema';
+        $parent = $this->start(false);
+        $this->drain();
+        $failed = CostLog::sole();
+        $legacy = ['title' => '旧格式草稿', 'paragraphs' => $paragraphs];
+        DB::table('cost_logs')->where('id', $failed->id)->update(['structured_output' => json_encode($legacy, JSON_UNESCAPED_UNICODE)]);
+        $config = [...$parent->config, 'version' => $version, 'protocol' => ContentExecutionContract::FROZEN_PROTOCOLS[$version]];
+        DB::table('chapter_generation_runs')->where('id', $parent->id)->update(['config' => PlanningJson::encode($config), 'input_hash' => PlanningJson::hash([$parent->snapshot, $config])]);
+        $parent->refresh();
+        app(ContentGenerationService::class)->assertFrozenSources($parent);
+        $this->expectsNoContinuation($parent);
+
+        $this->scenario = 'pass';
+        $child = app(ContentGenerationService::class)->recover($parent->id, User::firstOrFail(), '旧协议失败草稿按场景重写');
+        $this->assertSame(ContentExecutionContract::VERSION, $child->config['version']);
+        $this->assertEquals($legacy, $child->config['recovery_draft']['response']);
+        // 即使模型支持逐段修复，旧槽位也只能作参考，不能触发单场景修复。
+        $childConfig = [...$child->config, 'slot_repair' => true];
+        DB::table('chapter_generation_runs')->where('id', $child->id)->update(['config' => PlanningJson::encode($childConfig), 'input_hash' => PlanningJson::hash([$child->snapshot, $childConfig])]);
+        $this->drain();
+        $next = CostLog::where('id', '>', $failed->id)->oldest('id')->firstOrFail();
+        $payload = json_decode(explode('冻结输入：', $next->request_parameters['prompt_audit']['user_prompt'], 2)[1], true, flags: JSON_THROW_ON_ERROR);
+        $this->assertArrayNotHasKey('draft_repair_slot', $payload);
+        $this->assertSame(['section_1', 'section_2', 'section_3'], $payload['budget']['slots']);
+        $this->assertEquals($legacy, $payload['previous_failed_draft']['response']);
+        $this->assertSame('awaiting_review', $child->fresh()->stop_reason);
+    }
+
+    /** 作者明确要求时整章重写丢弃旧细纲，按篇幅场景数和写戏字段重新规划；不能借定点修订重排。 */
+    public function test_rewrite_can_replan_fine_outline(): void
+    {
+        $this->scenario = 'schema';
+        $parent = $this->start();
+        $this->drain();
+        $this->assertNotNull($parent->fresh()->plan_data);
+        $service = app(ContentGenerationService::class);
+        try {
+            $service->recover($parent->id, User::firstOrFail(), '只重排细纲', replan: true);
+            $this->fail('非整章重写不能重新生成细纲');
+        } catch (InvalidArgumentException $exception) {
+            $this->assertStringContainsString('整章重写', $exception->getMessage());
+        }
+        $this->scenario = 'pass';
+        $child = $service->recover($parent->id, User::firstOrFail(), '按新细纲契约整章重写', rewrite: true, replan: true);
+        $this->assertSame('fine', $child->next_step);
+        $this->assertNull($child->plan_data);
+        $this->assertNull($child->fine_stage_id);
+        $this->drain();
+        $fine = CostLog::where('request_parameters->step', 'fine')->latest('id')->firstOrFail();
+        $payload = json_decode(explode('冻结输入：', $fine->request_parameters['prompt_audit']['user_prompt'], 2)[1], true, flags: JSON_THROW_ON_ERROR);
+        $this->assertEquals(['min' => 3, 'max' => 3], $payload['scene_range']);
+        $this->assertStringContainsString('emotional_beat', $fine->request_parameters['prompt_audit']['system_prompt']);
+        $child->refresh();
+        $this->assertNotSame($parent->fine_stage_id, $child->fine_stage_id);
+        $this->assertArrayHasKey('key_dialogue', $child->plan_data['scenes'][0]);
+        $this->assertSame('awaiting_review', $child->stop_reason);
+    }
+
+    /** v14按旧槽位切分；v15槽位同名但每槽是带换行的字符串。
+     * @return array<string, array{string, array<string, string>}>
+     */
+    public static function frozenDrafts(): array
+    {
+        return [
+            'v14旧槽位' => ['b04-content-v14', ['paragraph_1' => '短文', 'paragraph_2' => '短文']],
+            'v15字符串槽位' => ['b04-content-v15', ['section_1' => "短文。\n“好。”", 'section_2' => '短文。', 'section_3' => '短文。']],
+        ];
+    }
+
+    /** 恢复运行冻结的保存草稿已整章合格时直接采用：不发正文请求、不占额度，来源留档后照常进入独立检查。 */
+    public function test_recovery_reuses_saved_draft_that_is_already_valid(): void
+    {
+        $this->scenario = 'schema';
+        $parent = $this->start(false);
+        $this->drain();
+        $this->scenario = 'pass';
+        $child = app(ContentGenerationService::class)->recover($parent->id, User::firstOrFail(), '保存草稿已合格时直接采用');
+        // 模拟规则修正后保存草稿已经合格：按当前预算构造整份合格草稿冻结进恢复运行。
+        $budget = ContentExecutionContract::budget($child->snapshot['novel']['chapter_length_policy'], $child->plan_data, false);
+        $draft = ['title' => '已合格草稿', 'paragraphs' => array_combine($budget['slots'], array_map(fn (string $slot): array => B04ContentTest::sceneParagraphs(intdiv($budget['min'] + $budget['max'], 2), '乙'), $budget['slots']))];
+        $config = [...$child->config, 'slot_repair' => true, 'recovery_draft' => [...$child->config['recovery_draft'], 'response' => $draft]];
+        DB::table('chapter_generation_runs')->where('id', $child->id)->update(['config' => PlanningJson::encode($config), 'input_hash' => PlanningJson::hash([$child->snapshot, $config])]);
+        $executions = $child->chapter->novel->fresh()->execution_count;
+        $this->drain();
+
+        $draftStage = NovelStage::where('input->run_id', $child->id)->where('input->step', 'draft')->sole();
+        $this->assertSame(PlanningJson::hash($draft), $draftStage->output['data']['reused_draft']['hash']);
+        $this->assertNull($draftStage->output['data']['cost_log_id']);
+        $this->assertSame(0, CostLog::where('novel_stage_id', $draftStage->id)->count());
+        $this->assertSame(ContentExecutionContract::body($draft, $budget)['body'], ChapterVersion::where('run_id', $child->id)->sole()->body);
+        $this->assertSame('awaiting_review', $child->fresh()->stop_reason);
+        $this->assertSame(1, $child->fresh()->requests_used);
+        $this->assertSame($executions + 1, $child->chapter->novel->fresh()->execution_count);
+    }
+
+    /** 旧协议运行只能显式恢复，不能直接继续。 */
+    private function expectsNoContinuation(ChapterGenerationRun $run): void
+    {
+        try {
+            app(ContentGenerationService::class)->continue($run->id, reason: '旧协议直接继续');
+            $this->fail('v14运行不能直接继续');
+        } catch (InvalidArgumentException $exception) {
+            $this->assertStringContainsString('旧协议', $exception->getMessage());
+        }
     }
 
     /** 全文失败只保存意见，显式继续仍使用原授权剩余两次。 */

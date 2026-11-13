@@ -32,10 +32,10 @@ class B04ContentTest extends TestCase
         if ($step === 'fine') {
             $data = self::fine();
         } elseif ($step === 'draft') {
-            $data = ['title' => '隔离首章', 'paragraphs' => array_combine($payload['budget']['slots'], array_map(fn ($i): string => str_repeat(mb_chr(0x4E00 + $i), intdiv($payload['budget']['min'] + $payload['budget']['max'], 2)), range(0, $payload['budget']['count'] - 1)))];
+            $data = ['title' => '隔离首章', 'paragraphs' => array_combine($payload['budget']['slots'], array_map(fn ($i): array => self::sceneParagraphs(intdiv($payload['budget']['min'] + $payload['budget']['max'], 2), mb_chr(0x4E00 + $i)), range(0, $payload['budget']['count'] - 1)))];
         } elseif ($step === 'revise') {
             $id = array_key_first($payload['available_anchors']);
-            $data = ['ranges' => [['start_id' => $id, 'end_id' => $id, 'text' => $payload['available_anchors'][$id]['text'].'隔离修订。', 'reason' => '隔离修订', 'addresses' => array_keys($payload['findings'])]]];
+            $data = ['ranges' => [['start_id' => $id, 'end_id' => $id, 'text' => [['kind' => 'narration', 'text' => $payload['available_anchors'][$id]['text'].'隔离修订。']], 'reason' => '隔离修订', 'addresses' => array_keys($payload['findings'])]]];
         } else {
             $id = array_key_first($payload['evidence_catalog']);
             $data = ['points' => array_map(fn ($point): array => ['id' => $point['id'], 'met' => $met, 'reason' => '隔离推进', 'evidence_ids' => [$id]], $payload['progression_points']),
@@ -135,13 +135,23 @@ class B04ContentTest extends TestCase
         return $novel;
     }
 
+    /** 按预算构造一个场景的段落列表：一段完整叙述加一段约占五分之一的对白，可见字数恰为给定值，可读性指标不越线。
+     * @return list<array{kind: string, text: string}>
+     */
+    public static function sceneParagraphs(int $characters, string $character): array
+    {
+        $dialogue = max(4, intdiv($characters, 5));
+
+        return [['kind' => 'narration', 'text' => str_repeat($character, $characters - $dialogue - 1).'。'], ['kind' => 'dialogue', 'text' => '“'.str_repeat('好', $dialogue - 3).'。”']];
+    }
+
     /** 冻结历史夹具或纯契约回归，不通过旧业务路径生成运行。 */
     public static function fine(): array
     {
         return ['scenes' => [
-            ['time' => '清晨', 'place' => '灯塔', 'action' => '读取来信并记录可验证信息', 'change' => '取得待查线索', 'point_ids' => ['chapter-1-point-1']],
-            ['time' => '午后', 'place' => '档案室', 'action' => '逐项比对航线记录', 'change' => '辨认篡改痕迹', 'point_ids' => ['chapter-1-point-1']],
-            ['time' => '傍晚', 'place' => '港口', 'action' => '凭证据追查签名', 'change' => '明确后续调查地点', 'point_ids' => []],
+            ['time' => '清晨', 'place' => '灯塔', 'action' => '读取来信并记录可验证信息', 'change' => '取得待查线索', 'goal' => '林澈想弄清来信真伪', 'obstacle' => '守塔人劝她别多管闲事并提醒旧航线的事早就没人在意', 'emotional_beat' => '由迟疑转为决意', 'key_dialogue' => '守塔人问她图什么', 'point_ids' => ['chapter-1-point-1']],
+            ['time' => '午后', 'place' => '档案室', 'action' => '逐项比对航线记录', 'change' => '辨认篡改痕迹', 'goal' => '找到原始航线', 'obstacle' => '档案员拖延调阅', 'emotional_beat' => '怀疑落到熟人身上', 'key_dialogue' => '档案员否认有人动过档案', 'point_ids' => ['chapter-1-point-1']],
+            ['time' => '傍晚', 'place' => '港口', 'action' => '凭证据追查签名', 'change' => '明确后续调查地点', 'goal' => '追到签名的主人', 'obstacle' => '港口工头翻脸', 'emotional_beat' => '紧张升到顶点', 'key_dialogue' => '工头警告她别再查', 'point_ids' => []],
         ], 'hook' => '签名指向下一处调查地点', 'adjustments' => ['把验证安排在本章完成后才转入新线索'], 'hook_transition' => ['completed_state' => '已确认航线篡改', 'trigger' => '发现签名指向仓库', 'next_question' => '仓库与旧案有关联吗', 'point_ids' => ['chapter-1-point-1']]];
     }
 

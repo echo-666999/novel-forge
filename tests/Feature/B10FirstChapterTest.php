@@ -6,6 +6,7 @@ use App\Enums\ProductionFailure;
 use App\Filament\Resources\Novels\Pages\CreateNovel;
 use App\Filament\Resources\Novels\Pages\ViewNovelRun;
 use App\Jobs\AdvanceProductionRunJob;
+use App\Jobs\RunChapterStepJob;
 use App\Models\CanonicalCommit;
 use App\Models\ChapterGenerationRun;
 use App\Models\ChapterSubmissionRun;
@@ -13,10 +14,13 @@ use App\Models\CostLog;
 use App\Models\Novel;
 use App\Models\ProductionRun;
 use App\Models\User;
+use App\Services\Ai\AiTextGenerationService;
 use App\Services\Pipeline\ChapterProductionStepper;
+use App\Services\Pipeline\ContentGenerationService;
 use App\Services\Pipeline\PlanningJson;
 use App\Services\Pipeline\ProductionRunService;
 use App\Services\Pipeline\ProductionWatchdog;
+use App\Services\Pipeline\ProgressionChecker;
 use App\Services\Search\EmbeddingService;
 use App\Settings\GeneralSettings;
 use Filament\Facades\Filament;
@@ -101,13 +105,9 @@ class B10FirstChapterTest extends TestCase
                 $response = B04ContentTest::validResponse($request);
                 if (($log->request_parameters['step'] ?? null) === 'draft') {
                     $data = json_decode($response['output'][0]['content'][0]['text'], true, flags: JSON_THROW_ON_ERROR);
-                    foreach ($data['paragraphs'] as &$paragraph) {
-                        $paragraph = mb_substr($paragraph, 0, -1).'。';
-                    }
-                    unset($paragraph);
                     if ($this->truncateDraft) {
                         $first = array_key_first($data['paragraphs']);
-                        $data['paragraphs'][$first] = mb_substr($data['paragraphs'][$first], 0, -3).'为后续';
+                        $data['paragraphs'][$first][0]['text'] = mb_substr($data['paragraphs'][$first][0]['text'], 0, -3).'为后续';
                     }
                     $response['output'][0]['content'][0]['text'] = PlanningJson::encode($data);
                 }
@@ -219,6 +219,74 @@ class B10FirstChapterTest extends TestCase
         $this->assertSame('unknown', CostLog::sole()->status);
         $this->assertFalse(collect($run->history)->contains('action', 'automatic_recovery'));
         $this->assertSame(1, $attempts);
+    }
+
+    /** 编排失败后单独恢复的正文运行由自身任务推进；编排推进期间不另行投递，恢复编排时不能误报被领取的步骤。 */
+    public function test_content_recovery_under_failed_automation_is_dispatched(): void
+    {
+        $service = app(ProductionRunService::class);
+        $run = $this->start();
+        for ($i = 0; $i < 6 && $run->step !== 'content'; $i++) {
+            $run = $service->advance($run->id);
+        }
+        $this->assertSame('content', $run->step);
+        $this->reject = true;
+        for ($i = 0; $i < 6 && $run->status === 'pending'; $i++) {
+            $run = $service->advance($run->id);
+        }
+        $this->assertSame('failed', $run->status);
+        $this->assertSame(0, Queue::pushed(RunChapterStepJob::class)->count());
+        $body = ChapterGenerationRun::latest('id')->firstOrFail();
+        $this->assertSame('paused', $body->status);
+
+        $this->reject = false;
+        $author = User::findOrFail($run->author_id);
+        $recovered = app(ContentGenerationService::class)->recover($body->id, $author, '自动流程停止后单独恢复正文');
+        $this->assertSame('pending', $recovered->status);
+        $this->assertSame(1, Queue::pushed(RunChapterStepJob::class)->filter(fn (RunChapterStepJob $job): bool => $job->runId === $recovered->id)->count());
+
+        // 恢复编排后由编排推进；若队列任务先领取同一步，编排停在可读原因，不重发请求。
+        $run = $service->retry($run->id, $author);
+        $this->assertSame('pending', $run->status);
+        DB::table('chapter_generation_runs')->where('id', $recovered->id)->update(['status' => 'running']);
+        $requests = CostLog::count();
+        $run = $service->advance($run->id);
+        $this->assertSame('failed', $run->status);
+        $this->assertSame('CONTENT_STOPPED:running_elsewhere', $run->error);
+        $this->assertSame($requests, CostLog::count());
+    }
+
+    /** 编排停止期间单独恢复并通过检查的候选，恢复编排后直接验收、评审并提交，不再新建修订运行改写正文。 */
+    public function test_resume_submits_candidate_awaiting_review(): void
+    {
+        $service = app(ProductionRunService::class);
+        $run = $this->start();
+        for ($i = 0; $i < 6 && $run->step !== 'content'; $i++) {
+            $run = $service->advance($run->id);
+        }
+        $this->reject = true;
+        for ($i = 0; $i < 6 && $run->status === 'pending'; $i++) {
+            $run = $service->advance($run->id);
+        }
+        $this->assertSame('failed', $run->status);
+        $this->reject = false;
+        $author = User::findOrFail($run->author_id);
+        $recovered = app(ContentGenerationService::class)->recover(ChapterGenerationRun::latest('id')->firstOrFail()->id, $author, '自动流程停止后单独恢复正文');
+        for ($consumed = 0; $job = Queue::pushed(RunChapterStepJob::class)->get($consumed); $consumed++) {
+            $job->handle(app(ContentGenerationService::class), app(AiTextGenerationService::class), app(ProgressionChecker::class));
+        }
+        $this->assertSame('awaiting_review', $recovered->fresh()->stop_reason);
+        $version = $recovered->fresh()->chapter->current_candidate_version_id;
+        $runs = ChapterGenerationRun::count();
+
+        $run = $service->retry($run->id, $author);
+        $this->assertSame($runs, ChapterGenerationRun::count());
+        for ($i = 0; $i < 10 && $run->status === 'pending'; $i++) {
+            $run = $service->advance($run->id);
+        }
+        $this->assertSame('completed', $run->status);
+        $this->assertSame('b04_accepted', $recovered->fresh()->stop_reason);
+        $this->assertSame($version, CanonicalCommit::sole()->version_id);
     }
 
     /** 评审未通过必须停止，自动授权不能强行正式提交。 */
