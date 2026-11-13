@@ -151,7 +151,8 @@ final class ContentExecutionService
     {
         $issues = ContentQualityContract::issues($body, $run->snapshot['novel']['chapter_length_policy']);
         if (($run->config['version'] ?? null) === ContentExecutionContract::VERSION) {
-            $issues = [...$issues, ...ContentQualityContract::planCopies($body, $run->plan_data), ...ContentReadabilityMetrics::issues(ContentReadabilityMetrics::measure($body))];
+            $issues = [...$issues, ...ContentQualityContract::planCopies($body, $run->plan_data), ...ContentQualityContract::echoedDialogue($body),
+                ...ContentReadabilityMetrics::issues(ContentReadabilityMetrics::measure($body))];
         }
 
         return $issues;
@@ -179,8 +180,10 @@ final class ContentExecutionService
                 $issues[] = ['type' => 'progression', 'reason' => $point['reason']];
             }
         }
+        // 当前协议的检查问题带上证据段号，修订范围才能被限制在问题附近；冻结运行保持原问题编号不变。
+        $located = ($run->config['version'] ?? null) === ContentExecutionContract::VERSION;
         foreach ([...($result['conflicts'] ?? []), ...($result['continuity_issues'] ?? [])] as $issue) {
-            $issues[] = ['type' => 'check', 'reason' => $issue['reason']];
+            $issues[] = ['type' => 'check', 'reason' => $issue['reason'], ...($located && isset($issue['evidence_ids']) ? ['evidence_ids' => $issue['evidence_ids']] : [])];
         }
         foreach ($result['reading_reviews'] ?? [] as $review) {
             if (! $review['fixed']) {
@@ -478,6 +481,8 @@ final class ContentExecutionService
                 'revise' => (function () use ($response, $source, $request, &$droppedRanges): array {
                     // 没有问题编号的范围不是授权修订，丢弃并留档；其余范围仍按原契约严格校验。
                     [$response, $droppedRanges] = ContentExecutionContract::authorizedRanges($response);
+                    // 范围只能落在所处理问题的附近，合计不超过约三分之一正文，防止修一句改半章。
+                    ContentExecutionContract::revisionScope($response, $request['context']['anchors'], $request['context']['findings']);
                     // 替换文本与正文同样按段落列表校验分段规则，避免修订把对白重新塞回叙述段。
                     $response = ContentExecutionContract::revisionText($response, $request['context']['budget']['complete_paragraphs'] ?? false);
 
@@ -638,7 +643,11 @@ final class ContentExecutionService
             app(ContentGenerationService::class)->assertFrozenSources($run);
             $operator = $run->config['author_id'] ?? data_get($run->config, 'continuation_grant.operator_id') ?? data_get($run->control_history, '0.author_id');
             $result = $run->chapter->progression_result;
-            if ($run->status !== 'completed' || $run->stop_reason !== 'awaiting_review' || $novel->status !== NovelStatus::Paused || $operator !== $author->id
+            // 操作人不符时写明需要的账号，避免作者误以为是正文状态问题。
+            if (! app(BookAuthorship::class)->allows($novel->id, $author, $operator)) {
+                throw new InvalidArgumentException('本章由账号「'.app(BookAuthorship::class)->requiredAccountName($novel->id, $operator).'」负责，只能由该账号记录全文核对，请换用该账号登录，或在小说页接管本书');
+            }
+            if ($run->status !== 'completed' || $run->stop_reason !== 'awaiting_review' || $novel->status !== NovelStatus::Paused
                 || $result === null || $result['verdict'] !== 'pass') {
                 throw new InvalidArgumentException('没有可核对的当前候选或操作人不符');
             }

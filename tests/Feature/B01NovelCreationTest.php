@@ -10,6 +10,7 @@ use App\Filament\Resources\Novels\Pages\ListNovels;
 use App\Filament\Resources\Novels\Pages\ViewNovel;
 use App\Jobs\RunNovelPipelineJob;
 use App\Jobs\RunSettingJob;
+use App\Models\Chapter;
 use App\Models\Novel;
 use App\Models\User;
 use App\Services\Pipeline\CreateNovelService;
@@ -217,6 +218,30 @@ class B01NovelCreationTest extends TestCase
             ->assertDontSee('<script>unsafe()</script>', false)->callAction('refreshStatus');
         $this->assertSame(0, $novel->fresh()->execution_count);
         Queue::assertNothingPushed();
+    }
+
+    /** 列表把题材与模式并入书名下方、章数带单位，可按题材搜索；次要操作收进菜单后仍可用。 */
+    public function test_list_shows_compact_columns_and_grouped_actions(): void
+    {
+        $novel = Novel::factory()->create(['title' => '归舟录', 'genre' => '悬疑', 'target_chapters' => 20, 'chapters_done' => 2]);
+        $other = Novel::factory()->create(['title' => '另一条创意', 'genre' => '科幻']);
+
+        Livewire::test(ListNovels::class)->assertSee('悬疑 · ')->assertSee('2 / 20 章')
+            ->searchTable('悬疑')->assertCanSeeTableRecords([$novel])->assertCanNotSeeTableRecords([$other]);
+        Livewire::test(ListNovels::class)->assertTableActionVisible('archive', $novel)->assertTableActionVisible('copyInput', $novel);
+    }
+
+    /** 详情页顶部以标签汇总状态、章数、篇幅、执行次数与预算，近期章节合并章号标题并标注状态。 */
+    public function test_details_show_compact_overview_badges_and_recent_chapters(): void
+    {
+        $novel = Novel::factory()->create(['title' => '归舟录', 'target_chapters' => 20, 'chapters_done' => 0, 'execution_count' => 3, 'max_execution_count' => 10,
+            'chapter_length_policy' => ['min_characters' => 2000, 'max_characters' => 3000]]);
+        Chapter::factory()->create(['novel_id' => $novel->id, 'number' => 1, 'title' => '缺口钥匙']);
+
+        Livewire::test(ViewNovel::class, ['record' => $novel->id])
+            ->assertSee('已完成 0 / 20 章')->assertSee('每章 2000～3000 字')->assertSee('执行 3 / 10')->assertSee('未设预算')
+            ->assertSee('第1章 缺口钥匙')->assertSee('生成中')->assertSee('去处理')
+            ->assertDontSee('篇幅计划')->assertDontSee('运行状态');
     }
 
     /** 服务端策略和路由同时禁止编辑删除，未登录请求必须去登录页。 */

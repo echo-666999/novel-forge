@@ -69,4 +69,20 @@ class C09CharacterKnowledgeTest extends TestCase
         $this->assertSame([], app(CharacterKnowledge::class)->atChapter($novel, 5, $actor->id)['rows']);
         Http::assertNothingSent();
     }
+
+    /** 紧凑展示：顶部数量概览，事件以章号与主体作小标题、类别作标签，证据压成单行；未选角色时不显示认知分区。 */
+    public function test_page_shows_compact_overview_and_event_cards(): void
+    {
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        $this->actingAs(User::factory()->create());
+        [$novel, $actor] = C02StoryStateTest::history();
+
+        Livewire::withQueryParams(['chapter' => 5])->test(ViewCharacterKnowledge::class, ['record' => $novel->id])
+            ->assertSee('正式事件 5 条')->assertSee('已登场人物 1 人')
+            ->assertSee('第5章 · 苏禾')->assertSee('客观已确认')->assertSee('第1段：苏禾在旧店修补雨伞。')
+            ->assertDontSee('角色认知与信念');
+
+        Livewire::withQueryParams(['chapter' => 5, 'actor' => $actor->id])->test(ViewCharacterKnowledge::class, ['record' => $novel->id])
+            ->assertSee('苏禾主导的事件 5 条')->assertSee('认知与信念 0 条')->assertSee('角色认知与信念');
+    }
 }

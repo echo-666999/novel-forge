@@ -1,39 +1,28 @@
 <x-filament-panels::page>
-    {{-- 说明移入标题旁提示，操作反馈保留可见，避免发布结果被折叠隐藏。 --}}
-    @if ($message)<p role="status">{{ $message }}</p>@endif
-    @foreach ($errors->all() as $error)<p role="alert">{{ $error }}</p>@endforeach
+    {{-- 操作结果以通知弹出；这里只保留服务端校验错误，避免失败无提示。 --}}
+    @foreach ($errors->all() as $error)<p role="alert" style="color: var(--danger-600);">{{ $error }}</p>@endforeach
     @php
         $templateTips = implode("\n\n", [
-            '“内置固定”版本替换对应阶段的固定提示词；公共与阶段补充模板追加创作要求。输出 Schema、工具限制及正式提交门禁仍由程序管理。',
-            '新小说创建时冻结全部发布模板及变量；后续章节、重试和恢复沿用旧快照。语言：中文（zh-CN）。',
-            '补充模板可用变量（内置固定文本不进行变量替换）：{{ title }}（书名）、{{ genre }}（题材）、{{ stage }}（阶段键）。不执行 PHP 或 Blade。',
+            '内置固定提示词：替换该阶段的固定文本，不做变量替换。补充创作要求：追加在固定文本之后，公共要求用于所有阶段。',
+            '补充模板可用变量：{{ title }}（书名）、{{ genre }}（题材）、{{ stage }}（阶段键）。输出 Schema、工具限制和正式提交门禁始终由程序管理。',
+            '发布只影响此后新建的小说；已有小说的后续章节、重试和恢复沿用创建时冻结的模板。',
         ]);
     @endphp
-    <x-filament::section>
+
+    <x-filament::section compact>
         <x-slot name="heading">
             <span style="display: inline-flex; align-items: center; gap: 0.5rem;">
-                <span>版本与发布历史</span>
+                <span>各阶段当前生效</span>
                 <x-filament::icon-button icon="heroicon-o-question-mark-circle" color="gray" label="模板使用说明" :tooltip="$templateTips" />
             </span>
         </x-slot>
-        {{-- 筛选区与表格保持独立间距，避免输入框边框紧贴表头。 --}}
-        <div style="margin-bottom: 1.5rem;">
+        {{ $this->overview }}
+    </x-filament::section>
+
+    <x-filament::section heading="版本历史" compact>
+        <div style="margin-bottom: 1rem;">
             {{ $this->filters }}
         </div>
-        {{-- 使用与小说列表一致的 Filament 表格，正文通过行内详情弹窗查看。 --}}
         {{ $this->table }}
-    </x-filament::section>
-    <x-filament::section heading="小说根运行冻结记录" collapsible collapsed>
-        @forelse ($bindings as $binding)
-            <details style="padding-block: 0.5rem;">
-                <summary><a href="{{ \App\Filament\Resources\Novels\NovelResource::getUrl('view', ['record' => $binding['id']]) }}">#{{ $binding['id'] }} {{ $binding['title'] }}</a></summary>
-                @if ($binding['snapshot'] === null)<p>历史运行：原程序契约，未回填当前模板。</p>
-                @else
-                    <p>快照摘要：{{ $binding['snapshot']['hash'] }}</p>
-                    @forelse ($binding['snapshot']['items'] as $item)<p>{{ $item['scope'] }} · {{ $versionLabels[$item['id']] ?? ('记录 #'.$item['id']) }}</p><pre style="white-space: pre-wrap; overflow-wrap: anywhere;">{{ $item['body'] }}</pre>
-                    @empty<p>创建时无发布模板，保持原程序契约。</p>@endforelse
-                @endif
-            </details>
-        @empty<p>暂无真实小说根运行。</p>@endforelse
     </x-filament::section>
 </x-filament-panels::page>

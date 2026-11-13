@@ -221,6 +221,39 @@ class ContentDraftBudgetTest extends TestCase
         ContentExecutionContract::revisionText(['ranges' => [[...$range, 'text' => [self::narration('她对着电话说：“妈，这不是随手锉的。”母亲沉默了。')]]]], false);
     }
 
+    /** 叙述把相邻对白的原话先转述一遍时按叙述段报告；只共用人名物名等短词不算重复。 */
+    public function test_echoed_dialogue_is_reported_on_the_narration_paragraph(): void
+    {
+        $body = "小陶看了她一眼，让她记就记，只是别用红笔，说红笔在库房那边看着扎眼。\n“你记吧，别用红笔。红笔在库房那边看着扎眼。”\n她把“锉记十七”抄进笔记。\n“锉记十七那一行，你别动。”";
+        $issues = ContentQualityContract::echoedDialogue($body);
+        $this->assertCount(1, $issues);
+        $this->assertSame(['type' => 'echoed_dialogue', 'paragraph' => 1, 'anchor_id' => 'p1', 'dialogue_paragraph' => 2, 'quotes' => ['红笔在库房那']], array_diff_key($issues[0], ['reason' => true]));
+        $this->assertSame([], ContentQualityContract::echoedDialogue("母亲在厨房关了火。\n“你先别跟你舅说。”"));
+    }
+
+    /** 修订范围只能落在带段号问题的附近，合计不超过约三分之一正文；整章或旧正文的问题不施加位置限制。 */
+    public function test_revision_scope_limits_ranges(): void
+    {
+        $anchors = [];
+        foreach (range(1, 30) as $n) {
+            $anchors['p'.$n] = ['paragraph' => $n, 'text' => '段。', 'body_hash' => 'h'];
+        }
+        $findings = ['near' => ['type' => 'plan_copy', 'paragraph' => 20, 'source_body_hash' => 'h'], 'old' => ['type' => 'check', 'evidence_ids' => ['p2'], 'source_body_hash' => 'old'],
+            'whole' => ['type' => 'whole_chapter', 'source_body_hash' => 'h']];
+        $range = fn (string $start, string $end, array $addresses): array => ['start_id' => $start, 'end_id' => $end, 'addresses' => $addresses];
+        ContentExecutionContract::revisionScope(['ranges' => [$range('p17', 'p23', ['near'])]], $anchors, $findings);
+        ContentExecutionContract::revisionScope(['ranges' => [$range('p1', 'p8', ['old']), $range('p25', 'p26', ['whole'])]], $anchors, $findings);
+        try {
+            ContentExecutionContract::revisionScope(['ranges' => [$range('p2', 'p9', ['near'])]], $anchors, $findings);
+            $this->fail('离问题过远的范围不能通过');
+        } catch (InvalidArgumentException $exception) {
+            $this->assertStringContainsString('离所处理问题的段落（p20）太远', $exception->getMessage());
+        }
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('合计覆盖11段，超过上限10段');
+        ContentExecutionContract::revisionScope(['ranges' => [$range('p1', 'p11', ['whole'])]], $anchors, $findings);
+    }
+
     /** 可读性指标：引用的栏目不算对白，转述只作估计；只有对白过低或流程词过密才成为修订问题。 */
     public function test_readability_metrics_flag_only_extremes(): void
     {

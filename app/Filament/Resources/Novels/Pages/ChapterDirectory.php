@@ -2,8 +2,10 @@
 
 namespace App\Filament\Resources\Novels\Pages;
 
+use App\Enums\ChapterStatus;
 use App\Filament\Resources\Novels\NovelResource;
 use App\Models\Chapter;
+use App\Models\ChapterVersion;
 use App\Models\Novel;
 use App\Services\Pipeline\AcceptanceComparison;
 use Filament\Actions\Action;
@@ -16,13 +18,13 @@ use Filament\Resources\Pages\Concerns\InteractsWithRecord;
 use Filament\Resources\Pages\Page;
 use Filament\Schemas\Components\Component;
 use Filament\Schemas\Components\EmbeddedTable;
-use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Concerns\InteractsWithTable;
 use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Filters\TernaryFilter;
 use Filament\Tables\Table;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use UnitEnum;
 
@@ -93,27 +95,39 @@ class ChapterDirectory extends Page implements HasTable
         abort_unless(NovelResource::canView($this->getRecord()), 403);
     }
 
-    /** 正式和候选版本分列，不将已检查候选当作正式稿。 */
+    /** 目录表直接嵌入页面，说明放在表头。 */
     public function content(Schema $schema): Schema
     {
-        return $schema->components([Section::make('按章阅读')->description('正式版本和候选版本分开展示。尚未生成时可返回工作台查看规划和启动条件。')->schema([]), EmbeddedTable::make()]);
+        return $schema->components([EmbeddedTable::make()]);
     }
 
-    /** 章号排序并提供正式状态筛选，空态有可行动的返回入口。 */
+    /** 章号排序并提供正式状态筛选，空态有可行动的返回入口；字数取正式稿，未提交时取当前候选。 */
     public function table(Table $table): Table
     {
-        return $table->query(Chapter::where('novel_id', $this->getRecord()->id))->defaultSort('number')->columns([
-            TextColumn::make('number')->label('章号')->sortable(), TextColumn::make('title')->label('章名')->searchable(),
-            TextColumn::make('current_candidate_version_id')->label('候选正文记录编号')->placeholder('无'),
-            TextColumn::make('formal_version_id')->label('正式正文记录编号')->placeholder('尚未提交'),
-            TextColumn::make('acceptance_comparison')->label('待验收对照稿')->state(function (Chapter $record): ?string {
-                $comparison = $this->comparison($record);
+        // 原始表达式不会自动加表前缀，列名须经查询语法器包装，否则带前缀的数据库找不到 chapters 表。
+        $grammar = DB::connection()->getQueryGrammar();
+        $versionCharacters = ChapterVersion::select('character_count')
+            ->whereColumn('chapter_versions.id', DB::raw('coalesce('.$grammar->wrap('chapters.formal_version_id').', '.$grammar->wrap('chapters.current_candidate_version_id').')'))->limit(1);
 
-                return $comparison === null ? null : $comparison['title'].' · '.$comparison['characters'].'字';
-            })->placeholder('无')->badge()->color('warning'),
-            TextColumn::make('status')->label('状态')->formatStateUsing(fn ($state): string => $state->label()),
-        ])->filters([TernaryFilter::make('formal_version_id')->label('已正式提交')->nullable()])
-            ->recordActions([Action::make('editDraft')->label('人工编辑')->visible(fn (Chapter $record): bool => $record->formal_version_id === null && $record->current_candidate_version_id !== null)->url(fn (Chapter $record): string => NovelResource::getUrl('editor', ['record' => $this->getRecord(), 'chapter' => $record->number])), Action::make('reader')->label(fn (Chapter $record): string => $this->comparison($record) !== null ? ($record->formal_version_id !== null ? '阅读正式稿' : '阅读原候选稿') : '专注阅读')->url(fn (Chapter $record): string => NovelResource::getUrl('reader', ['record' => $this->getRecord(), 'chapter' => $record->number])), Action::make('read')->label('阅读正文与状态')->url(fn (Chapter $record): string => NovelResource::getUrl('content', ['record' => $this->getRecord(), 'chapter' => $record->number]))])
+        return $table->query(Chapter::where('novel_id', $this->getRecord()->id)->select('chapters.*')->addSelect(['body_characters' => $versionCharacters]))
+            ->description('已提交章节打开正式稿，未提交章节进入正文工作台处理。')->defaultSort('number')->columns([
+                TextColumn::make('number')->label('章节')->sortable()->searchable(['title'])->weight('bold')
+                    ->formatStateUsing(fn (Chapter $record): string => $record->numberedTitle())
+                    ->description(function (Chapter $record): ?string {
+                        $comparison = $this->comparison($record);
+
+                        return $comparison === null ? null : '有待验收对照稿 · '.$comparison['characters'].' 字';
+                    }),
+                TextColumn::make('status')->label('状态')->badge()->formatStateUsing(fn (ChapterStatus $state): string => $state->label())
+                    ->color(fn (ChapterStatus $state): string => match ($state) {
+                        ChapterStatus::Committed => 'success', ChapterStatus::RevisionRequired, ChapterStatus::Failed => 'danger',
+                        ChapterStatus::Draft, ChapterStatus::Checking => 'warning', ChapterStatus::Generating => 'info', default => 'gray',
+                    }),
+                TextColumn::make('body_characters')->label('字数')->formatStateUsing(fn (?int $state): string => number_format((int) $state).' 字')->placeholder('—')->color('gray'),
+                TextColumn::make('updated_at')->label('最近更新')->since()->dateTimeTooltip()->color('gray')->toggleable(),
+            ])->filters([TernaryFilter::make('formal_version_id')->label('已正式提交')->nullable()])
+            ->recordActions([Action::make('workbench')->label('正文与提交')->visible(fn (Chapter $record): bool => $record->formal_version_id === null)->url(fn (Chapter $record): string => NovelResource::getUrl('content', ['record' => $this->getRecord(), 'chapter' => $record->number])),
+                Action::make('editDraft')->label('人工编辑')->visible(fn (Chapter $record): bool => $record->formal_version_id === null && $record->current_candidate_version_id !== null)->url(fn (Chapter $record): string => NovelResource::getUrl('editor', ['record' => $this->getRecord(), 'chapter' => $record->number])), Action::make('reader')->label(fn (Chapter $record): string => $this->comparison($record) !== null ? ($record->formal_version_id !== null ? '阅读正式稿' : '阅读原候选稿') : '专注阅读')->url(fn (Chapter $record): string => NovelResource::getUrl('reader', ['record' => $this->getRecord(), 'chapter' => $record->number])), Action::make('read')->label('阅读正文与状态')->url(fn (Chapter $record): string => NovelResource::getUrl('content', ['record' => $this->getRecord(), 'chapter' => $record->number]))])
             ->pushRecordActions([Action::make('comparison')->label('阅读新对照稿')
                 ->visible(fn (Chapter $record): bool => $this->comparison($record) !== null)
                 ->modalHeading('待验收对照稿')->modalWidth('5xl')->modalSubmitActionLabel('提交反馈')->modalCancelActionLabel('关闭')

@@ -11,6 +11,7 @@ use Filament\Infolists\Components\RepeatableEntry;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Resources\Pages\Concerns\InteractsWithRecord;
 use Filament\Resources\Pages\Page;
+use Filament\Schemas\Components\Flex;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Schema;
@@ -63,25 +64,92 @@ class ViewCharacterKnowledge extends Page
             return $schema->components([TextEntry::make('unavailable')->label('暂不可查询')->state($error instanceof ModelNotFoundException ? '正式来源缺失' : $error->getMessage())]);
         }
 
+        $actorName = $data['characters'][$this->actorId] ?? null;
+
         return $schema->components([
-            Section::make('截至第'.$this->chapterNumber.'章 · '.($data['characters'][$this->actorId] ?? '未选择角色'))
-                ->description('只展示明确的正式认知或信念补丁；当前提取协议不生成这两类投影，历史为空是未记录，不能据此推断角色知情或不知情。传闻、信念不升级为客观事实。')->schema([
-                    RepeatableEntry::make('knowledge')->label('角色视角记录')->state($data['rows'])->placeholder('未记录明确认知；可选择角色查询历史证据。')->schema([
-                        TextEntry::make('kind')->label('记录类型'), TextEntry::make('category')->label('事实类别'),
-                        TextEntry::make('text')->label('内容')->columnSpanFull(), TextEntry::make('chapter')->label('获得章位'),
-                        TextEntry::make('event_id')->label('来源事件'), TextEntry::make('version_id')->label('正式正文记录编号')->url(fn (Get $get): string => NovelResource::getUrl('reader', ['record' => $this->getRecord(), 'version' => $get('version_id')])),
-                        RepeatableEntry::make('evidence')->label('正文证据')->schema([TextEntry::make('quote')->label('原文')])->columnSpanFull(),
+            Section::make('截至第'.$this->chapterNumber.'章'.($actorName === null ? '' : ' · '.$actorName))->compact()->schema([
+                Flex::make([
+                    TextEntry::make('event_count')->hiddenLabel()->badge()->color('primary')->state(($actorName === null ? '正式事件 ' : $actorName.'主导的事件 ').count($data['events']).' 条'),
+                    TextEntry::make('character_count')->hiddenLabel()->badge()->color('gray')->state('已登场人物 '.count($data['characters']).' 人'),
+                    TextEntry::make('row_count')->hiddenLabel()->badge()->color('gray')->state('认知与信念 '.count($data['rows']).' 条')->visible($actorName !== null),
+                ])->extraAttributes(['style' => 'flex-wrap: wrap']),
+                TextEntry::make('rule')->hiddenLabel()->color('gray')->size('sm')
+                    ->state('只列明确记录：没有记录不代表角色不知道；传闻和信念不会当作客观事实。'),
+            ]),
+            Section::make('角色认知与信念')->compact()->visible($actorName !== null)->schema([
+                RepeatableEntry::make('knowledge')->hiddenLabel()->state($this->knowledgeRows($data['rows']))
+                    ->placeholder('未记录明确认知；当前提取协议不生成认知投影，不能据此推断角色知情或不知情。')->schema([
+                        Flex::make([
+                            TextEntry::make('text')->hiddenLabel()->weight('bold'),
+                            TextEntry::make('kind')->hiddenLabel()->badge()->grow(false)->color('info'),
+                            TextEntry::make('category')->hiddenLabel()->badge()->grow(false)->color(fn (string $state): string => self::categoryColor($state)),
+                        ])->verticallyAlignCenter(),
+                        TextEntry::make('source')->hiddenLabel()->color('gray')->size('sm')->url(fn (Get $get): string => $this->readerUrl($get('version_id'))),
+                        TextEntry::make('evidence')->hiddenLabel()->listWithLineBreaks()->limitList(1)->expandableLimitedList()->color('gray')->size('sm'),
                     ]),
-                ]),
-            Section::make('叙述事件时序')->description('按正式章节与叙述顺序展示；当前、回忆、预测分列。没有精确故事日期时不伪造时间。选择角色后仅显示其作为行为主体的事件，不代表完整知情范围。')->schema([
-                RepeatableEntry::make('events')->label('正式事件')->state($data['events'])->schema([
-                    TextEntry::make('chapter')->label('章号'), TextEntry::make('time_scope')->label('时间类别'), TextEntry::make('category')->label('事实类别'),
-                    TextEntry::make('summary')->label('事件')->columnSpanFull(),
-                    TextEntry::make('version_id')->label('打开正式正文')->url(fn (Get $get): string => NovelResource::getUrl('reader', ['record' => $this->getRecord(), 'version' => $get('version_id')])),
-                    RepeatableEntry::make('evidence')->label('原文证据')->schema([TextEntry::make('quote')->label('原文')])->columnSpanFull(),
+            ]),
+            Section::make('叙述事件时序')->compact()->description($actorName === null ? '按章节与叙述顺序排列；选择角色可只看其主导的事件。' : '只列该角色作为行为主体的事件，不代表完整知情范围。')->schema([
+                RepeatableEntry::make('events')->hiddenLabel()->state($this->eventRows($data['events'], $data['characters']))->placeholder('截至本章没有正式事件')->schema([
+                    Flex::make([
+                        TextEntry::make('heading')->hiddenLabel()->weight('bold')->color('gray')->url(fn (Get $get): string => $this->readerUrl($get('version_id'))),
+                        TextEntry::make('time_scope')->hiddenLabel()->badge()->grow(false)->color(fn (string $state): string => $state === '当前' ? 'gray' : 'info'),
+                        TextEntry::make('category')->hiddenLabel()->badge()->grow(false)->color(fn (string $state): string => self::categoryColor($state)),
+                    ])->verticallyAlignCenter(),
+                    TextEntry::make('summary')->hiddenLabel(),
+                    TextEntry::make('evidence')->hiddenLabel()->listWithLineBreaks()->limitList(1)->expandableLimitedList()->color('gray')->size('sm'),
                 ]),
             ]),
         ]);
+    }
+
+    /** 认知行：内容作标题，来源压成一行小字，证据只露第一条。
+     * @param  list<array<string, mixed>>  $rows
+     * @return list<array<string, mixed>>
+     */
+    private function knowledgeRows(array $rows): array
+    {
+        return array_map(fn (array $row): array => [
+            'text' => $row['text'], 'kind' => $row['kind'], 'category' => $row['category'], 'version_id' => $row['version_id'],
+            'source' => '第'.$row['chapter'].'章获得 · 来源事件 #'.$row['event_id'].' · 打开正文',
+            'evidence' => $this->evidenceLines($row['evidence']),
+        ], $rows);
+    }
+
+    /** 事件行：章号与主体作小标题，事件摘要为正文，证据默认只露第一条。
+     * @param  list<array<string, mixed>>  $events
+     * @param  array<int, string>  $characters
+     * @return list<array<string, mixed>>
+     */
+    private function eventRows(array $events, array $characters): array
+    {
+        return array_map(fn (array $event): array => [
+            'heading' => '第'.$event['chapter'].'章'.(isset($characters[$event['actor_id'] ?? null]) ? ' · '.$characters[$event['actor_id']] : ''),
+            'time_scope' => $event['time_scope'], 'category' => $event['category'], 'summary' => $event['summary'], 'version_id' => $event['version_id'],
+            'evidence' => $this->evidenceLines($event['evidence']),
+        ], $events);
+    }
+
+    /** 证据压成“第N段：原文”单行。
+     * @param  list<array{paragraph?: int, quote: string}>  $evidence
+     * @return list<string>
+     */
+    private function evidenceLines(array $evidence): array
+    {
+        return array_map(fn (array $item): string => (isset($item['paragraph']) ? '第'.$item['paragraph'].'段：' : '').$item['quote'], $evidence);
+    }
+
+    /** 事实类别配色：客观为绿，传闻、谎言等需警惕的类别为橙或红。 */
+    private static function categoryColor(string $category): string
+    {
+        return match ($category) {
+            '客观已确认' => 'success', '谎言' => 'danger', '传闻', '推测' => 'warning', default => 'gray',
+        };
+    }
+
+    /** 正式正文阅读页链接。 */
+    private function readerUrl(mixed $versionId): string
+    {
+        return NovelResource::getUrl('reader', ['record' => $this->getRecord(), 'version' => $versionId]);
     }
 
     /** 切换章号清空角色，防止未来人物选择留在过去章位。 */

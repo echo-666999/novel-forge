@@ -12,11 +12,14 @@ use App\Models\ChapterGenerationRun;
 use App\Models\ChapterProgressionCheck;
 use App\Models\ChapterVersion;
 use App\Models\CostLog;
+use App\Models\NovelAuthorTakeover;
+use App\Models\NovelSettingConfirmation;
 use App\Models\NovelStage;
 use App\Models\User;
 use App\Providers\AppServiceProvider;
 use App\Services\Ai\AiTextGenerationService;
 use App\Services\Ai\TextRequestOptions;
+use App\Services\Pipeline\BookAuthorship;
 use App\Services\Pipeline\ContentExecutionContract;
 use App\Services\Pipeline\ContentExecutionService;
 use App\Services\Pipeline\ContentGenerationService;
@@ -488,6 +491,51 @@ class B04ExecutionTest extends TestCase
         } catch (InvalidArgumentException $exception) {
             $this->assertStringContainsString('旧协议', $exception->getMessage());
         }
+    }
+
+    /** 非授权账号记录全文核对时，提示写明需要使用的账号，不误报为正文状态问题。 */
+    public function test_reading_by_other_account_names_required_account(): void
+    {
+        $run = $this->start();
+        $this->drain();
+        $owner = User::firstOrFail();
+        $other = User::factory()->create();
+        try {
+            app(ContentGenerationService::class)->recordReading($run->id, $other, true, ['他人核对']);
+            $this->fail('非授权账号不能记录全文核对');
+        } catch (InvalidArgumentException $exception) {
+            $this->assertSame('本章由账号「'.$owner->name.'」负责，只能由该账号记录全文核对，请换用该账号登录，或在小说页接管本书', $exception->getMessage());
+        }
+        $this->assertSame('awaiting_review', $run->fresh()->stop_reason);
+    }
+
+    /** 作者接管后由接管人核对与提交，原账号不能再操作；进行中的生成期间不能接管，接管记录留档。 */
+    public function test_author_takeover_transfers_reading_rights(): void
+    {
+        $run = $this->start();
+        $novel = $run->chapter->novel;
+        // 本书作者是确认设定的账号；接管前后都以它为“原作者”。
+        $owner = User::findOrFail(NovelSettingConfirmation::where('novel_id', $novel->id)->value('confirmed_by'));
+        $other = User::factory()->create();
+        $authorship = app(BookAuthorship::class);
+        $this->assertSame($owner->id, $authorship->currentAuthorId($novel));
+        // 生成尚在进行时不能接管。
+        $this->assertThrows(fn () => $authorship->takeOver($novel, $other, '接手'), InvalidArgumentException::class, '本书还有进行中的生成或提交，等它停下后再接管');
+        $this->drain();
+        $this->assertThrows(fn () => $authorship->takeOver($novel, $owner, '自己接管'), InvalidArgumentException::class, '你已经是本书作者');
+        $this->assertThrows(fn () => $authorship->takeOver($novel, $other, ' '), InvalidArgumentException::class, '请写明接管原因');
+
+        Livewire::actingAs($other)->test(ViewNovel::class, ['record' => $novel->id])->assertActionVisible('takeOverBook')
+            ->callAction('takeOverBook', ['reason' => '换用日常账号继续本书', 'confirm' => true])->assertNotified('已接管本书');
+        $takeover = NovelAuthorTakeover::sole();
+        $this->assertSame([$owner->id, $other->id, '换用日常账号继续本书'], [$takeover->from_user_id, $takeover->to_user_id, $takeover->reason]);
+        $this->assertSame($other->id, $authorship->currentAuthorId($novel->fresh()));
+        Livewire::actingAs($other)->test(ViewNovel::class, ['record' => $novel->id])->assertActionHidden('takeOverBook');
+
+        $this->assertThrows(fn () => app(ContentGenerationService::class)->recordReading($run->id, $owner, true, ['原账号核对']), InvalidArgumentException::class, '本章由账号「'.$other->name.'」负责');
+        $accepted = app(ContentGenerationService::class)->recordReading($run->id, $other, true, ['接管人核对通过']);
+        $this->assertSame('b04_accepted', $accepted->stop_reason);
+        $this->assertSame($other->id, $accepted->control_history[array_key_last($accepted->control_history)]['operator_id']);
     }
 
     /** 全文失败只保存意见，显式继续仍使用原授权剩余两次。 */

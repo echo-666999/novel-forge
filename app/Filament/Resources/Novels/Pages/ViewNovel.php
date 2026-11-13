@@ -10,8 +10,10 @@ use App\Filament\Resources\Novels\NovelResource;
 use App\Filament\Resources\Novels\Schemas\SettingConfirmationForm;
 use App\Models\Novel;
 use App\Models\ProductionRun;
+use App\Models\User;
 use App\Services\Ai\CostForecast;
 use App\Services\Ai\ModelProfiles;
+use App\Services\Pipeline\BookAuthorship;
 use App\Services\Pipeline\CanonicalBaselines;
 use App\Services\Pipeline\ConfirmSettingService;
 use App\Services\Pipeline\ContentGenerationService;
@@ -168,6 +170,19 @@ class ViewNovel extends ViewRecord
                 ])->action(function (array $data): void {
                     app(NovelBudget::class)->set($this->getRecord()->id, Filament::auth()->user(), $data['amount'] ?? null, $data['currency'], $data['reason']);
                     Notification::make()->success()->title('预算已更新')->body(app(NovelBudget::class)->describe($this->getRecord()->refresh()))->send();
+                }),
+            // 作者接管：当前登录账号不是本书作者时出现；接管后原账号不能再核对、提交本书章节。
+            Action::make('takeOverBook')->label('接管本书')->color('warning')->modalHeading('接管本书作者身份')
+                ->visible(fn (): bool => ($author = app(BookAuthorship::class)->currentAuthorId($this->getRecord())) !== null && $author !== Filament::auth()->id())
+                ->modalDescription(fn (): string => '本书当前作者是「'.(User::find(app(BookAuthorship::class)->currentAuthorId($this->getRecord()))?->name ?? '未知').'」。接管后由你记录全文核对、准备提交、正式提交和修订本书章节，原账号不能再操作；接管人和原因会留档。本书有进行中的生成、提交或未完成的自动生成授权时不能接管。')
+                ->schema([Textarea::make('reason')->label('接管原因')->required()->maxLength(2000), Checkbox::make('confirm')->label('我确认接管本书，由我对之后的核对与提交负责')->accepted()])
+                ->action(function (array $data): void {
+                    try {
+                        app(BookAuthorship::class)->takeOver($this->getRecord(), Filament::auth()->user(), $data['reason']);
+                        Notification::make()->success()->title('已接管本书')->body('之后本书的核对与提交由你完成。')->send();
+                    } catch (InvalidArgumentException $exception) {
+                        Notification::make()->danger()->title('未能接管')->body($exception->getMessage())->send();
+                    }
                 }),
             Action::make('viewContent')->label('查看首章候选')->url(fn (): string => NovelResource::getUrl('content', ['record' => $this->getRecord()]))
                 ->visible(fn (): bool => $this->getRecord()->chapters()->exists()),

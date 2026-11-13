@@ -71,6 +71,46 @@ final class ContentQualityContract
         return $issues;
     }
 
+    /** 叙述与相邻对白逐字重合达到此字数（去标点），即视为先转述、再直接引语的重复。 */
+    public const ECHO_CHARACTERS = 6;
+
+    /** 检测叙述段把紧邻对白的原话先转述一遍：叙述与对白分段后模型常见的复述写法，交由修订删去其一。
+     * @return list<array<string, mixed>>
+     */
+    public static function echoedDialogue(string $body): array
+    {
+        $strip = fn (string $text): string => preg_replace('/[\s\p{P}\p{S}]/u', '', $text);
+        $lines = explode("\n", $body);
+        $issues = [];
+        foreach ($lines as $index => $line) {
+            if (preg_match_all('/“([^”]+)”/u', $line, $quotes) === 0) {
+                continue;
+            }
+            foreach ([$index - 1, $index + 1] as $neighbor) {
+                // 只比对不含人物原话的叙述段，同一处重合只报一次。
+                if (! isset($lines[$neighbor]) || isset($issues[$neighbor]) || preg_match('/“[^”]*[，。！？…；：][^”]*”/u', $lines[$neighbor]) === 1) {
+                    continue;
+                }
+                $narration = $strip(preg_replace('/“[^”]*”/u', '', $lines[$neighbor]));
+                foreach ($quotes[1] as $quote) {
+                    $quote = $strip($quote);
+                    for ($offset = 0; $offset + self::ECHO_CHARACTERS <= mb_strlen($quote); $offset++) {
+                        $fragment = mb_substr($quote, $offset, self::ECHO_CHARACTERS);
+                        if (str_contains($narration, $fragment)) {
+                            $issues[$neighbor] = ['type' => 'echoed_dialogue', 'paragraph' => $neighbor + 1, 'anchor_id' => 'p'.($neighbor + 1), 'dialogue_paragraph' => $index + 1, 'quotes' => [$fragment],
+                                'reason' => '第'.($neighbor + 1).'段叙述把第'.($index + 1).'段对白的原话先转述了一遍（「'.$fragment.'」），删去叙述里的转述，只保留直接对白，叙述改写说话时的动作和反应'];
+
+                            continue 3;
+                        }
+                    }
+                }
+            }
+        }
+        ksort($issues);
+
+        return array_values($issues);
+    }
+
     /** 检测已确认的写作说明模式及篇幅问题，不静默删除文本。
      * @return list<array<string, mixed>>
      */

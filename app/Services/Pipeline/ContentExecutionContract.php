@@ -104,6 +104,8 @@ final class ContentExecutionContract
             $instructions .= '当前正文共'.$count.'个原段；所有ranges覆盖的原段取并集后，最多覆盖'.max(0, $count - 1).'段。必须至少留下一个完整原段不在任何范围内。未涉及缺陷的段落不要输出，不能为凑总字数把所有段落都列入范围。';
             // 范围必须绑定问题编号；无编号范围由程序丢弃，提前说明避免整章改写被浪费。
             $instructions .= '每个range的addresses至少列出一个它处理的findings编号；只替换有问题的段落及必要的前后衔接，没有对应问题的段落不要放进ranges，程序会丢弃没有问题编号的范围。';
+            $limit = max(3, intdiv($count + self::REVISION_SHARE - 1, self::REVISION_SHARE));
+            $instructions .= '问题带有段号时，范围只能落在这些段及前后'.self::REVISION_SLACK.'段之内；所有范围合计最多覆盖'.$limit.'段，超出整次修订无效。';
             $instructions .= '每个range的text是替换后的自然段列表，与正文分段规则相同：叙述段写完一个动作、场面或情绪节拍再分段，不要一句一段，不夹带人物说出口的原话；对白段是一个人的一次发言，用中文引号写出原话，只带说话人紧邻的一两句动作或神态，引号外不超过'.self::DIALOGUE_ACTION.'字，换人开口另起一段。每段text不含换行和Markdown，以完整句末标点结束。前文固定指令把text说成整段正文时，以此处的段落列表为准。';
         }
         if ($step === 'fine' && isset($context['scene_range'])) {
@@ -143,6 +145,80 @@ final class ContentExecutionContract
             .'叙述段写两到五句、通常六十至两百字，写完一个动作、场面或情绪节拍再分段；每个字段里不足'.self::SHORT_NARRATION.'字的叙述段不超过叙述段的四分之一（至少允许'.self::MAX_SHORT_NARRATION.'段），不要一句一段。叙述段里不得出现人物说出口的原话，回忆里的原话也写成对白段。'
             .'对白段是一个人的一次发言，用中文引号写出原话，可带说话人紧邻的一两句动作或神态，引号外不超过'.self::DIALOGUE_ACTION.'字；换另一个人开口必须另起一个对白段。关键交流写成对白段，不要转述。'
             .'每段text是一段纯正文，不含换行和Markdown，以完整句末标点结束。chapter_plan和slot_plan是写作提纲，要用人物的言行和自己的叙述写出来，不得照抄其中的句子。各字段按slot_plan推进，不重演前面已完成的动作。不得报告自估字数或添加写作说明，直接输出完整正文。前文固定指令中的段落划分或字段说明与此处不一致时（例如每场景两段、每字段一段纯正文、字段内换行），以此处为准。';
+    }
+
+    /** 修订范围离所处理问题的证据段最多相隔的段数，留出前后衔接的余地。 */
+    public const REVISION_SLACK = 3;
+
+    /** 修订范围合计最多覆盖的正文比例分母，至少允许三段。 */
+    public const REVISION_SHARE = 3;
+
+    /** 修订范围的定位限制：带当前正文段号的问题只能在其证据附近修订，所有范围合计不超过约三分之一正文。
+     * @param  array<string, array{paragraph: int, body_hash: string}>  $anchors
+     * @param  array<string, array<string, mixed>>  $findings
+     */
+    public static function revisionScope(array $data, array $anchors, array $findings): void
+    {
+        if ($anchors === []) {
+            return;
+        }
+        $bodyHash = reset($anchors)['body_hash'];
+        $covered = [];
+        $errors = [];
+        foreach ($data['ranges'] ?? [] as $index => $range) {
+            $start = $anchors[$range['start_id'] ?? '']['paragraph'] ?? null;
+            $end = $anchors[$range['end_id'] ?? '']['paragraph'] ?? null;
+            if ($start === null || $end === null || $start > $end) {
+                continue;
+            }
+            foreach (range($start, $end) as $paragraph) {
+                $covered[$paragraph] = true;
+            }
+            $located = [];
+            foreach ($range['addresses'] ?? [] as $id) {
+                $located = [...$located, ...self::findingParagraphs($findings[$id] ?? [], $bodyHash)];
+            }
+            // 只针对整章或旧正文的问题没有当前段号，不施加位置限制。
+            if ($located !== [] && ($start < min($located) - self::REVISION_SLACK || $end > max($located) + self::REVISION_SLACK)) {
+                $errors[] = '第'.($index + 1).'处范围p'.$start.'至p'.$end.'离所处理问题的段落（p'.implode('、p', array_unique($located)).'）太远，只能修改问题段及前后'.self::REVISION_SLACK.'段';
+            }
+        }
+        $limit = max(3, intdiv(count($anchors) + self::REVISION_SHARE - 1, self::REVISION_SHARE));
+        if (count($covered) > $limit) {
+            $errors[] = '修订范围合计覆盖'.count($covered).'段，超过上限'.$limit.'段，只改有问题的段落';
+        }
+        if ($errors !== []) {
+            throw new InvalidArgumentException('修订范围过大：'.implode('；', $errors));
+        }
+    }
+
+    /** 问题在当前正文中的段号；问题来自旧正文时不返回段号。
+     * @param  array<string, mixed>  $finding
+     * @return list<int>
+     */
+    private static function findingParagraphs(array $finding, string $bodyHash): array
+    {
+        if (($finding['source_body_hash'] ?? null) !== $bodyHash) {
+            return [];
+        }
+        $paragraphs = [];
+        foreach (['paragraph', 'dialogue_paragraph'] as $key) {
+            if (is_int($finding[$key] ?? null)) {
+                $paragraphs[] = $finding[$key];
+            }
+        }
+        foreach ([$finding['anchor_id'] ?? null, ...($finding['evidence_ids'] ?? [])] as $id) {
+            if (is_string($id) && preg_match('/^p(\d+)$/', $id, $match) === 1) {
+                $paragraphs[] = (int) $match[1];
+            }
+        }
+        foreach ($finding['evidence'] ?? [] as $evidence) {
+            if (is_int($evidence['paragraph'] ?? null)) {
+                $paragraphs[] = $evidence['paragraph'];
+            }
+        }
+
+        return array_values(array_unique($paragraphs));
     }
 
     /** 修订只接受绑定问题编号的范围：无编号范围丢弃留档，重复编号去重；全部无编号则整次修订无效。

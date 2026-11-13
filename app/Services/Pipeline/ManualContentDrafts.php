@@ -22,7 +22,7 @@ final class ManualContentDrafts
         $version = ChapterVersion::whereHas('chapter', fn ($q) => $q->where('novel_id', $novelId))->findOrFail($versionId);
         $chapter = $version->chapter;
         $run = ChapterGenerationRun::findOrFail($version->run_id);
-        if (! $actor->exists || ($run->config['author_id'] ?? null) !== $actor->id || $chapter->formal_version_id !== null
+        if (! $actor->exists || ! app(BookAuthorship::class)->allows($novelId, $actor, $run->config['author_id'] ?? null) || $chapter->formal_version_id !== null
             || $chapter->current_candidate_version_id != $versionId || $chapter->novel->status !== NovelStatus::Paused
             || ! app(CanonicalBaselines::class)->writable($chapter->novel, $chapter->number)
             || ! in_array($run->status, ['paused', 'completed', 'error'], true)

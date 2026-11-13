@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Filament\Resources\Novels\Pages\ViewChapterContent;
+use App\Filament\Resources\Novels\Pages\ViewNovel;
 use App\Jobs\RunChapterStepJob;
 use App\Models\CanonicalCommit;
 use App\Models\ChapterEventExtraction;
@@ -484,6 +485,72 @@ class ChapterSubmissionTest extends TestCase
         $this->assertSame(1, CanonicalCommit::count());
         $this->assertSame(2, StoryEntity::count());
         Http::assertSentCount(5);
+    }
+
+    /** 换账号后在后台接管本书，再在正文工作台依次完成全文核对、准备提交与正式提交，全程只用后台按钮。 */
+    public function test_new_author_finishes_submission_in_backend_after_takeover(): void
+    {
+        $novel = B04ContentTest::readyNovel();
+        $owner = User::findOrFail(NovelSettingConfirmation::where('novel_id', $novel->id)->sole()->confirmed_by);
+        $body = app(ContentGenerationService::class)->start($novel, $owner);
+        for ($consumed = 0; $job = Queue::pushed(RunChapterStepJob::class)->get($consumed); $consumed++) {
+            $job->handle(app(ContentGenerationService::class), app(AiTextGenerationService::class), app(ProgressionChecker::class));
+        }
+        $this->assertSame('awaiting_review', $body->fresh()->stop_reason);
+        $other = User::factory()->create();
+        $this->actingAs($other);
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+
+        // 接管前：页面给出需要的账号和接管入口。
+        Livewire::test(ViewChapterContent::class, ['record' => $novel->id])->callAction('fullReading', ['accepted' => true, 'notes' => '接管前尝试'])
+            ->assertNotified();
+        $this->assertSame('awaiting_review', $body->fresh()->stop_reason);
+        Livewire::test(ViewNovel::class, ['record' => $novel->id])->callAction('takeOverBook', ['reason' => '换用日常账号', 'confirm' => true])->assertNotified('已接管本书');
+
+        $page = Livewire::test(ViewChapterContent::class, ['record' => $novel->id]);
+        $page->callAction('fullReading', ['accepted' => true, 'notes' => '接管人已阅读全文'])->assertHasNoActionErrors();
+        $this->assertSame('b04_accepted', $body->fresh()->stop_reason);
+        $page = Livewire::test(ViewChapterContent::class, ['record' => $novel->id])->assertActionVisible('prepareSubmission')
+            ->callAction('prepareSubmission', ['reason' => '接管后准备提交', 'accept_request' => true])->assertHasNoActionErrors();
+        $submission = ChapterSubmissionRun::sole();
+        $this->assertSame($other->id, $submission->config['operator_id']);
+        for ($i = 0; $i < 2 && $submission->refresh()->status === 'pending'; $i++) {
+            app(ChapterSubmissionService::class)->execute($submission->id, $submission->invocation_id, false);
+        }
+        Livewire::test(ViewChapterContent::class, ['record' => $novel->id])->assertActionVisible('commitChapter')
+            ->callAction('commitChapter', ['reason' => '接管人正式提交', 'acknowledge' => true])->assertHasNoActionErrors();
+        $this->assertSame($body->chapter->fresh()->formal_version_id, CanonicalCommit::sole()->version_id);
+    }
+
+    /** 一键提交：评审通过且无新实体时自动正式提交；有新实体待批准或评审未通过时停下，不自动提交。 */
+    #[DataProvider('oneClickCases')]
+    public function test_one_click_submission_commits_only_when_nothing_needs_approval(string $scenario, string $status, int $commits): void
+    {
+        $this->scenario = $scenario;
+        [$version, $operator] = self::candidate();
+        $this->actingAs($operator);
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        Livewire::test(ViewChapterContent::class, ['record' => $version->chapter->novel_id])->assertActionVisible('submitInOneStep')
+            ->callAction('submitInOneStep', ['reason' => '一键提交', 'acknowledge' => true])->assertHasNoActionErrors();
+        $run = ChapterSubmissionRun::sole();
+        $this->assertSame($operator->id, $run->config['auto_commit']['operator_id']);
+        for ($i = 0; $i < 2 && $run->refresh()->status === 'pending'; $i++) {
+            app(ChapterSubmissionService::class)->execute($run->id, $run->invocation_id, false);
+        }
+        $this->assertSame($status, $run->refresh()->status);
+        $this->assertSame($commits, CanonicalCommit::count());
+        if ($commits === 1) {
+            $this->assertSame($version->id, $version->chapter->fresh()->formal_version_id);
+            $this->assertSame($run->config['auto_commit']['idempotency_key'], CanonicalCommit::sole()->idempotency_key);
+        }
+    }
+
+    /** 无新实体、有新实体待批准、评审未通过三种结果。
+     * @return array<string, array{string, string, int}>
+     */
+    public static function oneClickCases(): array
+    {
+        return ['无新实体' => ['pass', 'committed', 1], '新实体待批准' => ['proposal', 'awaiting_approval', 0], '评审未通过' => ['review_reject', 'failed', 0]];
     }
 
     /** 命令不接受扩额为第三次请求，提交命令缺少作者确认时不落正式状态。 */

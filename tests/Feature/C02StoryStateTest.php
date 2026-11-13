@@ -104,7 +104,7 @@ class C02StoryStateTest extends TestCase
         $page = Livewire::test(ViewStoryState::class, ['record' => $novel->id])->callAction('selectChapter', data: ['number' => 5])
             ->assertRedirect(NovelResource::getUrl('state', ['record' => $novel, 'chapter' => 5]));
         // 跳转目标必须从地址章号重建内容，不能只验证动作内存属性。
-        $page = Livewire::withQueryParams(['chapter' => 5])->test(ViewStoryState::class, ['record' => $novel->id])->assertSee('第5章提交后')->assertSee('旧店')->assertSee('存亡：未记录')->assertDontSee('未来访客');
+        $page = Livewire::withQueryParams(['chapter' => 5])->test(ViewStoryState::class, ['record' => $novel->id])->assertSee('第5章提交后')->assertSee('旧店')->assertSee('未记录：存亡')->assertSee('状态版本 #5')->assertSee('累计事件 5 条')->assertSee('第5章 · 事件 #')->assertSee('第1段：苏禾在旧店修补雨伞。')->assertDontSee('未来访客');
         $page->callAction('selectChapter', data: ['number' => 6])->assertRedirect(NovelResource::getUrl('state', ['record' => $novel, 'chapter' => 6]));
         $page = Livewire::withQueryParams(['chapter' => 6])->test(ViewStoryState::class, ['record' => $novel->id])->assertSee('新店')->assertSee('未来访客');
         $page->set('chapterNumber', 7)->assertSee('所选章节尚未正式提交')->assertDontSee('未来访客');

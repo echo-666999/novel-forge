@@ -16,11 +16,13 @@ use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TagsInput;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
+use Filament\Infolists\Components\RepeatableEntry;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\Concerns\InteractsWithRecord;
 use Filament\Resources\Pages\Page;
 use Filament\Schemas\Components\EmbeddedTable;
+use Filament\Schemas\Components\Flex;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\View as ViewComponent;
 use Filament\Schemas\Schema;
@@ -60,40 +62,93 @@ class EntityLibrary extends Page implements HasTable
         abort_unless(NovelResource::canView($this->getRecord()), 403);
     }
 
-    /** 直接提供正式状态入口，不在作者编辑表单伪装为动态事实修改。 */
+    /** 顶部概览数量，实体以卡片网格展示，下方为作者设定版本表。 */
     public function content(Schema $schema): Schema
     {
-        return $schema->components([Section::make('作者设定版本')->description('新增和修订先保存候选，批准另存版本。既有实体不能改名或删除，可提交别名合并候选。关系、人物特征和规则为作者约束，不直接改变正式事件、存亡、位置或角色知识。新运行冻结批准版本，历史运行保留原输入。')->schema([
-            TextEntry::make('catalog')->label('既有稳定实体')->state(fn (): array => StoryEntity::where('novel_id', $this->getRecord()->id)->orderBy('id')->get()
-                ->map(fn ($e): string => $e->name.'（'.(self::TYPES[$e->type] ?? $e->type).' #'.$e->id.'）')->all())->badge()->color('gray')->placeholder('尚无正式实体'),
-        ]), EmbeddedTable::make()]);
+        return $schema->components([
+            Section::make('正式实体')->compact()->schema([
+                Flex::make([
+                    TextEntry::make('entity_count')->hiddenLabel()->badge()->color('primary')->state(fn (): string => '正式实体 '.count($this->entityCards()).' 个'),
+                    TextEntry::make('type_counts')->hiddenLabel()->badge()->color('gray')->state(fn (): array => collect($this->entityCards())->countBy('type')->map(fn (int $count, string $type): string => $type.' '.$count)->values()->all()),
+                    TextEntry::make('candidate_count')->hiddenLabel()->badge()->color('warning')->state(fn (): string => '待批准候选 '.$this->candidateCount().' 条')->visible(fn (): bool => $this->candidateCount() > 0),
+                ])->extraAttributes(['style' => 'flex-wrap: wrap']),
+                TextEntry::make('rule')->hiddenLabel()->color('gray')->size('sm')
+                    ->state('这里是作者设定，不改变正式事件、存亡、位置或角色知识。修改先存候选，批准后另存版本；既有实体不能改名或删除，可提交别名合并。'),
+                RepeatableEntry::make('catalog')->hiddenLabel()->grid(['default' => 1, 'md' => 2, 'xl' => 3])->state(fn (): array => $this->entityCards())->placeholder('尚无正式实体')->schema([
+                    Flex::make([
+                        TextEntry::make('name')->hiddenLabel()->weight('bold'),
+                        TextEntry::make('type')->hiddenLabel()->badge()->grow(false)->color(fn (string $state): string => $state === '人物' ? 'info' : 'gray'),
+                    ])->verticallyAlignCenter(),
+                    TextEntry::make('summary')->hiddenLabel()->lineClamp(3)->placeholder('未填写描述'),
+                    TextEntry::make('aliases')->hiddenLabel()->badge()->color('gray')->visible(fn (?array $state): bool => filled($state)),
+                    TextEntry::make('source')->hiddenLabel()->color('gray')->size('sm'),
+                ]),
+            ]),
+            Section::make('作者设定版本')->compact()->description('新增与修订的候选及已批准版本；新运行冻结批准版本，历史运行保留原输入。')->schema([EmbeddedTable::make()]),
+        ]);
+    }
+
+    /** 实体卡片：名称、类型、一句话简介、别名与来源；同类实体排在一起。
+     * @return list<array{name: string, type: string, summary: ?string, aliases: list<string>, source: string}>
+     */
+    private function entityCards(): array
+    {
+        $order = array_flip(array_keys(self::TYPES));
+
+        return StoryEntity::where('novel_id', $this->getRecord()->id)->orderBy('id')->get()
+            ->sortBy(fn (StoryEntity $entity): int => $order[$entity->type] ?? PHP_INT_MAX)->values()
+            ->map(function (StoryEntity $entity): array {
+                $description = $entity->definition['description'] ?? null;
+
+                return [
+                    'name' => $entity->name,
+                    'type' => self::TYPES[$entity->type] ?? $entity->type,
+                    'summary' => is_array($description) ? FieldDiff::text($description['role'] ?? null) : FieldDiff::text($description),
+                    'aliases' => array_values($entity->aliases ?? []),
+                    'source' => '#'.$entity->id.' · '.match ($entity->origin['kind'] ?? null) {
+                        'confirmed_setting' => '来自作者确认设定', 'canonical_commit' => '正文提交时引入', default => '其他来源',
+                    },
+                ];
+            })->all();
+    }
+
+    /** 尚未批准且没有后继的候选数量。 */
+    private function candidateCount(): int
+    {
+        return EntityDefinitionVersion::where('novel_id', $this->getRecord()->id)->where('status', 'candidate')
+            ->whereNotIn('id', EntityDefinitionVersion::where('novel_id', $this->getRecord()->id)->whereNotNull('parent_id')->select('parent_id'))->count();
     }
 
     /** 不可变版本可筛选、比较，批准需要显示完整定义并确认。 */
     public function table(Table $table): Table
     {
         return $table->query(EntityDefinitionVersion::where('novel_id', $this->getRecord()->id))->defaultSort('id', 'desc')->columns([
+            TextColumn::make('definition.name')->label('名称')->searchable()->weight('bold')
+                ->description(fn (EntityDefinitionVersion $record): string => (self::TYPES[$record->definition['type'] ?? ''] ?? '未标类型').' · '.($record->entity_id === null ? '新增实体' : '实体 #'.$record->entity_id)),
+            TextColumn::make('status')->label('状态')->badge()->formatStateUsing(fn (string $state): string => $state === 'approved' ? '已批准' : '候选')
+                ->color(fn (string $state): string => $state === 'approved' ? 'success' : 'warning'),
             // 来源编号明确版本链，不以同名候选或空实体编号推断同一对象。
-            TextColumn::make('id')->label('设定记录编号'), TextColumn::make('parent_id')->label('来源记录编号')->placeholder('首次建立'), TextColumn::make('entity_id')->label('实体')->placeholder('新增候选'),
-            TextColumn::make('definition.name')->label('名称')->searchable(), TextColumn::make('definition.type')->label('类型'),
-            TextColumn::make('status')->label('状态')->formatStateUsing(fn (string $state): string => $state === 'approved' ? '已批准' : '候选'),
-            TextColumn::make('effective_from')->label('生效起始章'), TextColumn::make('reason')->label('原因')->wrap(), TextColumn::make('created_at')->label('时间')->dateTime(),
-        ])->filters([SelectFilter::make('status')->label('状态')->options(['candidate' => '候选', 'approved' => '已批准'])])->recordActions([
-            Action::make('inspect')->label('定义与版本比较')->modalHeading(fn (EntityDefinitionVersion $record): string => '实体定义 · '.($record->definition['name'] ?? '').' · 记录 #'.$record->id)
-                ->modalWidth('4xl')->modalAutofocus(false)->modalSubmitAction(false)->modalCancelActionLabel('关闭')
-                ->modalContent(fn (EntityDefinitionVersion $record): View => $this->definitionView($record)),
-            Action::make('revise')->label('编辑新候选')->fillForm(fn (EntityDefinitionVersion $record): array => ['definition' => $record->definition])->schema(fn (): array => [...$this->fields(), Textarea::make('reason')->label('修订原因')->required()])->action(function (EntityDefinitionVersion $record, array $data): void {
-                app(EntityDefinitions::class)->propose($this->getRecord()->id, Filament::auth()->user(), $data['definition'], $data['reason'], $record->entity_id, $record->id);
-                Notification::make()->success()->title('已保存实体候选')->send();
-            }),
-            Action::make('approve')->label('批准此候选')->visible(fn (EntityDefinitionVersion $record): bool => $record->status === 'candidate' && ! EntityDefinitionVersion::where('parent_id', $record->id)->exists())->schema(fn (EntityDefinitionVersion $record): array => [
-                ViewComponent::make('filament.resources.novels.pages.entity-definition')->viewData(fn (): array => $this->definitionViewData($record)), Textarea::make('reason')->label('批准原因')->required(),
-                Checkbox::make('acknowledged')->label('我批准此作者设定；它不覆盖正式历史事实。')->accepted()->default(false),
-            ])->action(function (EntityDefinitionVersion $record, array $data): void {
-                app(EntityDefinitions::class)->approve($this->getRecord()->id, $record->id, Filament::auth()->user(), $data['reason'], (bool) ($data['acknowledged'] ?? false));
-                Notification::make()->success()->title('实体设定新版本已批准')->send();
-            }),
-        ])->emptyStateHeading('尚无独立作者版本')->emptyStateDescription('既有正式实体仍可在状态页查看；可选择既有实体建立修订候选。');
+            TextColumn::make('id')->label('版本')->formatStateUsing(fn (EntityDefinitionVersion $record): string => '#'.$record->id.($record->parent_id === null ? '（首次）' : ' ← #'.$record->parent_id))->color('gray'),
+            TextColumn::make('effective_from')->label('生效')->formatStateUsing(fn (?int $state): string => '第'.$state.'章起')->placeholder('—'),
+            TextColumn::make('reason')->label('原因')->wrap()->lineClamp(2),
+            TextColumn::make('created_at')->label('时间')->since()->dateTimeTooltip()->color('gray'),
+        ])->filters([SelectFilter::make('status')->label('状态')->options(['candidate' => '候选', 'approved' => '已批准']),
+            SelectFilter::make('type')->label('类型')->options(self::TYPES)->query(fn ($query, array $data) => filled($data['value'] ?? null) ? $query->where('definition->type', $data['value']) : $query)])->recordActions([
+                Action::make('inspect')->label('定义与版本比较')->modalHeading(fn (EntityDefinitionVersion $record): string => '实体定义 · '.($record->definition['name'] ?? '').' · 记录 #'.$record->id)
+                    ->modalWidth('4xl')->modalAutofocus(false)->modalSubmitAction(false)->modalCancelActionLabel('关闭')
+                    ->modalContent(fn (EntityDefinitionVersion $record): View => $this->definitionView($record)),
+                Action::make('revise')->label('编辑新候选')->fillForm(fn (EntityDefinitionVersion $record): array => ['definition' => $record->definition])->schema(fn (): array => [...$this->fields(), Textarea::make('reason')->label('修订原因')->required()])->action(function (EntityDefinitionVersion $record, array $data): void {
+                    app(EntityDefinitions::class)->propose($this->getRecord()->id, Filament::auth()->user(), $data['definition'], $data['reason'], $record->entity_id, $record->id);
+                    Notification::make()->success()->title('已保存实体候选')->send();
+                }),
+                Action::make('approve')->label('批准此候选')->visible(fn (EntityDefinitionVersion $record): bool => $record->status === 'candidate' && ! EntityDefinitionVersion::where('parent_id', $record->id)->exists())->schema(fn (EntityDefinitionVersion $record): array => [
+                    ViewComponent::make('filament.resources.novels.pages.entity-definition')->viewData(fn (): array => $this->definitionViewData($record)), Textarea::make('reason')->label('批准原因')->required(),
+                    Checkbox::make('acknowledged')->label('我批准此作者设定；它不覆盖正式历史事实。')->accepted()->default(false),
+                ])->action(function (EntityDefinitionVersion $record, array $data): void {
+                    app(EntityDefinitions::class)->approve($this->getRecord()->id, $record->id, Filament::auth()->user(), $data['reason'], (bool) ($data['acknowledged'] ?? false));
+                    Notification::make()->success()->title('实体设定新版本已批准')->send();
+                }),
+            ])->emptyStateHeading('尚无独立作者版本')->emptyStateDescription('既有正式实体仍可在状态页查看；可选择既有实体建立修订候选。');
     }
 
     /** 新实体与既有实体都从候选入口开始，不隐式批准。 */

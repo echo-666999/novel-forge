@@ -120,6 +120,25 @@ class C09ReadingTest extends TestCase
         $this->assertDatabaseHas('reading_records', ['version_id' => $version->id, 'kind' => 'issue', 'quote' => '林澈', 'note' => '缺少人物背景，叙事缺少情绪起伏']);
     }
 
+    /** 标题下以标签显示来源、版本、字数和阅读状态；正文逐段排版；读完后隐藏标记按钮，没有原文问题时不显示问题区。 */
+    public function test_reader_shows_compact_badges_and_paragraphs(): void
+    {
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        $actor = User::factory()->create();
+        $this->actingAs($actor);
+        $body = "第一段正文。\n第二段正文。";
+        $version = ChapterVersion::factory()->create(['body' => $body, 'body_hash' => hash('sha256', $body), 'character_count' => 12]);
+        $version->chapter->update(['current_candidate_version_id' => $version->id]);
+
+        Livewire::test(ReadChapter::class, ['record' => $version->chapter->novel_id])
+            ->assertSee('候选 / 历史版本')->assertSee('12 字')->assertSee('我未标记读完')
+            ->assertSeeHtml('<p style="margin:0 0 .9em;text-indent:2em">第一段正文。</p>')
+            ->assertDontSee('我的原文问题')->assertActionVisible('markRead');
+        app(ReadingRecordService::class)->record($version->chapter->novel_id, $version->id, $actor, 'read');
+        Livewire::test(ReadChapter::class, ['record' => $version->chapter->novel_id])
+            ->assertSee('我已读完')->assertActionHidden('markRead');
+    }
+
     /** 历史版本不能从另一小说URL打开，自己的备注不会展示给其他账号。 */
     public function test_reader_checks_lineage_and_hides_other_users_notes(): void
     {

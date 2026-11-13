@@ -18,6 +18,7 @@ use App\Services\Pipeline\ContentExecutionContract;
 use App\Services\Pipeline\CreateNovelService;
 use App\Services\Pipeline\SettingExecutor;
 use Filament\Facades\Filament;
+use Filament\Infolists\Components\TextEntry;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -147,7 +148,7 @@ class C06PromptTemplateTest extends TestCase
         $page->call('publishVersion', $first)->assertHasErrors('template');
         $page->call('testVersion', $first)->assertHasNoErrors()->call('publishVersion', $first)->assertHasNoErrors()->assertSee('已发布')->call('copyVersion', $first)->assertSet('body', '大纲 {{ title }}')->set('body', '新版大纲')->set('notes', '二版')->call('saveDraft');
         $second = DB::table('prompt_template_versions')->max('id');
-        $page->call('testVersion', $second)->call('publishVersion', $second)->assertHasNoErrors()->call('publishVersion', $first, true)->assertHasNoErrors()->assertSee('已回滚')->call('retireVersion', 'outline')->assertHasNoErrors();
+        $page->call('testVersion', $second)->call('publishVersion', $second)->assertHasNoErrors()->call('publishVersion', $first, true)->assertHasNoErrors()->assertNotified('已回滚')->call('retireVersion', 'outline')->assertHasNoErrors();
         $this->assertDatabaseHas('prompt_template_versions', ['id' => $first, 'body' => '大纲 {{ title }}']);
         $this->assertSame(4, DB::table('prompt_template_events')->where('scope', 'outline')->count());
         Http::assertNothingSent();
@@ -206,7 +207,7 @@ class C06PromptTemplateTest extends TestCase
         $this->assertSame('新版固定设定指令。', (new SettingGenerationAgent(TextRequestOptions::setting(0.7)->withTemplates($manager->snapshot(), $variables)))->instructions());
         $this->assertSame($original, (new SettingGenerationAgent(TextRequestOptions::setting(0.7)))->instructions());
         $detail = Livewire::test(ManagePromptTemplates::class)->assertSee('内置固定')->assertDontSee('新版固定设定指令。')->mountAction('details', ['id' => $id])->assertActionMounted('details');
-        $this->assertSame('新版固定设定指令。', collect($detail->instance()->getSchema('mountedActionSchema0')->getComponents())->first(fn ($entry): bool => $entry->getName() === 'body')->getState());
+        $this->assertSame('新版固定设定指令。', collect($detail->instance()->getSchema('mountedActionSchema0')->getComponents())->first(fn ($entry): bool => $entry instanceof TextEntry && $entry->getName() === 'body')->getState());
         Http::assertNothingSent();
     }
 
@@ -215,7 +216,7 @@ class C06PromptTemplateTest extends TestCase
     {
         $id = app(PromptTemplateManager::class)->draft('common', '仅用于类型筛选的补充文本', '类型筛选验收', auth()->id());
         $page = Livewire::test(ManagePromptTemplates::class)
-            ->assertSee('筛选模板类型')->assertSee('新增')
+            ->assertSee('全部类型')->assertSee('新增')
             ->set('filterType', 'builtin')->assertDontSee('类型筛选验收')
             ->set('filterType', 'supplement')->assertSee('类型筛选验收')
             ->assertDontSee('生效方式：替换该阶段固定文本。');
@@ -236,7 +237,7 @@ class C06PromptTemplateTest extends TestCase
         $second = $manager->draft('setting', '补充设定第二版', '次版', auth()->id());
         $manager->test($second);
         $manager->activate($second, $first, auth()->id());
-        $page = Livewire::test(ManagePromptTemplates::class)->assertSee('模板类型与阶段')->assertSee('创建时间');
+        $page = Livewire::test(ManagePromptTemplates::class)->assertSee('各阶段当前生效')->assertSee('创建时间');
         $this->assertSame(10, $page->instance()->getTableRecords()->perPage());
         $this->assertSame(12, $page->instance()->getTableRecords()->total());
         $page->set('filterScope', 'setting')->set('filterStatus', 'published');
@@ -257,7 +258,7 @@ class C06PromptTemplateTest extends TestCase
         $this->assertSame('view', $page->instance()->mountedActions[0]['name']);
         // 非发布版本按段落与当前发布版本对照，新版本正文出现在对照中。
         $modal = $page->instance()->getSchema('mountedActionSchema0')->toHtml();
-        $this->assertStringContainsString('补充设定第二版', $modal);
+        $this->assertStringContainsString('补充设定第<mark class="nf-body-mark">二</mark>版', $modal);
         $this->assertStringContainsString('本版本 V2', $modal);
         Http::assertNothingSent();
     }
@@ -275,9 +276,34 @@ class C06PromptTemplateTest extends TestCase
         $detail = Livewire::test(ManagePromptTemplates::class)->assertDontSee('弹窗专用完整正文')->assertDontSee('保存为新草稿')
             ->assertSee(CreatePromptTemplate::getUrl(), false)
             ->mountAction('details', ['id' => $record->id])->assertActionMounted('details');
-        $this->assertSame('弹窗专用完整正文', collect($detail->instance()->getSchema('mountedActionSchema0')->getComponents())->first(fn ($entry): bool => $entry->getName() === 'body')->getState());
+        $this->assertSame('弹窗专用完整正文', collect($detail->instance()->getSchema('mountedActionSchema0')->getComponents())->first(fn ($entry): bool => $entry instanceof TextEntry && $entry->getName() === 'body')->getState());
         Livewire::withQueryParams(['copy_from' => $record->id])->test(CreatePromptTemplate::class)
             ->assertSet('body', '弹窗专用完整正文')->assertSet('scope', 'draft');
+        Http::assertNothingSent();
+    }
+
+    /** 顶部概览显示各阶段生效版本；草稿一步“测试并发布”，列表不再显示冻结快照全文和记录编号列。 */
+    public function test_overview_and_one_step_test_and_publish(): void
+    {
+        $id = app(PromptTemplateManager::class)->draft('outline', '一步发布的大纲补充', '一步发布', auth()->id());
+        $page = Livewire::test(ManagePromptTemplates::class)->assertSee('各阶段当前生效')->assertSee('无补充')
+            ->assertDontSee('小说根运行冻结记录')->assertDontSee('记录编号')
+            ->callTableAction('testAndPublish', (string) $id)->assertHasNoTableActionErrors()->assertNotified('已发布');
+        $this->assertSame('published', DB::table('prompt_template_versions')->where('id', $id)->value('status'));
+        $page->assertSee('补充 V1');
+        Http::assertNothingSent();
+    }
+
+    /** 详情弹窗：标题行带状态，生效、回归与使用情况为一排标签，正文放在无缩进空白的框内。 */
+    public function test_detail_modal_is_compact(): void
+    {
+        $fixed = DB::table('prompt_template_routes')->where('scope', 'builtin_decision')->value('version_id');
+        $page = Livewire::test(ManagePromptTemplates::class)->mountAction('details', ['id' => $fixed]);
+        $modal = $page->instance()->getSchema('mountedActionSchema0')->toHtml();
+        $this->assertStringContainsString('当前生效版本', $modal);
+        $this->assertStringContainsString('暂无小说使用', $modal);
+        $this->assertStringContainsString('<div style="white-space:pre-wrap;', $modal);
+        $this->assertStringNotContainsString('完整模板正文', $modal);
         Http::assertNothingSent();
     }
 

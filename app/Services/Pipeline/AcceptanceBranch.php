@@ -53,7 +53,7 @@ final class AcceptanceBranch
             app(ContentGenerationService::class)->assertFrozenSources($sourceRun);
             $sourcePlan = NovelOutlinePlan::findOrFail($sourceRun->snapshot['outline_plan_id']);
             $confirmation = $sourcePlan->confirmation;
-            if ($confirmation->confirmed_by !== $author->id) {
+            if (! app(BookAuthorship::class)->allows($sourcePlan->novel_id, $author, $confirmation->confirmed_by)) {
                 throw new InvalidArgumentException('原书确认作者不匹配');
             }
             $read = fn (string $file): array => json_decode($disk->get($directory.'/'.$file.'.json'), true, flags: JSON_THROW_ON_ERROR);

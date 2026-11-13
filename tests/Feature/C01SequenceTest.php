@@ -481,7 +481,7 @@ class C01SequenceTest extends TestCase
         Livewire::test(ViewNovel::class, ['record' => $novel->id])->callAction('generateFirstChapter', ['accept_request' => true])->assertHasNoActionErrors();
         $this->runQueuedJobs();
         $this->assertSame('第1章：等你核对全文', $this->progressHeadline($novel));
-        Livewire::test(ViewChapterContent::class, ['record' => $novel->id])->assertSee('第1章：等你核对全文')
+        Livewire::test(ViewChapterContent::class, ['record' => $novel->id])->assertSee('等你核对全文')->assertDontSee('第1章：等你核对全文')->assertSee('读完正文后点右上角「记录全文核对」')
             ->callAction('fullReading', ['accepted' => true, 'notes' => '全文核对通过'])->assertHasNoActionErrors();
         $this->assertSame('第1章：可以准备正式提交', $this->progressHeadline($novel));
         Livewire::test(ViewChapterContent::class, ['record' => $novel->id])->callAction('prepareSubmission', ['reason' => '准备提交第1章', 'accept_request' => true])->assertHasNoActionErrors();

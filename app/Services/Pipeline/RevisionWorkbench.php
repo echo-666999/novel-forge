@@ -27,7 +27,7 @@ final class RevisionWorkbench
     public function freeze(ChapterGenerationRun $parent, User $author, int $versionId, array $issues): array
     {
         $chapter = $parent->chapter;
-        if (($parent->config['author_id'] ?? null) !== $author->id || $chapter->formal_version_id !== null
+        if (! app(BookAuthorship::class)->allows($chapter->novel_id, $author, $parent->config['author_id'] ?? null) || $chapter->formal_version_id !== null
             || ! app(CanonicalBaselines::class)->writable($chapter->novel, $chapter->number)
             || $chapter->current_candidate_version_id !== $versionId
             || ChapterGenerationRun::where('chapter_id', $chapter->id)->latest('id')->value('id') !== $parent->id
@@ -52,12 +52,18 @@ final class RevisionWorkbench
         return ['round' => $round, 'round_limit' => self::ROUND_LIMIT, 'version_id' => $versionId, 'issues' => $issues];
     }
 
+    /** 工作台本轮修订与复评都已执行，且当前候选已切换为修订结果。 */
+    public function reviewCompleted(ChapterGenerationRun $run): bool
+    {
+        return isset($run->config['workbench']) && $run->requests_used >= 2 && $run->chapter->progression_result !== null
+            && $run->chapter->current_candidate_version_id !== $run->source_version_id;
+    }
+
     /** 将当前版本的逐项复评转换为作者可读结论，旧版检查不冒充本轮结果。 */
     public function reviewSummary(ChapterGenerationRun $run): string
     {
         $result = $run->chapter->progression_result;
-        if (! isset($run->config['workbench']) || $run->requests_used < 2 || $result === null
-            || $run->chapter->current_candidate_version_id === $run->source_version_id) {
+        if (! $this->reviewCompleted($run)) {
             return '本轮独立复评尚未完成';
         }
         $lines = ['正文版本 #'.$result['version_id'].' · '.match ($result['verdict']) {

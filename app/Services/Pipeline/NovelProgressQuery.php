@@ -99,7 +99,7 @@ final class NovelProgressQuery
         $submission = $chapter->current_candidate_version_id === null ? null : ChapterSubmissionRun::where('version_id', $chapter->current_candidate_version_id)->latest('id')->first();
         if ($submission !== null) {
             return match ($submission->status) {
-                'pending', 'running' => $this->result('production', $title.'：正在评审与提取事件', '完成后会提示你批准提交。', url: $url, running: true),
+                'pending', 'running' => $this->result('production', $title.'：正在评审与提取事件', isset($submission->config['auto_commit']) ? '评审通过且没有新实体时会自动正式提交，否则会提示你处理。' : '完成后会提示你批准提交。', url: $url, running: true),
                 'awaiting_approval' => $this->result('production', $title.'：等你批准新实体并正式提交', '在正文工作台的“提交”区核对新实体后提交。', url: $url),
                 'ready' => $this->result('production', $title.'：可以正式提交', '在正文工作台点击“正式提交当前章”。', url: $url),
                 default => $this->result('production', $title.'：评审或提取未通过', (ProductionFailure::detailLabel($submission->stop_reason) ?? '').'。可在正文工作台查看评审意见并定点修订或重跑。', url: $url),

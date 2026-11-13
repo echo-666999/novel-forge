@@ -4,6 +4,7 @@ namespace App\Services\Pipeline;
 
 use App\Enums\NovelStatus;
 use App\Jobs\PrepareChapterSubmissionJob;
+use App\Models\Chapter;
 use App\Models\ChapterEventExtraction;
 use App\Models\ChapterGenerationRun;
 use App\Models\ChapterProgressionCheck;
@@ -33,8 +34,14 @@ use Throwable;
 final class ChapterSubmissionService
 {
     /** 每轮明确授权最多两次请求；只有显式指定失败前驱才建立不可变后继。 */
-    public function prepare(int $versionId, User $operator, int $expectedState, string $reason, ?int $executionLimit = null, bool $dispatch = true, ?int $retryOf = null, ?string $modelOverride = null): ChapterSubmissionRun
+    /**
+     * @param  array{reason: string}|null  $autoCommit  作者一并授权的正式提交：评审通过且没有待批准的新实体时自动提交。
+     */
+    public function prepare(int $versionId, User $operator, int $expectedState, string $reason, ?int $executionLimit = null, bool $dispatch = true, ?int $retryOf = null, ?string $modelOverride = null, ?array $autoCommit = null): ChapterSubmissionRun
     {
+        if ($autoCommit !== null) {
+            ContentSchema::text($autoCommit['reason'] ?? null);
+        }
         if (DB::transactionLevel() !== 0) {
             throw new InvalidArgumentException('OUTER_TRANSACTION');
         }
@@ -43,13 +50,13 @@ final class ChapterSubmissionService
             throw new InvalidArgumentException('STATE_INVALID');
         }
         $version = ChapterVersion::findOrFail($versionId);
-        [$run, $created] = DB::transaction(function () use ($version, $operator, $expectedState, $reason, $executionLimit, $retryOf, $modelOverride): array {
+        [$run, $created] = DB::transaction(function () use ($version, $operator, $expectedState, $reason, $executionLimit, $retryOf, $modelOverride, $autoCommit): array {
             $novel = Novel::lockForUpdate()->findOrFail($version->chapter->novel_id);
             $predecessor = null;
             if ($retryOf !== null) {
                 $predecessor = ChapterSubmissionRun::lockForUpdate()->findOrFail($retryOf);
                 if ($predecessor->version_id !== $version->id || $predecessor->expected_state_version !== $expectedState
-                    || $predecessor->config['operator_id'] !== $operator->id || $predecessor->status !== 'failed') {
+                    || ! app(BookAuthorship::class)->allows($version->chapter->novel_id, $operator, $predecessor->config['operator_id']) || $predecessor->status !== 'failed') {
                     throw new InvalidArgumentException('RETRY_SOURCE_INVALID');
                 }
                 if ($executionLimit === null) {
@@ -59,7 +66,7 @@ final class ChapterSubmissionService
             $existingQuery = ChapterSubmissionRun::where('version_id', $version->id)->where('expected_state_version', $expectedState);
             $existing = $retryOf === null ? $existingQuery->where('attempt', 1)->first() : $existingQuery->where('predecessor_id', $retryOf)->first();
             if ($existing !== null) {
-                if ($existing->config['operator_id'] !== $operator->id) {
+                if (! app(BookAuthorship::class)->allows($version->chapter->novel_id, $operator, $existing->config['operator_id'])) {
                     throw new InvalidArgumentException('AUTHOR_MISMATCH');
                 }
 
@@ -68,7 +75,10 @@ final class ChapterSubmissionService
             $bodyRun = $this->acceptedBodyRun($version);
             app(ContentGenerationService::class)->assertFrozenSources($bodyRun);
             $confirmation = NovelSettingConfirmation::findOrFail($bodyRun->snapshot['confirmation_id']);
-            if ($confirmation->confirmed_by !== $operator->id || $bodyRun->stop_reason !== 'b04_accepted') {
+            if (! app(BookAuthorship::class)->allows($version->chapter->novel_id, $operator, $confirmation->confirmed_by)) {
+                throw new InvalidArgumentException('本书由账号「'.app(BookAuthorship::class)->requiredAccountName($version->chapter->novel_id, $confirmation->confirmed_by).'」负责，只能由该账号准备正式提交，请换用该账号登录，或在小说页接管本书');
+            }
+            if ($bodyRun->stop_reason !== 'b04_accepted') {
                 throw new InvalidArgumentException('AUTHOR_OR_CONTENT_NOT_READY');
             }
             foreach ($confirmation->setting['characters'] as $character) {
@@ -105,6 +115,10 @@ final class ChapterSubmissionService
             $reasoning = ModelProfiles::profile($model)['review_reasoning'];
             if ($reasoning !== null) {
                 $config['review_reasoning_effort'] = $reasoning;
+            }
+            // 一键提交时冻结作者的提交授权与幂等键，评审与提取完成后由程序按同一授权提交。
+            if ($autoCommit !== null) {
+                $config['auto_commit'] = ['operator_id' => $operator->id, 'reason' => $autoCommit['reason'], 'idempotency_key' => (string) Str::uuid7(), 'at' => now()->toIso8601String()];
             }
             if ($predecessor !== null) {
                 $config['predecessor'] = ['id' => $predecessor->id, 'input_hash' => $predecessor->input_hash, 'stop_reason' => $predecessor->stop_reason];
@@ -359,6 +373,26 @@ final class ChapterSubmissionService
         if ($next && $dispatchNext) {
             $this->dispatch(ChapterSubmissionRun::findOrFail($id));
         }
+        $this->autoCommit(ChapterSubmissionRun::findOrFail($id));
+    }
+
+    /** 一键提交：准备完成且无需批准新实体时按冻结授权正式提交；失败只留档，保持可手动提交。 */
+    private function autoCommit(ChapterSubmissionRun $run): void
+    {
+        $grant = $run->config['auto_commit'] ?? null;
+        if ($grant === null || $run->status !== 'ready' || Chapter::findOrFail($run->chapter_id)->formal_version_id !== null) {
+            return;
+        }
+        try {
+            app(CanonicalCommitService::class)->commit($run->version_id, ChapterReview::where('submission_run_id', $run->id)->sole()->id,
+                ChapterEventExtraction::where('submission_run_id', $run->id)->sole()->id,
+                ChapterSubmissionValidation::where('submission_run_id', $run->id)->oldest('id')->firstOrFail()->id,
+                $run->expected_state_version, $grant['idempotency_key'], User::findOrFail($grant['operator_id']), $grant['reason'], [], true);
+        } catch (Throwable $exception) {
+            $message = $exception instanceof InvalidArgumentException ? $exception->getMessage() : class_basename($exception);
+            $run->refresh()->update(['control_history' => [...$run->control_history, ['action' => 'auto_commit_failed', 'operator_id' => $grant['operator_id'], 'error' => $message, 'at' => now()->toIso8601String()]]]);
+            report($exception);
+        }
     }
 
     /** 保存B05原文阅读回执；拒绝时只终止本运行，原始提取及验证结果保持不变。
@@ -379,7 +413,7 @@ final class ChapterSubmissionService
             Novel::lockForUpdate()->findOrFail($reference->novel_id);
             $run = ChapterSubmissionRun::lockForUpdate()->findOrFail($runId);
             $extraction = ChapterEventExtraction::findOrFail($extractionId);
-            if (! in_array($run->status, ['ready', 'awaiting_approval'], true) || $run->config['operator_id'] !== $operator->id
+            if (! in_array($run->status, ['ready', 'awaiting_approval'], true) || ! app(BookAuthorship::class)->allows($run->novel_id, $operator, $run->config['operator_id'])
                 || $extraction->submission_run_id !== $run->id || $extraction->result_hash !== $resultHash
                 || PlanningJson::hash($extraction->result) !== $resultHash) {
                 throw new InvalidArgumentException('EVENT_READING_SOURCE_INVALID');

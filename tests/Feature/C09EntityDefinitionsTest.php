@@ -11,6 +11,7 @@ use App\Services\Pipeline\ChapterSubmissionService;
 use App\Services\Pipeline\ContentGenerationService;
 use App\Services\Pipeline\ContentQualityContract;
 use App\Services\Pipeline\EntityDefinitions;
+use App\Services\Pipeline\PlanningJson;
 use Filament\Facades\Filament;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
@@ -116,6 +117,25 @@ class C09EntityDefinitionsTest extends TestCase
         $this->assertSame(0, StoryEntity::count());
         $this->assertSame('candidate', EntityDefinitionVersion::firstOrFail()->status);
         Livewire::test(EntityLibrary::class, ['record' => $novel->id])->searchTable('苏禾')->assertCanSeeTableRecords(EntityDefinitionVersion::all());
+    }
+
+    /** 实体以卡片展示名称、类型、简介与来源，顶部显示数量与待批准候选，版本表类型显示中文。 */
+    public function test_page_shows_entity_cards_and_candidate_overview(): void
+    {
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        $actor = User::factory()->create();
+        $this->actingAs($actor);
+        $novel = Novel::factory()->create();
+        $structured = ['name' => '沈禾', 'type' => 'character', 'aliases' => [], 'description' => ['role' => '档案修复师，故事主角', 'goal' => '查清旧案']];
+        StoryEntity::factory()->create(['novel_id' => $novel->id, 'name' => '沈禾', 'normalized_name' => '沈禾', 'definition' => $structured, 'definition_hash' => PlanningJson::hash($structured), 'origin' => ['kind' => 'confirmed_setting']]);
+        $place = ['name' => '修复室', 'type' => 'location', 'aliases' => [], 'description' => '沈禾工作的修复室'];
+        StoryEntity::factory()->create(['novel_id' => $novel->id, 'name' => '修复室', 'normalized_name' => '修复室', 'type' => 'location', 'definition' => $place, 'definition_hash' => PlanningJson::hash($place), 'origin' => ['kind' => 'canonical_commit']]);
+        app(EntityDefinitions::class)->propose($novel->id, $actor, $this->definition(), '新增候选');
+
+        Livewire::test(EntityLibrary::class, ['record' => $novel->id])
+            ->assertSee('正式实体 2 个')->assertSee('人物 1')->assertSee('地点 1')->assertSee('待批准候选 1 条')
+            ->assertSee('档案修复师，故事主角')->assertSee('来自作者确认设定')->assertSee('正文提交时引入')
+            ->assertSee('人物 · 新增实体')->assertSee('第1章起')->assertDontSee('查清旧案');
     }
 
     /** 定义弹窗不再显示 JSON：修订候选先列出与来源版本的字段差异，再按分组显示完整定义；批准弹窗同样展示差异。 */

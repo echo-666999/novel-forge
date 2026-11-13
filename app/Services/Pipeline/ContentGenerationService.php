@@ -137,7 +137,7 @@ final class ContentGenerationService
             if ($review !== null) {
                 $submission = ChapterSubmissionRun::findOrFail($review->submission_run_id);
                 if ($submission->status !== 'failed' || $submission->stop_reason !== 'REVIEW_NOT_PASSED'
-                    || $submission->chapter_id !== $parent->chapter_id || $submission->config['operator_id'] !== $author->id
+                    || $submission->chapter_id !== $parent->chapter_id || ! app(BookAuthorship::class)->allows($novel->id, $author, $submission->config['operator_id'])
                     || $parent->chapter->formal_version_id !== null || $review->version_id !== $parent->chapter->current_candidate_version_id
                     || $review->body_hash !== ChapterVersion::findOrFail($review->version_id)->body_hash
                     || $review->result_hash !== PlanningJson::hash($review->result) || $review->verdict !== 'needs_revision') {
@@ -149,7 +149,7 @@ final class ContentGenerationService
                 throw new InvalidArgumentException('工作台修订必须从指定问题入口继续，达到上限转人工');
             }
             if ($existing = ChapterGenerationRun::where('parent_run_id', $parent->id)->first()) {
-                if ($issues !== null && ($existing->config['author_id'] !== $author->id
+                if ($issues !== null && (! app(BookAuthorship::class)->allows($novel->id, $author, $existing->config['author_id'])
                     || data_get($existing->config, 'workbench.version_id') !== $expectedVersionId
                     || data_get($existing->config, 'workbench.issues') !== $issues)) {
                     throw new InvalidArgumentException('修订请求已变化，请刷新当前版本');
@@ -381,7 +381,7 @@ final class ContentGenerationService
                 || ($requestLimit !== null && $requestLimit !== $run->request_limit)) {
                 throw new InvalidArgumentException('不能直接继续；旧协议或已发送的失败请求须使用显式恢复');
             }
-            if (isset($run->config['manual_edit']) && ($authorId !== $run->config['author_id'])) {
+            if (isset($run->config['manual_edit']) && ! app(BookAuthorship::class)->allowsId($novel->id, $authorId, $run->config['author_id'])) {
                 throw new InvalidArgumentException('人工候选检查只能由原编辑作者授权');
             }
             $this->assertIdle($novel, false);

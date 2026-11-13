@@ -113,13 +113,21 @@ final class StoryStateReplay
         foreach ($entities as $entity) {
             $properties = $state['entities']['entity-'.$entity->id] ?? [];
             $facts = [];
+            $recorded = [];
+            $missing = [];
             foreach (['location' => '位置', 'life_status' => '存亡', 'item_owner' => '归属', 'belief' => '信念', 'knowledge' => '认知'] as $property => $label) {
                 $values = isset($properties[$property]) ? (in_array($property, ['belief', 'knowledge'], true) ? $properties[$property] : [$properties[$property]]) : [];
-                $facts[] = $label.'：'.($values === [] ? '未记录' : implode('；', array_map(fn (array $value): string => ($names[$value['value_ref']] ?? match ($value['value_text']) {
+                $texts = array_map(fn (array $value): string => ($names[$value['value_ref']] ?? match ($value['value_text']) {
                     'alive' => '存活', 'dead' => '死亡', default => $value['value_text']
-                }).'（'.FactCategory::from($value['fact_category'])->label().'，事件 #'.$value['source_event_id'].'）', $values)));
+                }).'（'.FactCategory::from($value['fact_category'])->label().'，事件 #'.$value['source_event_id'].'）', $values);
+                $facts[] = $label.'：'.($values === [] ? '未记录' : implode('；', $texts));
+                if ($values === []) {
+                    $missing[] = $label;
+                } else {
+                    $recorded[] = $label.'：'.implode('；', $texts);
+                }
             }
-            $display[] = ['id' => $entity->id, 'type' => $entity->type, 'name' => $entity->name, 'facts' => implode("\n", $facts)];
+            $display[] = ['id' => $entity->id, 'type' => $entity->type, 'name' => $entity->name, 'facts' => implode("\n", $facts), 'recorded' => $recorded, 'missing' => $missing];
         }
 
         return ['chapter' => $number, 'state_version' => $expected, 'state' => $state, 'entities' => $display, 'events' => $history, 'body' => $body];

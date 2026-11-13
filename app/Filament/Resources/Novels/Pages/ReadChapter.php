@@ -8,6 +8,7 @@ use App\Models\ChapterVersion;
 use App\Services\Pipeline\BodyVersionDiff;
 use App\Services\Pipeline\ReadingRecordService;
 use Filament\Actions\Action;
+use Filament\Actions\ActionGroup;
 use Filament\Facades\Filament;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
@@ -16,6 +17,7 @@ use Filament\Infolists\Components\TextEntry;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\Concerns\InteractsWithRecord;
 use Filament\Resources\Pages\Page;
+use Filament\Schemas\Components\Flex;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\View as ViewComponent;
 use Filament\Schemas\Schema;
@@ -88,25 +90,29 @@ class ReadChapter extends Page
         return ChapterVersion::where('chapter_id', $chapter?->id)->findOrFail($id);
     }
 
-    /** 正文保留换行并自动转义，历史记录不暴露其他账号私有阅读备注。 */
+    /** 正文按段落排版并自动转义；版本、字数与阅读状态压成标题下一排标签，历史记录不暴露其他账号私有阅读备注。 */
     public function content(Schema $schema): Schema
     {
         return $schema->components([
-            Section::make('当前阅读来源')->schema([
-                TextEntry::make('source')->label('版本')->state(function (): string {
-                    $version = $this->version();
-
-                    return $version === null ? '本章尚无正文' : '第'.$this->chapterNumber.'章 · '.$version->displayVersion().' · '.($this->chapter()->formal_version_id === $version->id ? '正式版本' : '候选 / 历史版本');
-                }),
-                TextEntry::make('read')->label('我的阅读状态')->state(fn (): string => DB::table('reading_records')->where(['actor_id' => Filament::auth()->id(), 'version_id' => $this->version()?->id, 'kind' => 'read'])->exists() ? '此版本已标记读完（不代表验收通过）' : '此版本尚未标记读完'),
-            ]),
-            Section::make(fn (): string => $this->version()?->title ?? '尚无正文')->schema([
-                TextEntry::make('body')->hiddenLabel()->state(fn (): ?string => $this->version()?->body)->placeholder('请先在工作台生成候选。')
-                    // 仅原文换行转为br，避免把组件模板缩进渲染为正文空白；正文先完整转义。
-                    ->formatStateUsing(fn (?string $state): HtmlString => new HtmlString(nl2br(e($state ?? ''))))
-                    ->extraAttributes(fn (): array => ['style' => 'overflow-wrap:anywhere;line-height:1.9;font-size:'.(in_array($this->fontSize, [16, 20, 24, 28], true) ? $this->fontSize : 20).'px']),
-            ]),
-            Section::make('正文区段对照')->description('旧版为选择的对照版本，新版为当前阅读版本。按段落对齐，段内只高亮变化的文字；未变化的段落默认折叠。')->visible(fn (): bool => $this->compareVersionId !== null)->schema([
+            Section::make(fn (): string => $this->chapter() === null ? '第'.$this->chapterNumber.'章' : (new Chapter(['number' => $this->chapterNumber, 'title' => $this->version()?->title ?? $this->chapter()->title]))->numberedTitle())
+                ->schema([
+                    Flex::make([
+                        TextEntry::make('source_kind')->hiddenLabel()->badge()->grow(false)
+                            ->state(fn (): ?string => $this->version() === null ? null : ($this->chapter()->formal_version_id === $this->version()->id ? '正式版本' : '候选 / 历史版本'))
+                            ->color(fn (string $state): string => $state === '正式版本' ? 'success' : 'warning'),
+                        TextEntry::make('source_version')->hiddenLabel()->badge()->grow(false)->color('gray')->state(fn (): ?string => $this->version()?->displayVersion()),
+                        TextEntry::make('source_characters')->hiddenLabel()->badge()->grow(false)->color('gray')->state(fn (): ?string => $this->version() === null ? null : number_format($this->version()->character_count).' 字'),
+                        TextEntry::make('read')->hiddenLabel()->badge()->grow(false)->visible(fn (): bool => $this->version() !== null)
+                            ->state(fn (): string => $this->isRead() ? '我已读完' : '我未标记读完')->color(fn (string $state): string => $state === '我已读完' ? 'success' : 'gray')
+                            ->tooltip('阅读标记只记录你读完此版本，不代表验收通过或正式提交批准。'),
+                    ])->extraAttributes(['style' => 'flex-wrap: wrap']),
+                    TextEntry::make('body')->hiddenLabel()->state(fn (): ?string => $this->version()?->body)->placeholder('本章尚无正文，请先在工作台生成候选。')
+                        // 每个原文段落独立成段并首行缩进；正文先完整转义，不渲染任何作者或模型 HTML。
+                        ->formatStateUsing(fn (?string $state): HtmlString => new HtmlString(collect(preg_split('/\R/u', $state ?? ''))->filter(fn (string $paragraph): bool => trim($paragraph) !== '')
+                            ->map(fn (string $paragraph): string => '<p style="margin:0 0 .9em;text-indent:2em">'.e(trim($paragraph)).'</p>')->implode('')))
+                        ->extraAttributes(fn (): array => ['style' => 'max-width:42em;margin:1rem auto 0;overflow-wrap:anywhere;line-height:1.9;font-size:'.(in_array($this->fontSize, [16, 20, 24, 28], true) ? $this->fontSize : 20).'px']),
+                ]),
+            Section::make('正文区段对照')->compact()->description('旧版为选择的对照版本，新版为当前阅读版本；未变化的段落默认折叠。')->visible(fn (): bool => $this->compareVersionId !== null)->schema([
                 ViewComponent::make('filament.resources.novels.partials.body-diff')->viewData(function (): array {
                     if ($this->compareVersionId === null || $this->version() === null) {
                         return ['diff' => BodyVersionDiff::paragraphs('', ''), 'oldLabel' => '', 'newLabel' => ''];
@@ -116,11 +122,28 @@ class ReadChapter extends Page
                     return ['diff' => BodyVersionDiff::paragraphs($old->body, $this->version()->body), 'oldLabel' => '记录 #'.$old->id, 'newLabel' => '当前阅读 #'.$this->version()->id];
                 }),
             ]),
-            Section::make('我的原文问题')->schema([
-                RepeatableEntry::make('issues')->hiddenLabel()->state(fn (): array => DB::table('reading_records')->where(['actor_id' => Filament::auth()->id(), 'version_id' => $this->version()?->id, 'kind' => 'issue'])->orderBy('id')->get()->map(fn ($row): array => (array) $row)->all())
-                    ->schema([TextEntry::make('quote')->label('原文摘录'), TextEntry::make('note')->label('问题'), TextEntry::make('created_at')->label('记录时间')]),
+            Section::make(fn (): string => '我的原文问题（'.count($this->issues()).'）')->compact()->collapsible()->visible(fn (): bool => $this->issues() !== [])->schema([
+                RepeatableEntry::make('issues')->hiddenLabel()->state(fn (): array => $this->issues())->schema([
+                    TextEntry::make('note')->hiddenLabel()->weight('bold'),
+                    TextEntry::make('quote')->hiddenLabel()->color('gray')->extraAttributes(['style' => 'border-left:3px solid rgba(127,127,127,.35);padding-left:.75rem;white-space:pre-line']),
+                    TextEntry::make('created_at')->hiddenLabel()->color('gray')->size('sm'),
+                ]),
             ]),
         ]);
+    }
+
+    /** 当前账号是否已标记读完此版本。 */
+    private function isRead(): bool
+    {
+        return DB::table('reading_records')->where(['actor_id' => Filament::auth()->id(), 'version_id' => $this->version()?->id, 'kind' => 'read'])->exists();
+    }
+
+    /** 当前账号在此版本记录的原文问题，只读本人记录。
+     * @return list<array<string, mixed>>
+     */
+    private function issues(): array
+    {
+        return DB::table('reading_records')->where(['actor_id' => Filament::auth()->id(), 'version_id' => $this->version()?->id, 'kind' => 'issue'])->orderBy('id')->get()->map(fn ($row): array => (array) $row)->all();
     }
 
     /** 相邻章、字体、版本和阅读证据动作均不触发模型请求。 */
@@ -129,18 +152,7 @@ class ReadChapter extends Page
         return [
             Action::make('previous')->label('上一章')->visible(fn (): bool => $this->getRecord()->chapters()->where('number', $this->chapterNumber - 1)->exists())->url(fn (): string => $this->readingUrl($this->chapterNumber - 1)),
             Action::make('next')->label('下一章')->visible(fn (): bool => $this->getRecord()->chapters()->where('number', $this->chapterNumber + 1)->exists())->url(fn (): string => $this->readingUrl($this->chapterNumber + 1)),
-            Action::make('versions')->label('选择版本')->schema([Select::make('version')->label('版本')->options(fn (): array => ChapterVersion::where('chapter_id', $this->chapter()?->id)->orderByDesc('version')->get()->mapWithKeys(fn (ChapterVersion $version): array => [$version->id => $version->displayVersion()])->all())->required()])->action(function (array $data): void {
-                $this->redirect(NovelResource::getUrl('reader', ['record' => $this->getRecord(), 'chapter' => $this->chapterNumber, 'version' => $data['version']]));
-            }),
-            Action::make('compare')->label('对照历史版本')->visible(fn (): bool => $this->version() !== null)->schema([
-                Select::make('version')->label('旧版 / 对照版本')->options(fn (): array => ChapterVersion::where('chapter_id', $this->chapter()?->id)->orderByDesc('version')->get()->mapWithKeys(fn (ChapterVersion $version): array => [$version->id => $version->displayVersion()])->all())->required(),
-            ])->action(function (array $data): void {
-                $this->compareVersionId = ChapterVersion::where('chapter_id', $this->chapter()?->id)->findOrFail((int) $data['version'])->id;
-            }),
-            Action::make('font')->label('阅读字号')->schema([Select::make('size')->label('字号')->options([16 => '16px', 20 => '20px', 24 => '24px', 28 => '28px'])->default(20)->required()])->action(function (array $data): void {
-                $this->fontSize = (int) $data['size'];
-            }),
-            Action::make('markRead')->label('标记此版本已读')->visible(fn (): bool => $this->version() !== null)->requiresConfirmation()->modalDescription('仅记录你读完此版本，不代表质量验收或正式提交批准。')->action(function (): void {
+            Action::make('markRead')->label('标记此版本已读')->color('success')->visible(fn (): bool => $this->version() !== null && ! $this->isRead())->requiresConfirmation()->modalDescription('仅记录你读完此版本，不代表质量验收或正式提交批准。')->action(function (): void {
                 app(ReadingRecordService::class)->record($this->getRecord()->id, $this->version()->id, Filament::auth()->user(), 'read');
                 Notification::make()->success()->title('此版本已标记读完')->send();
             }),
@@ -160,8 +172,23 @@ class ReadChapter extends Page
                 }
                 Notification::make()->success()->title('原文问题已保存')->send();
             }),
-            Action::make('workbench')->label('正文与提交工作台')->url(fn (): string => NovelResource::getUrl('content', ['record' => $this->getRecord(), 'chapter' => $this->chapterNumber])),
-            Action::make('directory')->label('章节目录')->url(fn (): string => NovelResource::getUrl('chapters', ['record' => $this->getRecord()])),
+            ActionGroup::make([
+                Action::make('versions')->label('选择版本')->schema([Select::make('version')->label('版本')->options(fn (): array => ChapterVersion::where('chapter_id', $this->chapter()?->id)->orderByDesc('version')->get()->mapWithKeys(fn (ChapterVersion $version): array => [$version->id => $version->displayVersion()])->all())->required()])->action(function (array $data): void {
+                    $this->redirect(NovelResource::getUrl('reader', ['record' => $this->getRecord(), 'chapter' => $this->chapterNumber, 'version' => $data['version']]));
+                }),
+                Action::make('compare')->label('对照历史版本')->visible(fn (): bool => $this->version() !== null)->schema([
+                    Select::make('version')->label('旧版 / 对照版本')->options(fn (): array => ChapterVersion::where('chapter_id', $this->chapter()?->id)->orderByDesc('version')->get()->mapWithKeys(fn (ChapterVersion $version): array => [$version->id => $version->displayVersion()])->all())->required(),
+                ])->action(function (array $data): void {
+                    $this->compareVersionId = ChapterVersion::where('chapter_id', $this->chapter()?->id)->findOrFail((int) $data['version'])->id;
+                }),
+                Action::make('font')->label('阅读字号')->schema([Select::make('size')->label('字号')->options([16 => '16px', 20 => '20px', 24 => '24px', 28 => '28px'])->default(20)->required()])->action(function (array $data): void {
+                    $this->fontSize = (int) $data['size'];
+                }),
+            ])->label('版本与字号')->icon('heroicon-m-adjustments-horizontal')->button()->color('gray'),
+            ActionGroup::make([
+                Action::make('workbench')->label('正文与提交工作台')->url(fn (): string => NovelResource::getUrl('content', ['record' => $this->getRecord(), 'chapter' => $this->chapterNumber])),
+                Action::make('directory')->label('章节目录')->url(fn (): string => NovelResource::getUrl('chapters', ['record' => $this->getRecord()])),
+            ])->label('前往')->icon('heroicon-m-arrow-top-right-on-square')->button()->color('gray'),
         ];
     }
 

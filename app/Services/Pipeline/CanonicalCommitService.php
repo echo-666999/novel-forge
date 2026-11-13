@@ -83,7 +83,7 @@ final class CanonicalCommitService
                 throw new InvalidArgumentException('CHAPTER_ALREADY_COMMITTED');
             }
             if (! in_array($run->status, ['ready', 'awaiting_approval'], true) || $run->version_id !== $version->id || $run->requests_used !== 2
-                || $run->config['operator_id'] !== $operator->id || $extraction->submission_run_id !== $run->id
+                || ! app(BookAuthorship::class)->allows($run->novel_id, $operator, $run->config['operator_id']) || $extraction->submission_run_id !== $run->id
                 || $validation->submission_run_id !== $run->id || $validation->review_id !== $reviewId || $validation->extraction_id !== $extractionId
                 || ! in_array($validation->verdict, ['pass', 'requires_approval'], true)
                 || $validation->input_hash !== PlanningJson::hash([$run->input_hash, $review->result_hash, $extraction->result_hash, []])) {
