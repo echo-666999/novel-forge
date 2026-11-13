@@ -4,12 +4,14 @@ namespace App\Filament\Pages;
 
 use App\Services\Ai\BuiltinPromptTemplates;
 use App\Services\Ai\PromptTemplateManager;
+use App\Services\Pipeline\BodyVersionDiff;
 use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Pages\Page;
+use Filament\Schemas\Components\View as ViewComponent;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\TextColumn;
@@ -97,9 +99,13 @@ class ManagePromptTemplates extends Page implements HasTable
         return [
             TextEntry::make('identity')->label('类型、阶段与版本')->state(([...BuiltinPromptTemplates::scopes(), ...PromptTemplateManager::SCOPES])[$version->scope].' · '.$this->versionLabel($version->id)),
             TextEntry::make('notes')->label('版本说明')->state($version->notes),
-            TextEntry::make('body')->label('完整模板正文')->state($version->body)->extraAttributes(['style' => 'white-space: pre-wrap; overflow-wrap: anywhere;']),
             TextEntry::make('published')->label('当前发布版本')->state($published ? $this->versionLabel($published->id) : '无发布版本'),
-            TextEntry::make('published_body')->label('当前发布正文（供比较）')->state($published?->body ?? '无发布正文')->extraAttributes(['style' => 'white-space: pre-wrap; overflow-wrap: anywhere;']),
+            // 与发布版本按段落对照，只突出改动；本身就是发布版本或尚无发布版本时直接显示全文。
+            ViewComponent::make('filament.resources.novels.partials.body-diff')->visible($published !== null && $published->id !== $version->id)
+                ->viewData(fn (): array => ['diff' => BodyVersionDiff::paragraphs((string) $published?->body, (string) $version->body),
+                    'oldLabel' => '当前发布 '.($published ? $this->versionLabel($published->id) : ''), 'newLabel' => '本版本 '.$this->versionLabel($version->id)]),
+            TextEntry::make('body')->label('完整模板正文')->state($version->body)->visible($published === null || $published->id === $version->id)
+                ->extraAttributes(['style' => 'white-space: pre-wrap; overflow-wrap: anywhere;']),
             TextEntry::make('report')->label('本地回归结果')->state($version->test_report ?? '尚未测试')->extraAttributes(['style' => 'white-space: pre-wrap; overflow-wrap: anywhere;']),
         ];
     }

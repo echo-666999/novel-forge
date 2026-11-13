@@ -5,7 +5,9 @@ namespace App\Filament\Resources\Novels\Pages;
 use App\Filament\Resources\Novels\NovelResource;
 use App\Models\NovelOutlineChapter;
 use App\Models\ScenePlanVersion;
+use App\Services\Pipeline\FieldDiff;
 use App\Services\Pipeline\ScenePlanning;
+use App\Services\Pipeline\SettingVersionDiff;
 use Filament\Actions\Action;
 use Filament\Facades\Filament;
 use Filament\Forms\Components\Checkbox;
@@ -14,7 +16,6 @@ use Filament\Forms\Components\Repeater;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
-use Filament\Infolists\Components\TextEntry;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\Concerns\InteractsWithRecord;
 use Filament\Resources\Pages\Page;
@@ -26,6 +27,7 @@ use Filament\Tables\Concerns\InteractsWithTable;
 use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
+use Illuminate\Contracts\View\View;
 use UnitEnum;
 
 /** 场景草稿编辑、覆盖预检及明确冻结，正式正文没有编辑入口。 */
@@ -73,10 +75,9 @@ class ScenePlans extends Page implements HasTable
             TextColumn::make('objective')->label('目标')->wrap(),
             TextColumn::make('scene_status')->label('最新场景状态')->state(fn (NovelOutlineChapter $record): string => $this->latest($record)?->status ?? '未规划'),
         ])->filters([SelectFilter::make('outline_plan_id')->label('大纲记录')->options(fn (): array => $this->getRecord()->outlinePlans()->orderByDesc('id')->pluck('id', 'id')->map(fn ($id): string => '大纲记录 #'.$id)->all())])->recordActions([
-            Action::make('history')->label('版本与覆盖')->modalSubmitAction(false)->schema(fn (NovelOutlineChapter $record): array => [
-                TextEntry::make('points')->label('必须覆盖的推进点')->state(json_encode($record->progression_points, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT)),
-                TextEntry::make('versions')->label('全部版本及预检')->state(fn (): string => ScenePlanVersion::where('outline_chapter_id', $record->id)->latest('id')->get()->map(fn ($v): string => '场景记录 #'.$v->id.' '.$v->status.' '.$v->reason."\n".implode('；', app(ScenePlanning::class)->issues($this->getRecord(), $record, $v->scenes))."\n".json_encode($v->scenes, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT))->implode("\n\n"))->prose(),
-            ]),
+            Action::make('history')->label('版本与覆盖')->modalHeading(fn (NovelOutlineChapter $record): string => '第'.$record->chapter_number.'章 · 推进点与场景规划版本')
+                ->modalWidth('4xl')->modalAutofocus(false)->modalSubmitAction(false)->modalCancelActionLabel('关闭')
+                ->modalContent(fn (NovelOutlineChapter $record): View => view('filament.resources.novels.pages.scene-plan-history', $this->historyViewData($record))),
             Action::make('edit')->label('编辑 / 拆分 / 合并')->visible(fn (NovelOutlineChapter $record): bool => ! $this->getRecord()->chapters()->where('number', $record->chapter_number)->exists())
                 ->fillForm(fn (NovelOutlineChapter $record): array => ['expected_id' => $this->latest($record)?->id, 'scenes' => $this->latest($record)?->scenes ?? [], 'freeze' => false, 'acknowledged' => false])
                 ->schema(fn (NovelOutlineChapter $record): array => $this->fields($record))
@@ -100,6 +101,50 @@ class ScenePlans extends Page implements HasTable
         return [Hidden::make('expected_id'), Repeater::make('scenes')->label('按发生顺序排列场景')->schema($fields)->columns(2)->minItems(1)->maxItems(20),
             Textarea::make('reason')->label('新增、拆分或合并原因')->required()->maxLength(2000), Checkbox::make('freeze')->label('通过覆盖和字数检查后冻结为新运行输入')->default(false),
             Checkbox::make('acknowledged')->label('我确认以上场景规划，不修改已开始运行或正式历史。')->accepted()->default(false)];
+    }
+
+    /** 推进点变化类型的中文名，与大纲页一致。 */
+    private const CHANGE_TYPES = ['information' => '信息', 'decision' => '决定', 'relationship' => '关系', 'resource' => '资源', 'position' => '位置', 'risk' => '风险'];
+
+    /** 场景字段的中文名与展示顺序，与编辑表单一致；标题单独作为卡片标题。 */
+    private const SCENE_FIELDS = ['goal' => '场景目标', 'pov' => '视角人物', 'time' => '故事时间', 'place' => '地点', 'participants' => '参与者', 'conflict' => '冲突', 'change' => '人物及状态变化', 'transition' => '前后衔接', 'prohibited' => '禁止变更', 'words' => '目标字数', 'point_ids' => '必要推进点'];
+
+    /** “版本与覆盖”弹窗数据：推进点结构化展示，场景规划版本按时间倒序并附预检结果。
+     * @return array{points: list<array<string, ?string>>, versions: list<array<string, mixed>>}
+     */
+    private function historyViewData(NovelOutlineChapter $record): array
+    {
+        $points = [];
+        $numbers = [];
+        foreach (FieldDiff::listOf($record->progression_points) as $index => $point) {
+            $point = (array) $point;
+            $numbers[(string) ($point['id'] ?? '')] = '推进点 '.($index + 1);
+            $points[] = ['subject' => FieldDiff::text($point['subject'] ?? null), 'type' => self::CHANGE_TYPES[$point['change_type'] ?? ''] ?? FieldDiff::text($point['change_type'] ?? null),
+                'before' => FieldDiff::text($point['before'] ?? null), 'action' => FieldDiff::text($point['action'] ?? null), 'after' => FieldDiff::text($point['after'] ?? null),
+                'verification' => FieldDiff::text($point['verification'] ?? null)];
+        }
+        $versions = ScenePlanVersion::where('outline_chapter_id', $record->id)->latest('id')->get()->map(function (ScenePlanVersion $version) use ($record, $numbers): array {
+            $scenes = [];
+            foreach (FieldDiff::listOf($version->scenes) as $scene) {
+                $scene = (array) $scene;
+                $rows = [];
+                foreach ([...self::SCENE_FIELDS, ...array_fill_keys(array_diff(array_keys($scene), ['title', ...array_keys(self::SCENE_FIELDS)]), null)] as $key => $label) {
+                    $value = $key === 'point_ids'
+                        ? implode('、', array_map(fn (mixed $id): string => $numbers[(string) $id] ?? (string) $id, FieldDiff::listOf($scene[$key] ?? null)))
+                        : (is_array($scene[$key] ?? null) ? implode('；', SettingVersionDiff::lines($scene[$key])) : FieldDiff::text($scene[$key] ?? null));
+                    if (filled($value)) {
+                        $rows[] = ['label' => $label ?? (string) $key, 'value' => $value];
+                    }
+                }
+                $scenes[] = ['title' => FieldDiff::text($scene['title'] ?? null), 'rows' => $rows];
+            }
+
+            return ['id' => $version->id, 'frozen' => $version->status === 'frozen', 'status' => $version->status === 'frozen' ? '已冻结' : '草稿',
+                'created_at' => $version->created_at?->format('Y-m-d H:i'), 'reason' => FieldDiff::text($version->reason),
+                'issues' => app(ScenePlanning::class)->issues($this->getRecord(), $record, $version->scenes), 'scenes' => $scenes];
+        })->all();
+
+        return ['points' => $points, 'versions' => $versions];
     }
 
     /** 按大纲章节读取最新编辑版本，不混入其他书或其他大纲。 */

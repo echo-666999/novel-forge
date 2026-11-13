@@ -17,6 +17,7 @@ use Filament\Notifications\Notification;
 use Filament\Resources\Pages\Concerns\InteractsWithRecord;
 use Filament\Resources\Pages\Page;
 use Filament\Schemas\Components\Section;
+use Filament\Schemas\Components\View as ViewComponent;
 use Filament\Schemas\Schema;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\HtmlString;
@@ -105,15 +106,15 @@ class ReadChapter extends Page
                     ->formatStateUsing(fn (?string $state): HtmlString => new HtmlString(nl2br(e($state ?? ''))))
                     ->extraAttributes(fn (): array => ['style' => 'overflow-wrap:anywhere;line-height:1.9;font-size:'.(in_array($this->fontSize, [16, 20, 24, 28], true) ? $this->fontSize : 20).'px']),
             ]),
-            Section::make('正文区段对照')->description('旧版为选择的对照版本，新版为当前阅读版本。按共同前后文划分修改区段，保留完整上下文，不是逐字符最小差异。')->visible(fn (): bool => $this->compareVersionId !== null)->schema([
-                RepeatableEntry::make('diff')->hiddenLabel()->state(function (): array {
+            Section::make('正文区段对照')->description('旧版为选择的对照版本，新版为当前阅读版本。按段落对齐，段内只高亮变化的文字；未变化的段落默认折叠。')->visible(fn (): bool => $this->compareVersionId !== null)->schema([
+                ViewComponent::make('filament.resources.novels.partials.body-diff')->viewData(function (): array {
                     if ($this->compareVersionId === null || $this->version() === null) {
-                        return [];
+                        return ['diff' => BodyVersionDiff::paragraphs('', ''), 'oldLabel' => '', 'newLabel' => ''];
                     }
                     $old = ChapterVersion::where('chapter_id', $this->chapter()?->id)->findOrFail($this->compareVersionId);
 
-                    return BodyVersionDiff::compare($old->body, $this->version()->body);
-                })->schema([TextEntry::make('kind')->label('差异类型')->badge(), TextEntry::make('text')->label('完整区段')->formatStateUsing(fn (?string $state): HtmlString => new HtmlString(nl2br(e($state ?? ''))))->extraAttributes(['style' => 'overflow-wrap:anywhere'])]),
+                    return ['diff' => BodyVersionDiff::paragraphs($old->body, $this->version()->body), 'oldLabel' => '记录 #'.$old->id, 'newLabel' => '当前阅读 #'.$this->version()->id];
+                }),
             ]),
             Section::make('我的原文问题')->schema([
                 RepeatableEntry::make('issues')->hiddenLabel()->state(fn (): array => DB::table('reading_records')->where(['actor_id' => Filament::auth()->id(), 'version_id' => $this->version()?->id, 'kind' => 'issue'])->orderBy('id')->get()->map(fn ($row): array => (array) $row)->all())

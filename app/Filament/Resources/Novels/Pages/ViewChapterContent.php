@@ -14,8 +14,10 @@ use App\Models\ChapterSubmissionRun;
 use App\Models\ChapterSubmissionValidation;
 use App\Models\ChapterVersion;
 use App\Models\CostLog;
+use App\Models\Foreshadow;
 use App\Models\NovelStage;
 use App\Models\ProductionRun;
+use App\Models\StoryEntity;
 use App\Services\Pipeline\CanonicalBaselines;
 use App\Services\Pipeline\CanonicalCommitService;
 use App\Services\Pipeline\ChapterSubmissionService;
@@ -28,6 +30,7 @@ use App\Services\Pipeline\NovelProgressQuery;
 use App\Services\Pipeline\PlanningJson;
 use App\Services\Pipeline\RevisionWorkbench;
 use App\Services\Pipeline\StyleSignals;
+use App\Services\Pipeline\SubmissionPresenter;
 use App\Settings\GeneralSettings;
 use Filament\Actions\Action;
 use Filament\Facades\Filament;
@@ -45,6 +48,7 @@ use Filament\Schemas\Components\EmbeddedTable;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Tabs;
 use Filament\Schemas\Components\Tabs\Tab;
+use Filament\Schemas\Components\View as ViewComponent;
 use Filament\Schemas\Schema;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Concerns\InteractsWithTable;
@@ -217,11 +221,7 @@ class ViewChapterContent extends Page implements HasTable
                             'awaiting_approval' => '硬检查通过，等待作者批准新实体', 'ready' => '准备通过，可正式提交', 'committed' => '已正式提交', default => '尚未准备',
                         }),
                         TextEntry::make('submission_reason')->label('停止原因')->state(fn (): ?string => ProductionFailure::detailLabel($this->submission()?->stop_reason))->placeholder('无'),
-                        TextEntry::make('submission_requests')->label('准备请求')->state(fn (): string => ($this->submission()?->requests_used ?? 0).' / 2'),
-                        TextEntry::make('review_details')->label('基础评审及原文证据')->state(fn (): string => $this->submissionDetails('review'))->extraAttributes(['style' => 'white-space: pre-wrap']),
-                        TextEntry::make('extraction_details')->label('实体定义、事件及状态差异')->state(fn (): string => $this->submissionDetails('extract'))->extraAttributes(['style' => 'white-space: pre-wrap']),
-                        TextEntry::make('validation_details')->label('确定性验证与待批准实体')->state(fn (): string => $this->submissionDetails('validation'))->extraAttributes(['style' => 'white-space: pre-wrap']),
-                        TextEntry::make('commit_details')->label('正式提交回执')->state(fn (): string => $this->submissionDetails('commit'))->extraAttributes(['style' => 'white-space: pre-wrap']),
+                        ViewComponent::make('filament.resources.novels.pages.submission-details')->viewData(fn (): array => $this->submissionViewData())->columnSpanFull(),
                     ]),
                     Section::make('评审与定点修订工作台')->description('指定问题只生成候选；范围外原文保留，修订后独立复评，不替代正式提交评审。')->schema([
                         TextEntry::make('revision_status')->label('轮次与处理边界')->state(fn (): string => $this->run() === null ? '尚无正文候选' : app(RevisionWorkbench::class)->status($this->run())),
@@ -239,6 +239,7 @@ class ViewChapterContent extends Page implements HasTable
                             'fine' => '章节细纲', 'draft' => '正文生成', 'check' => '独立推进检查', 'revise' => '推进点修订', 'length_repair' => '定点扩写', default => '无'
                         }),
                         TextEntry::make('requests')->label('已领用 / 请求上限')->state(fn (): string => ($this->run()?->requests_used ?? 0).' / '.($this->run()?->request_limit ?? 0)),
+                        TextEntry::make('submission_requests')->label('提交准备请求（评审与提取）')->state(fn (): string => ($this->submission()?->requests_used ?? 0).' / 2'),
                         TextEntry::make('continuous_scope')->label('持续验收范围')->state(fn (): string => ($this->run()?->config['version'] ?? null) === ContentExecutionContract::VERSION ? '本授权内最多一次修订，请求上限不可通过继续操作扩大' : '历史协议，只读保留；恢复会创建有限运行'),
                         TextEntry::make('repair_mode')->label('本轮修复方式')->state(fn (): string => data_get($this->run()?->config, 'repair_mode') === 'rewrite' ? '已授权的整章候选重写' : '局部修订'),
                         TextEntry::make('shared_requests')->label('本轮质量修复合计请求')->state(fn (): string => data_get($this->run()?->config, 'shared_request_limit') === null ? '按上方本运行额度执行' : ((int) data_get($this->run()?->config, 'parent_requests_used') + $this->run()->requests_used).' / '.data_get($this->run()?->config, 'shared_request_limit')),
@@ -248,7 +249,8 @@ class ViewChapterContent extends Page implements HasTable
                         TextEntry::make('reused_fine')->label('细纲来源')->state(fn (): string => $this->fineSourceLabel()),
                         TextEntry::make('stop')->label('停止原因与下一步')->state(fn (): string => $this->stopLabel())->columnSpanFull(),
                     ]),
-                    Section::make('生成与恢复历史')->schema([
+                    // 请求历史与费用默认收起，需要时点击展开。
+                    Section::make('生成与恢复历史')->collapsible()->collapsed()->schema([
                         RepeatableEntry::make('runs')->label('保留全部运行')->state(fn (): array => $this->run() === null ? [] : ChapterGenerationRun::query()->where('chapter_id', $this->run()->chapter_id)->orderBy('id')->get()->map(fn (ChapterGenerationRun $run): array => [
                             'id' => $run->id, 'parent' => $run->parent_run_id, 'source' => $run->source_version_id, 'status' => $run->status,
                             'requests' => $run->requests_used.' / '.$run->request_limit, 'hook' => data_get($run->plan_data, 'hook'),
@@ -262,7 +264,7 @@ class ViewChapterContent extends Page implements HasTable
                             TextEntry::make('hook')->label('该运行细纲钩子')->placeholder('尚未生成'), TextEntry::make('reason')->label('操作原因'),
                         ]),
                     ]),
-                    Section::make('尝试与费用')->key('content-attempts')->headerActions([
+                    Section::make('尝试与费用')->key('content-attempts')->collapsible()->collapsed()->headerActions([
                         Action::make('viewPrompts')->label('查看完整Prompt')->modalHeading('完整Prompt与请求契约')->modalSubmitAction(false)->modalCancelActionLabel('关闭')->modalWidth('7xl')->schema(fn (): array => [
                             TextEntry::make('prompts')->label('调用前快照与已验证历史还原')->state(fn (): string => json_encode(CostLog::where('novel_id', $this->getRecord()->id)->whereHas('novelStage', fn ($query) => $query->whereNotNull('input->run_id'))->orderBy('id')->get()->map(fn (CostLog $log): array => ['cost_log_id' => $log->id, ...app(ContentPromptAudit::class)->read($log)])->all(), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES))->extraAttributes(['style' => 'white-space: pre-wrap; overflow-wrap: anywhere;']),
                         ]),
@@ -401,21 +403,25 @@ class ViewChapterContent extends Page implements HasTable
         return ChapterSubmissionRun::where('version_id', $version->id)->latest('id')->first();
     }
 
-    /** 原文证据及定义全部作为转义纯文本展示，作者可核对实际批准对象。 */
-    private function submissionDetails(string $kind): string
+    /** 评审、提取、验证与提交回执的可读分区数据；尚未准备时各分区为空。
+     * @return array{review: ?array, extraction: ?array, validation: ?array, commit: ?array}
+     */
+    private function submissionViewData(): array
     {
         $run = $this->submission();
         if ($run === null) {
-            return '尚无记录';
+            return ['review' => null, 'extraction' => null, 'validation' => null, 'commit' => null];
         }
-        $data = match ($kind) {
-            'review' => ChapterReview::where('submission_run_id', $run->id)->first()?->result,
-            'extract' => ChapterEventExtraction::where('submission_run_id', $run->id)->first()?->result,
-            'validation' => ChapterSubmissionValidation::where('submission_run_id', $run->id)->latest('id')->first()?->result,
-            'commit' => CanonicalCommit::where('submission_run_id', $run->id)->first()?->result,
-        };
+        $novelId = $this->getRecord()->id;
 
-        return $data === null ? '尚无记录' : json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR);
+        return SubmissionPresenter::present(
+            ChapterReview::where('submission_run_id', $run->id)->first()?->result,
+            ChapterEventExtraction::where('submission_run_id', $run->id)->first()?->result,
+            ChapterSubmissionValidation::where('submission_run_id', $run->id)->latest('id')->first()?->result,
+            CanonicalCommit::where('submission_run_id', $run->id)->first()?->result,
+            StoryEntity::where('novel_id', $novelId)->pluck('name', 'id')->all(),
+            Foreshadow::where('novel_id', $novelId)->pluck('title', 'id')->all(),
+        );
     }
 
     /** 对每个新实体显示定义及证据，批准选择仅绑定当前冻结提取。
@@ -427,7 +433,7 @@ class ViewChapterContent extends Page implements HasTable
         $extraction = $run === null ? null : ChapterEventExtraction::where('submission_run_id', $run->id)->first();
         $options = [];
         foreach ($extraction?->result['proposed_entities'] ?? [] as $proposal) {
-            $options[$proposal['key']] = $proposal['key'].' '.($proposal['core'] ? '核心实体' : '新实体').'：'.PlanningJson::encode($proposal);
+            $options[$proposal['key']] = SubmissionPresenter::proposalLabel($proposal);
         }
 
         return $options;

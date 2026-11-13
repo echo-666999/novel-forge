@@ -60,13 +60,18 @@ class NovelInfolist
                         TextEntry::make('creative_brief_text')->label('补充创作要求')->columnSpanFull()->visible(fn (Novel $record): bool => filled($record->creative_brief))
                             ->state(fn (Novel $record): array => collect($record->creative_brief ?? [])->map(fn (string $value, string $key): string => (CreateNovelService::BRIEF_FIELDS[$key] ?? $key).'：'.$value)->values()->all())->listWithLineBreaks(),
                     ]),
-                Section::make('预算与费用')->collapsible()->description('设了预算时，每次请求前按单价上限预留，余额不足即在发送前停下；未设预算时只受执行次数上限约束。金额未知不等于免费。')->columnSpanFull()->schema([
-                    TextEntry::make('budget_summary')->label('预算')->state(fn (Novel $record): string => app(NovelBudget::class)->describe($record))
-                        ->color(fn (Novel $record): ?string => match (app(NovelBudget::class)->summary($record)['state']) {
-                            'exhausted' => 'danger', 'warning' => 'warning', default => null
-                        }),
-                    TextEntry::make('cost_summary')->label('全部调用')->state(fn (Novel $record): string => app(NovelCostSummary::class)->describe(app(NovelCostSummary::class)->forNovel($record->id))),
-                ]),
+                // 后台以维护小说内容为主：费用与执行次数默认收起；预算接近或已经用尽时自动展开提醒。
+                Section::make('预算、费用与执行次数')->collapsible()
+                    ->collapsed(fn (Novel $record): bool => ! in_array(app(NovelBudget::class)->summary($record)['state'], ['exhausted', 'warning'], true))
+                    ->description('设了预算时，每次请求前按单价上限预留，余额不足即在发送前停下；未设预算时只受执行次数上限约束。金额未知不等于免费。')->columnSpanFull()->schema([
+                        TextEntry::make('budget_summary')->label('预算')->state(fn (Novel $record): string => app(NovelBudget::class)->describe($record))
+                            ->color(fn (Novel $record): ?string => match (app(NovelBudget::class)->summary($record)['state']) {
+                                'exhausted' => 'danger', 'warning' => 'warning', default => null
+                            }),
+                        TextEntry::make('cost_summary')->label('全部调用')->state(fn (Novel $record): string => app(NovelCostSummary::class)->describe(app(NovelCostSummary::class)->forNovel($record->id))),
+                        TextEntry::make('execution_count')->label('执行次数 / 上限')
+                            ->formatStateUsing(fn (Novel $record): string => $record->execution_count.' / '.$record->max_execution_count),
+                    ]),
                 Section::make('篇幅计划')->collapsible()->columns(3)->columnSpanFull()->schema([
                     TextEntry::make('target_chapters')->label('目标章数')->suffix('章'),
                     TextEntry::make('chapter_length_policy.min_characters')->label('每章字数下限')->suffix('字')->placeholder('未设置'),
@@ -80,8 +85,6 @@ class NovelInfolist
                             ->color(fn (NovelStatus $state): string => NovelResource::statusColor($state)),
                         TextEntry::make('current_stage')->label('当前阶段')->placeholder('尚未开始')
                             ->formatStateUsing(fn (?Stage $state): ?string => $state?->label()),
-                        TextEntry::make('execution_count')->label('执行次数 / 上限')
-                            ->formatStateUsing(fn (Novel $record): string => $record->execution_count.' / '.$record->max_execution_count),
                         TextEntry::make('progress')->label(fn (Novel $record): string => $record->generation_mode === GenerationMode::SettingReal ? '流水线进度' : '模拟进度')->suffix('%'),
                         TextEntry::make('created_at')->label('创建时间')->dateTime('Y-m-d H:i:s'),
                         TextEntry::make('updated_at')->label('最近活动')->dateTime('Y-m-d H:i:s'),

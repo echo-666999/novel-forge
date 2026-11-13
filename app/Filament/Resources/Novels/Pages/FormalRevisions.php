@@ -13,19 +13,18 @@ use Filament\Forms\Components\Checkbox;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
-use Filament\Infolists\Components\RepeatableEntry;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\Concerns\InteractsWithRecord;
 use Filament\Resources\Pages\Page;
 use Filament\Schemas\Components\EmbeddedTable;
 use Filament\Schemas\Components\Section;
+use Filament\Schemas\Components\View as ViewComponent;
 use Filament\Schemas\Schema;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Concerns\InteractsWithTable;
 use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Table;
-use Illuminate\Support\HtmlString;
 use InvalidArgumentException;
 use UnitEnum;
 
@@ -103,12 +102,14 @@ class FormalRevisions extends Page implements HasTable
                 ->action(fn (FormalRevisionChapter $record) => $this->perform(fn () => app(FormalRevisionService::class)->dispatch([$record->id], 'verify'), '已排队事实核对')),
             Action::make('diff')->label('查看改动')->visible(fn (FormalRevisionChapter $record): bool => $record->candidate_version_id !== null)->modalSubmitAction(false)->modalCancelActionLabel('关闭')->modalWidth('5xl')
                 ->schema(fn (FormalRevisionChapter $record): array => [
-                    TextEntry::make('check')->label('事实核对')->state(implode("\n", array_filter([$record->equivalence['summary'] ?? '尚未核对',
-                        ($record->equivalence['new_facts'] ?? []) === [] ? null : '新增事实：'.implode('；', $record->equivalence['new_facts']),
-                        ($record->equivalence['lost_constraints'] ?? []) === [] ? null : '丢失约束：'.implode('；', $record->equivalence['lost_constraints']),
-                        ($record->equivalence['literary_issues'] ?? []) === [] ? null : '文字问题：'.implode('；', $record->equivalence['literary_issues'])])))->extraAttributes(['style' => 'white-space: pre-wrap']),
-                    RepeatableEntry::make('diff')->hiddenLabel()->state(BodyVersionDiff::compare(ChapterVersion::findOrFail($record->source_version_id)->body, ChapterVersion::findOrFail($record->candidate_version_id)->body))
-                        ->schema([TextEntry::make('kind')->label('区段')->badge(), TextEntry::make('text')->label('正文')->formatStateUsing(fn (?string $state): HtmlString => new HtmlString(nl2br(e($state ?? ''))))]),
+                    // 事实核对分项展示：新增事实与丢失约束是需要处理的问题，单独列出并标红。
+                    TextEntry::make('check')->label('事实核对结论')->state($record->equivalence['summary'] ?? '尚未核对'),
+                    TextEntry::make('new_facts')->label('新增事实')->state($record->equivalence['new_facts'] ?? [])->listWithLineBreaks()->bulleted()->color('danger')->visible(($record->equivalence['new_facts'] ?? []) !== []),
+                    TextEntry::make('lost_constraints')->label('丢失约束')->state($record->equivalence['lost_constraints'] ?? [])->listWithLineBreaks()->bulleted()->color('danger')->visible(($record->equivalence['lost_constraints'] ?? []) !== []),
+                    TextEntry::make('literary_issues')->label('文字问题')->state($record->equivalence['literary_issues'] ?? [])->listWithLineBreaks()->bulleted()->color('warning')->visible(($record->equivalence['literary_issues'] ?? []) !== []),
+                    ViewComponent::make('filament.resources.novels.partials.body-diff')->viewData(fn (): array => [
+                        'diff' => BodyVersionDiff::paragraphs(ChapterVersion::findOrFail($record->source_version_id)->body, ChapterVersion::findOrFail($record->candidate_version_id)->body),
+                        'oldLabel' => '正式稿 #'.$record->source_version_id, 'newLabel' => '润色稿 #'.$record->candidate_version_id]),
                 ]),
         ]);
     }

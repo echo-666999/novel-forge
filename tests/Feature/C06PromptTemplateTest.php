@@ -255,7 +255,10 @@ class C06PromptTemplateTest extends TestCase
         $this->assertSame(3, $page->instance()->getTableRecords()->total());
         $page->mountTableAction('view', (string) $second);
         $this->assertSame('view', $page->instance()->mountedActions[0]['name']);
-        $this->assertSame('补充设定第二版', collect($page->instance()->getSchema('mountedActionSchema0')->getComponents())->first(fn ($entry): bool => $entry->getName() === 'body')->getState());
+        // 非发布版本按段落与当前发布版本对照，新版本正文出现在对照中。
+        $modal = $page->instance()->getSchema('mountedActionSchema0')->toHtml();
+        $this->assertStringContainsString('补充设定第二版', $modal);
+        $this->assertStringContainsString('本版本 V2', $modal);
         Http::assertNothingSent();
     }
 

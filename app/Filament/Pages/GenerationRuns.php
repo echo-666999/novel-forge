@@ -58,7 +58,7 @@ class GenerationRuns extends Page implements HasTable
                 TextColumn::make('chapter.number')->label('章节'),
                 TextColumn::make('status')->label('状态')->badge()->formatStateUsing(fn (string $state): string => self::statuses()[$state] ?? $state),
                 TextColumn::make('next_step')->label('下一步骤'),
-                TextColumn::make('requests_used')->label('已用 / 授权请求')->formatStateUsing(fn (ChapterGenerationRun $record): string => $record->requests_used.' / '.$record->request_limit),
+                TextColumn::make('requests_used')->label('已用 / 授权请求')->formatStateUsing(fn (ChapterGenerationRun $record): string => $record->requests_used.' / '.$record->request_limit)->toggleable(isToggledHiddenByDefault: true),
                 TextColumn::make('parent_run_id')->label('父运行')->placeholder('首次运行'),
                 TextColumn::make('stop_reason')->label('停止原因')->placeholder('无')->wrap(),
                 TextColumn::make('created_at')->label('创建时间')->dateTime()->sortable(),

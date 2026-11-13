@@ -118,6 +118,36 @@ class C09EntityDefinitionsTest extends TestCase
         Livewire::test(EntityLibrary::class, ['record' => $novel->id])->searchTable('苏禾')->assertCanSeeTableRecords(EntityDefinitionVersion::all());
     }
 
+    /** 定义弹窗不再显示 JSON：修订候选先列出与来源版本的字段差异，再按分组显示完整定义；批准弹窗同样展示差异。 */
+    public function test_definition_modal_shows_fields_and_diff_against_source(): void
+    {
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        $actor = User::factory()->create();
+        $this->actingAs($actor);
+        $novel = Novel::factory()->create();
+        $service = app(EntityDefinitions::class);
+        $draft = $service->propose($novel->id, $actor, $this->definition(), '初稿');
+        $approved = $service->approve($novel->id, $draft->id, $actor, '明确批准', true);
+        $revised = $this->definition();
+        $revised['aliases'] = ['修理师傅'];
+        $revised['description'] = '修订后的描述：她在修复站负责最后一道质检。';
+        $candidate = $service->propose($novel->id, $actor, $revised, '补充别名', $approved->entity_id, $approved->id);
+
+        $page = Livewire::test(EntityLibrary::class, ['record' => $novel->id])->mountTableAction('inspect', $candidate);
+        $modal = $page->instance()->getMountedAction()->getModalContent()->render();
+        foreach (['与来源版本对照', '#'.$approved->id.'（已批准）', '#'.$candidate->id.'（候选）', '修改 1', '新增 1', '修订后的描述：她在修复站负责最后一道质检。', '修理师傅', '本版本完整定义', '基本信息'] as $text) {
+            $this->assertStringContainsString($text, $modal);
+        }
+        $this->assertStringNotContainsString('"description"', $modal);
+
+        // 批准会以候选为来源另存版本，只有最初的候选没有来源版本。
+        $first = Livewire::test(EntityLibrary::class, ['record' => $novel->id])->mountTableAction('inspect', $draft);
+        $this->assertStringContainsString('完整定义（首次建立，没有来源版本）', $first->instance()->getMountedAction()->getModalContent()->render());
+
+        $approval = Livewire::test(EntityLibrary::class, ['record' => $novel->id])->mountTableAction('approve', $candidate);
+        $this->assertStringContainsString('修订后的描述：她在修复站负责最后一道质检。', $approval->instance()->getSchema($approval->instance()->getMountedActionSchemaName())->toHtml());
+    }
+
     /** 批准规则进入真实新运行与质量检查契约，旧运行不重新读取数据库。 */
     public function test_new_run_freezes_approved_rules(): void
     {

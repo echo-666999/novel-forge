@@ -61,8 +61,8 @@ class C09NavigationTest extends TestCase
         $this->assertFalse($user->canAccessPanel(Panel::make()->id('other')));
         $this->actingAs($user);
         $this->get(ProductionOverview::getUrl())->assertOk()->assertSee('待我处理')->assertSee('正在运行')->assertSee('尚无有效消费者观测');
-        // UI01～UI32 覆盖清单已移到系统健康页，仅供开发验收查看。
-        $this->get(SystemHealth::getUrl())->assertOk()->assertSee('UI01')->assertSee('UI32');
+        // UI01～UI32 覆盖清单已从系统健康页移除，后台不再展示开发验收清单。
+        $this->get(SystemHealth::getUrl())->assertOk()->assertDontSee('UI01')->assertDontSee('UI32');
         $novel = Novel::factory()->create();
         $this->get(ProductionOverview::getUrl())->assertOk()->assertSee('打开工作台')->assertSee(NovelResource::getUrl('chapters', ['record' => $novel]), false);
     }
