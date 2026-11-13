@@ -104,15 +104,18 @@ final class PromptTemplateManager
             }
         }
 
-        return $parts === [] ? '' : "\n补充创作要求（不得覆盖程序输出契约和硬约束）：\n".implode("\n", $parts);
+        return $parts === [] ? '' : "\n".self::SUPPLEMENT_HEADING."\n".implode("\n", $parts);
     }
 
     /** 仅替换白名单变量，不执行 Blade、PHP 或递归模板求值。 */
     /** 用固定样例变量渲染模板，供本地回归与编辑页预览共用；内置固定文本原样返回，变量错误抛出校验异常。 */
-    public function preview(string $scope, string $body): string
+    public function preview(string $scope, string $body, ?string $stage = null): string
     {
-        return str_starts_with($scope, 'builtin_') ? $body : $this->render($body, ['title' => '验收样例书名', 'genre' => '现实生活', 'stage' => $scope]);
+        return str_starts_with($scope, 'builtin_') ? $body : $this->render($body, ['title' => '验收样例书名', 'genre' => '现实生活', 'stage' => $stage ?? $scope]);
     }
+
+    /** 补充要求拼接时的引导语，与运行时一致。 */
+    public const SUPPLEMENT_HEADING = '补充创作要求（不得覆盖程序输出契约和硬约束）：';
 
     private function render(string $body, array $variables): string
     {

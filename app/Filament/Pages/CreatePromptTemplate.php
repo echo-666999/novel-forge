@@ -29,6 +29,9 @@ class CreatePromptTemplate extends ManagePromptTemplates
     /** 最近一次自动带出的正文；作者改过正文后切换阶段不再覆盖。 */
     public string $loadedBody = '';
 
+    /** 编辑公共补充时，拼接预览以哪个阶段为例。 */
+    public string $assemblyStage = 'draft';
+
     /** 可选来源只预填文本；指定阶段时带出该阶段当前生效版本，保存仍经过新草稿服务。 */
     public function mount(): void
     {
@@ -125,6 +128,48 @@ class CreatePromptTemplate extends ManagePromptTemplates
 
         return ['rendered' => $rendered, 'error' => $error, 'publishedLabel' => $id === null ? null : $this->versionLabel($id),
             'diff' => $published === null || $published === $this->body ? null : BodyVersionDiff::paragraphs($published, $this->body)];
+    }
+
+    /** 拼接预览：按运行时顺序列出固定文本与补充要求，编辑中的一段替换为当前输入，其余取当前生效版本。
+     * @return array{stage: string, parts: list<array{source: string, label: string, body: ?string, editing: bool, error: ?string}>, hasSupplement: bool}
+     */
+    public function assembly(): array
+    {
+        $stage = match (true) {
+            str_starts_with($this->scope, 'builtin_') => substr($this->scope, 8),
+            $this->scope === 'common' => array_key_exists($this->assemblyStage, BuiltinPromptTemplates::defaults()) ? $this->assemblyStage : 'draft',
+            default => $this->scope,
+        };
+        $parts = [];
+        foreach (['builtin_'.$stage => '固定文本', 'common' => '公共补充', $stage => PromptTemplateManager::SCOPES[$stage].'补充'] as $key => $source) {
+            $editing = $key === $this->scope;
+            $id = $editing ? null : DB::table('prompt_template_routes')->where('scope', $key)->value('version_id');
+            $body = $editing ? $this->body : ($id === null ? null : (string) DB::table('prompt_template_versions')->where('id', $id)->value('body'));
+            // 未发布的补充不参与拼接；固定文本未发布时运行沿用程序内置文本。
+            if ($body === null && $key !== 'builtin_'.$stage) {
+                continue;
+            }
+            $error = null;
+            if ($body !== null && $body !== '') {
+                try {
+                    $body = app(PromptTemplateManager::class)->preview($key, $body, $stage);
+                } catch (ValidationException $exception) {
+                    $error = implode('；', $exception->validator->errors()->all());
+                }
+            }
+            $parts[] = ['source' => $source, 'editing' => $editing, 'body' => $body, 'error' => $error,
+                'label' => $editing ? '编辑中' : ($id === null ? '程序默认' : strtok($this->versionLabel($id), '（'))];
+        }
+
+        return ['stage' => PromptTemplateManager::SCOPES[$stage], 'parts' => $parts, 'hasSupplement' => count($parts) > 1];
+    }
+
+    /** 拼接预览可选的示例阶段（公共补充作用于这些阶段）。
+     * @return array<string, string>
+     */
+    public function assemblyStages(): array
+    {
+        return array_intersect_key(PromptTemplateManager::SCOPES, BuiltinPromptTemplates::defaults());
     }
 
     /** 新增页仅呈现表单，不加载全量版本历史。 */

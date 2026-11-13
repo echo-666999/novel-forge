@@ -336,6 +336,28 @@ class C06PromptTemplateTest extends TestCase
         Http::assertNothingSent();
     }
 
+    /** 拼接预览按运行时顺序列出固定文本、公共补充与本阶段补充，编辑中的一段替换为当前输入。 */
+    public function test_editor_shows_assembled_template_parts(): void
+    {
+        $this->publish('common', '公共要求：{{ stage }} 阶段保持克制');
+        $editor = Livewire::withQueryParams(['scope' => 'draft'])->test(CreatePromptTemplate::class)->set('body', '正文补充 {{ title }}');
+        $assembly = $editor->instance()->assembly();
+        $this->assertSame('正文', $assembly['stage']);
+        $this->assertSame(['固定文本', '公共补充', '正文补充'], array_column($assembly['parts'], 'source'));
+        $this->assertSame(['公共要求：draft 阶段保持克制', '正文补充 验收样例书名'], array_column(array_slice($assembly['parts'], 1), 'body'));
+        $this->assertSame([false, false, true], array_column($assembly['parts'], 'editing'));
+        $editor->assertSee('拼接后的模板部分 · 正文')->assertSee(PromptTemplateManager::SUPPLEMENT_HEADING)->assertSee('本书上下文');
+
+        // 编辑公共补充时按示例阶段拼接，阶段变量随示例阶段替换。
+        $common = Livewire::withQueryParams(['scope' => 'common'])->test(CreatePromptTemplate::class)->set('assemblyStage', 'outline')->assertSee('示例阶段');
+        $assembly = $common->instance()->assembly();
+        $this->assertSame('大纲', $assembly['stage']);
+        $this->assertSame(['固定文本', '公共补充'], array_column($assembly['parts'], 'source'));
+        $this->assertSame('公共要求：outline 阶段保持克制', $assembly['parts'][1]['body']);
+        $this->assertTrue($assembly['parts'][1]['editing']);
+        Http::assertNothingSent();
+    }
+
     /** 编辑页按阶段带出生效正文，作者改过的正文不被切换覆盖；预览渲染样例变量并对照生效版本；一步保存并发布。 */
     public function test_editor_loads_published_previews_and_saves_and_publishes(): void
     {
