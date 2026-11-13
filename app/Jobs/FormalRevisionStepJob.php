@@ -15,7 +15,7 @@ class FormalRevisionStepJob implements ShouldQueue
 
     public int $tries = 1;
 
-    public int $timeout = 210;
+    public int $timeout = 330;
 
     /** 与长请求正文任务共用长超时连接与队列。 */
     public function __construct(public int $chapterId, public string $step)

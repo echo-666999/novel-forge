@@ -16,8 +16,8 @@ class AdvanceProductionRunJob implements ShouldQueue
     /** 未知请求不由队列自动重发。 */
     public int $tries = 1;
 
-    /** 大于供应商180秒上限，小于连接240秒可见性超时。 */
-    public int $timeout = 210;
+    /** 大于扩展请求300秒HTTP上限，小于连接360秒可见性超时。 */
+    public int $timeout = 330;
 
     /** 编排编号来自持久化授权，不接受客户端动态步骤。 */
     public function __construct(public int $runId)

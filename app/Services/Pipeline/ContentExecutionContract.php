@@ -17,7 +17,7 @@ final class ContentExecutionContract
         if ($step === 'revise') {
             $count = count($context['anchors'] ?? []);
             // 动态计数说明不改写既有运行冻结的固定指令。
-            $instructions .= 'character_budget的负数表示删减，不能当作扩写要求；以target_change为目标，最终净变化不得超过maximum_change。超长时删去重复解释与无后果的操作描述，保留关键费用构成、时序和因果。';
+            $instructions .= 'character_budget的负数表示删减，不能当作扩写要求；以target_change为目标，最终净变化不得超过maximum_change。超长时删去重复解释与无后果的操作描述，保留关键情节事实、时序和因果。';
             // 显式给出当前目录的合计覆盖上限，防止多个合法范围拼起来仍覆盖整章。
             $instructions .= '当前正文共'.$count.'个原段；所有ranges覆盖的原段取并集后，最多覆盖'.max(0, $count - 1).'段。必须至少留下一个完整原段不在任何范围内。未涉及缺陷的段落不要输出，不能为凑总字数把所有段落都列入范围。';
         }

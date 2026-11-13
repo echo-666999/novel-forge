@@ -41,7 +41,7 @@ final class StyleSignals
         $recent = array_slice(array_keys($bodies), -self::RECENT, null);
 
         return ['version' => self::VERSION, 'window' => ['from' => array_key_first($bodies), 'to' => array_key_last($bodies)],
-            'instruction' => '以下是近章已反复使用的表达和最近几章的开头、结尾，仅为避免模板化的提示：本章不要照搬这些句式来开头、过渡或收束，换成与本章场景相符的具体写法。人物、地点、证据名称和必要的程序事实照常使用；不得为避开重复删减事实、线索、限制或因果步骤。',
+            'instruction' => '以下是近章已反复使用的表达和最近几章的开头、结尾，仅为避免模板化的提示：本章不要照搬这些句式来开头、过渡或收束，换成与本章场景相符的具体写法。人物、地点、物品名称照常使用；不得为避开重复删减事实或剧情线索，但重复出现的核对、登记、交接等操作描写应压缩，不必逐步复述。',
             'overused_phrases' => self::phrases($bodies),
             'recent_openings' => array_map(fn (int $number): array => ['chapter' => $number, 'text' => self::opening($bodies[$number])], $recent),
             'recent_endings' => array_map(fn (int $number): array => ['chapter' => $number, 'text' => self::ending($bodies[$number])], $recent)];

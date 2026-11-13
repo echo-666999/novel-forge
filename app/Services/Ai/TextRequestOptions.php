@@ -10,6 +10,9 @@ use InvalidArgumentException;
 /** 受限请求参数，不允许调用方绕过单次请求和阶段超时边界。 */
 final readonly class TextRequestOptions
 {
+    /** 扩展推理请求的最长HTTP超时；长超时队列任务必须大于此值，否则请求会被任务超时打断成未知结果。 */
+    public const EXTENDED_TIMEOUT_SECONDS = 300;
+
     /** 参数仅由用途工厂生成；正文仅接受当前统一协议。
      * @param  array{start: int, end: int, total: int}|null  $outlineRange
      * @param  string|null  $builtinInstructions  根运行冻结的固定提示词，空值兼容历史程序文本。
@@ -62,7 +65,7 @@ final readonly class TextRequestOptions
 
         $thinkingReview = $purpose === 'review' && ($context['deepseek_reasoning_effort'] ?? null) === 'low';
 
-        return new self($thinkingReview ? 16384 : ($purpose === 'review' ? 4096 : 8192), $thinkingReview ? 300 : 180, 0.0, false, submissionPurpose: $purpose, submissionContext: $context);
+        return new self($thinkingReview ? 16384 : ($purpose === 'review' ? 4096 : 8192), $thinkingReview ? self::EXTENDED_TIMEOUT_SECONDS : 180, 0.0, false, submissionPurpose: $purpose, submissionContext: $context);
     }
 
     /** 新旧协议选项隔离；统一执行器显式冻结版本并稳定JSONB目录顺序。 */
@@ -80,7 +83,7 @@ final readonly class TextRequestOptions
         }
         $context['version'] = ContentExecutionContract::VERSION;
 
-        return new self($step === 'fine' || ($step === 'check' && ! $repairThinking) ? 4096 : $bodyTokens, $repairThinking && $bodyTokens > 8192 ? 300 : 180, $step === 'check' ? 0.0 : $temperature, false, null, $step, $context);
+        return new self($step === 'fine' || ($step === 'check' && ! $repairThinking) ? 4096 : $bodyTokens, $repairThinking && $bodyTokens > 8192 ? self::EXTENDED_TIMEOUT_SECONDS : 180, $step === 'check' ? 0.0 : $temperature, false, null, $step, $context);
     }
 
     /** 正文请求的版本固定，不再根据已退役的策略字段推测版本。 */

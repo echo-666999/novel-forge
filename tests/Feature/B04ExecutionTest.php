@@ -4,6 +4,9 @@ namespace Tests\Feature;
 
 use App\Filament\Resources\Novels\Pages\ViewChapterContent;
 use App\Filament\Resources\Novels\Pages\ViewNovel;
+use App\Jobs\AdvanceProductionRunJob;
+use App\Jobs\FormalRevisionStepJob;
+use App\Jobs\PrepareChapterSubmissionJob;
 use App\Jobs\RunChapterStepJob;
 use App\Models\ChapterGenerationRun;
 use App\Models\ChapterProgressionCheck;
@@ -563,9 +566,16 @@ class B04ExecutionTest extends TestCase
         $job = Queue::pushed(RunChapterStepJob::class)->first();
         $this->assertSame('redis_content_acceptance', $job->connection);
         $this->assertSame('content-acceptance', $job->queue);
-        $this->assertSame(210, $job->timeout);
-        $this->assertSame(240, config('queue.connections.redis_content_acceptance.retry_after'));
+        $this->assertSame(330, $job->timeout);
+        $this->assertSame(360, config('queue.connections.redis_content_acceptance.retry_after'));
         $this->assertSame(75, (new RunChapterStepJob(1, 'old'))->timeout);
+        // 最长扩展请求必须先于任务超时结束，任务超时又必须先于消息重新可见。
+        $retryAfter = config('queue.connections.redis_content_acceptance.retry_after');
+        foreach ([new AdvanceProductionRunJob(1), new PrepareChapterSubmissionJob(1, 'submission'), new FormalRevisionStepJob(1, 'suggest'), new RunChapterStepJob(1, 'new', true)] as $longJob) {
+            $this->assertSame('redis_content_acceptance', $longJob->connection);
+            $this->assertGreaterThan(TextRequestOptions::EXTENDED_TIMEOUT_SECONDS, $longJob->timeout);
+            $this->assertLessThan($retryAfter, $longJob->timeout);
+        }
     }
 
     /** 投递失败保持零调用，可在原授权内明确继续，不伪造未知费用。 */

@@ -23,7 +23,7 @@ class RunChapterStepJob implements ShouldQueue
     {
         $this->onConnection($extendedTimeout ? 'redis_content_acceptance' : 'redis');
         if ($extendedTimeout) {
-            $this->timeout = 210;
+            $this->timeout = 330;
             $this->onQueue('content-acceptance');
         }
         $this->afterCommit();
