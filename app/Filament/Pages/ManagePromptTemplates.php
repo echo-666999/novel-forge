@@ -10,7 +10,6 @@ use Filament\Actions\Action;
 use Filament\Actions\ActionGroup;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
-use Filament\Infolists\Components\RepeatableEntry;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
@@ -60,8 +59,8 @@ class ManagePromptTemplates extends Page implements HasTable
     /** 当前阶段筛选，空值显示全部。 */
     public string $filterScope = '';
 
-    /** 当前状态筛选，空值显示全部。 */
-    public string $filterStatus = '';
+    /** 当前状态筛选：默认隐藏已退役旧版本，空值显示全部。 */
+    public string $filterStatus = 'active';
 
     /** 用户最近看到的发布指针，禁止客户端伪造并发令牌。 */
     #[Locked]
@@ -89,7 +88,45 @@ class ManagePromptTemplates extends Page implements HasTable
     {
         return Action::make('details')->label('详情')->modalHeading('Prompt 模板详情')->modalWidth('5xl')
             ->modalSubmitAction(false)->modalCancelActionLabel('关闭')
-            ->schema(fn (array $arguments): array => $this->detailFields((int) ($arguments['id'] ?? 0)));
+            ->schema(fn (array $arguments): array => $this->detailFields((int) ($arguments['id'] ?? 0)))
+            ->extraModalFooterActions(fn (array $arguments): array => $this->detailFooterActions((int) ($arguments['id'] ?? 0)));
+    }
+
+    /** 详情弹窗底部按版本状态给出下一步操作；执行后关闭弹窗并刷新列表，确认框仍按原规则弹出。
+     * @return array<Action>
+     */
+    private function detailFooterActions(int $id): array
+    {
+        $status = DB::table('prompt_template_versions')->where('id', $id)->value('status');
+        $scope = DB::table('prompt_template_versions')->where('id', $id)->value('scope');
+
+        return [
+            Action::make('detailTestAndPublish')->label('测试并发布')->color('success')->visible($status === 'draft')->requiresConfirmation()->cancelParentActions()
+                ->modalDescription('先做本地变量与渲染回归（不发送 AI 请求），通过后立即发布；仅影响此后新建的小说。')
+                ->action(function () use ($id): void {
+                    $this->testVersion($id);
+                    $this->publishVersion($id);
+                    $this->resetTable();
+                }),
+            Action::make('detailPublish')->label('发布')->color('success')->visible($status === 'tested')->requiresConfirmation()->cancelParentActions()
+                ->modalDescription('仅影响此后新建的小说；已有小说保持创建时冻结的模板。')
+                ->action(function () use ($id): void {
+                    $this->publishVersion($id);
+                    $this->resetTable();
+                }),
+            Action::make('detailRollback')->label('回滚到此版')->visible($status === 'retired')->requiresConfirmation()->cancelParentActions()
+                ->modalDescription('重新发布此历史版本；仅影响此后新建的小说。')
+                ->action(function () use ($id): void {
+                    $this->publishVersion($id, true);
+                    $this->resetTable();
+                }),
+            Action::make('detailCopy')->label('复制为新草稿')->color('gray')->url(CreatePromptTemplate::getUrl(['copy_from' => $id])),
+            Action::make('detailRetire')->label('退役（恢复程序默认）')->color('danger')->link()->visible($status === 'published')->requiresConfirmation()->cancelParentActions()
+                ->action(function () use ($scope): void {
+                    $this->retireVersion($scope);
+                    $this->resetTable();
+                }),
+        ];
     }
 
     /** 列表和独立详情动作共用同一只读内容，始终按记录编号重新读取。
@@ -151,20 +188,6 @@ class ManagePromptTemplates extends Page implements HasTable
         return PromptTemplateManager::SCOPES[$builtin ? substr($scope, 8) : $scope].' · '.($builtin ? '内置固定提示词' : '补充创作要求');
     }
 
-    /** 各阶段当前生效的固定文本与补充要求，一眼看清哪些阶段被改过；发布或退役后随渲染重算。 */
-    public function overview(Schema $schema): Schema
-    {
-        return $schema->components([
-            RepeatableEntry::make('overview')->hiddenLabel()->state(fn (): array => $this->overviewRows())->grid(['default' => 2, 'md' => 3, 'xl' => 5])->schema([
-                TextEntry::make('stage')->hiddenLabel()->weight('bold'),
-                Flex::make([
-                    TextEntry::make('fixed')->hiddenLabel()->badge()->grow(false)->color(fn (string $state): string => str_contains($state, '程序默认') ? 'gray' : 'info'),
-                    TextEntry::make('supplement')->hiddenLabel()->badge()->grow(false)->color(fn (string $state): string => $state === '无补充' ? 'gray' : 'success'),
-                ])->extraAttributes(['style' => 'flex-wrap: wrap']),
-            ]),
-        ]);
-    }
-
     /** 复用小说列表的原生表格、状态徽标与分页，编号先于分页及筛选计算。 */
     public function table(Table $table): Table
     {
@@ -215,7 +238,8 @@ class ManagePromptTemplates extends Page implements HasTable
             }),
             ActionGroup::make([
                 Action::make('view')->label('详情与对照')->icon('heroicon-m-eye')->modalHeading('Prompt 模板详情')->modalWidth('5xl')->modalSubmitAction(false)->modalCancelActionLabel('关闭')
-                    ->schema(fn (array $record): array => $this->detailFields($record['id'])),
+                    ->schema(fn (array $record): array => $this->detailFields($record['id']))
+                    ->extraModalFooterActions(fn (array $record): array => $this->detailFooterActions($record['id'])),
                 Action::make('copy')->label('复制为新草稿')->icon('heroicon-m-document-duplicate')->url(fn (array $record): string => CreatePromptTemplate::getUrl(['copy_from' => $record['id']])),
                 Action::make('test')->label('仅测试')->icon('heroicon-m-beaker')->visible(fn (array $record): bool => $record['status'] === 'draft')->action(function (array $record): void {
                     $this->testVersion($record['id']);
@@ -227,22 +251,28 @@ class ManagePromptTemplates extends Page implements HasTable
                     $this->resetTable();
                 }),
             ]),
-        ])->emptyStateHeading('当前筛选条件下没有模板版本');
+        ])->description(function (): ?string {
+            $hidden = $this->filterStatus === 'active' ? $this->getViewData()['hiddenRetired'] : 0;
+
+            return $hidden === 0 ? null : '已收起 '.$hidden.' 个已退役旧版本，状态选“全部状态”可查看。';
+        })->emptyStateHeading('当前筛选条件下没有模板版本');
     }
 
-    /** 概览行：固定文本与补充要求各取当前发布的版本号。
-     * @return list<array{stage: string, fixed: ?string, supplement: string}>
+    /** 概览行：每个阶段的固定文本与补充要求，带当前生效版本号、编号与编辑入口；发布或退役后随渲染重算。
+     * @return list<array{stage: string, items: list<array{kind: string, label: string, id: ?int, edit: string}>}>
      */
-    private function overviewRows(): array
+    public function overviewRows(): array
     {
         $labels = $this->getViewData()['versionLabels'];
         $rows = [];
         foreach (PromptTemplateManager::SCOPES as $scope => $stage) {
-            $fixed = $this->routes['builtin_'.$scope] ?? null;
-            $supplement = $this->routes[$scope] ?? null;
-            $rows[] = ['stage' => $stage,
-                'fixed' => $scope === 'common' ? null : ($fixed === null ? '固定：程序默认' : '固定 '.strtok($labels[$fixed] ?? '', '（')),
-                'supplement' => $supplement === null ? '无补充' : '补充 '.strtok($labels[$supplement] ?? '', '（')];
+            $items = [];
+            foreach ($scope === 'common' ? [$scope => '补充'] : ['builtin_'.$scope => '固定', $scope => '补充'] as $key => $kind) {
+                $id = $this->routes[$key] ?? null;
+                $items[] = ['kind' => $kind, 'id' => $id, 'edit' => CreatePromptTemplate::getUrl(['scope' => $key]),
+                    'label' => $id === null ? ($kind === '固定' ? '固定：程序默认' : '无补充') : $kind.' '.strtok($labels[$id] ?? '', '（')];
+            }
+            $rows[] = ['stage' => $stage, 'items' => $items];
         }
 
         return $rows;
@@ -286,7 +316,7 @@ class ManagePromptTemplates extends Page implements HasTable
                 $this->filterScope = '';
             }),
             Select::make('filterScope')->hiddenLabel()->options(fn (): array => ['' => '全部阶段', ...($this->filterType !== 'supplement' ? BuiltinPromptTemplates::scopes() : []), ...($this->filterType !== 'builtin' ? PromptTemplateManager::SCOPES : [])])->selectablePlaceholder(false)->live(),
-            Select::make('filterStatus')->hiddenLabel()->options(['' => '全部状态', 'draft' => '草稿', 'tested' => '已测试', 'published' => '已发布', 'retired' => '已退役'])->selectablePlaceholder(false)->live(),
+            Select::make('filterStatus')->hiddenLabel()->options(['active' => '未退役版本', '' => '全部状态', 'draft' => '草稿', 'tested' => '已测试', 'published' => '已发布', 'retired' => '已退役'])->selectablePlaceholder(false)->live(),
         ]);
     }
 
@@ -300,9 +330,16 @@ class ManagePromptTemplates extends Page implements HasTable
     public function saveDraft(): void
     {
         // 原生字段校验先返回就地提示，服务层继续执行独立业务校验。
-        $this->form->getState();
-        $id = app(PromptTemplateManager::class)->draft($this->scope, $this->body, $this->notes, auth()->id());
+        $id = $this->createDraft();
         $this->message = '已保存草稿 '.$this->versionLabel($id).'；发布前请执行变量与渲染回归。';
+    }
+
+    /** 校验表单并创建新草稿，返回记录编号；编辑页的“保存并发布”复用。 */
+    protected function createDraft(): int
+    {
+        $this->form->getState();
+
+        return app(PromptTemplateManager::class)->draft($this->scope, $this->body, $this->notes, auth()->id());
     }
 
     /** 从历史载入编辑区；后续保存仍是新版本。 */
@@ -345,7 +382,7 @@ class ManagePromptTemplates extends Page implements HasTable
     }
 
     /** 版本按同一类型和阶段的完整历史计数，记录编号继续用于审计关联。 */
-    private function versionLabel(int $id): string
+    protected function versionLabel(int $id): string
     {
         $version = DB::table('prompt_template_versions')->find($id);
         abort_unless($version !== null, 404);
@@ -367,12 +404,16 @@ class ManagePromptTemplates extends Page implements HasTable
         }
         // 固定类型在前，补充类型在后；各类型按业务阶段排序，组内新版本在前。
         $groups = [];
+        $hiddenRetired = 0;
         foreach ([...BuiltinPromptTemplates::scopes(), ...PromptTemplateManager::SCOPES] as $scope => $label) {
             $builtin = str_starts_with($scope, 'builtin_');
             if (($this->filterType === 'builtin' && ! $builtin) || ($this->filterType === 'supplement' && $builtin) || ($this->filterScope !== '' && $this->filterScope !== $scope)) {
                 continue;
             }
-            $versions = $allVersions->where('scope', $scope)->filter(fn ($version): bool => $this->filterStatus === '' || $version->status === $this->filterStatus)->sortByDesc('version_number');
+            $versions = $allVersions->where('scope', $scope)->filter(fn ($version): bool => match ($this->filterStatus) {
+                '' => true, 'active' => $version->status !== 'retired', default => $version->status === $this->filterStatus,
+            })->sortByDesc('version_number');
+            $hiddenRetired += $this->filterStatus === 'active' ? $allVersions->where('scope', $scope)->where('status', 'retired')->count() : 0;
             if ($versions->isNotEmpty()) {
                 $stage = PromptTemplateManager::SCOPES[$builtin ? substr($scope, 8) : $scope];
                 $groups[$scope] = ['title' => ($builtin ? '内置固定提示词' : '补充创作要求').' · '.$stage, 'stage' => $stage, 'kind' => $builtin ? '内置固定提示词' : '补充创作要求', 'versions' => $versions];
@@ -388,6 +429,6 @@ class ManagePromptTemplates extends Page implements HasTable
             }
         }
 
-        return ['bindings' => $bindings, 'groups' => $groups, 'versionLabels' => $versionLabels, 'references' => $references, 'published' => DB::table('prompt_template_versions')->whereIn('id', array_filter($this->routes))->get()->keyBy('scope')];
+        return ['bindings' => $bindings, 'groups' => $groups, 'hiddenRetired' => $hiddenRetired, 'versionLabels' => $versionLabels, 'references' => $references, 'published' => DB::table('prompt_template_versions')->whereIn('id', array_filter($this->routes))->get()->keyBy('scope')];
     }
 }

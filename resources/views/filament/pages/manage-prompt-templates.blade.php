@@ -16,7 +16,24 @@
                 <x-filament::icon-button icon="heroicon-o-question-mark-circle" color="gray" label="模板使用说明" :tooltip="$templateTips" />
             </span>
         </x-slot>
-        {{ $this->overview }}
+        {{-- 点版本标签查看详情，点“修改”带着该阶段当前正文进入编辑页。 --}}
+        <div style="display: grid; gap: .75rem; grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));">
+            @foreach ($this->overviewRows() as $row)
+                <div style="padding: .625rem .75rem; border-radius: .625rem; border: 1px solid rgba(127,127,127,.22);">
+                    <div style="font-weight: 600; font-size: .875rem; margin-bottom: .375rem;">{{ $row['stage'] }}</div>
+                    @foreach ($row['items'] as $item)
+                        <div style="display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin-top: .25rem;">
+                            @if ($item['id'] !== null)
+                                <x-filament::badge tag="button" :color="$item['kind'] === '固定' ? 'info' : 'success'" wire:click="mountAction('details', { id: {{ $item['id'] }} })" tooltip="查看当前生效正文">{{ $item['label'] }}</x-filament::badge>
+                            @else
+                                <x-filament::badge color="gray">{{ $item['label'] }}</x-filament::badge>
+                            @endif
+                            <x-filament::link :href="$item['edit']" size="sm">{{ $item['id'] === null && $item['kind'] === '补充' ? '添加' : '修改' }}</x-filament::link>
+                        </div>
+                    @endforeach
+                </div>
+            @endforeach
+        </div>
     </x-filament::section>
 
     <x-filament::section heading="版本历史" compact>

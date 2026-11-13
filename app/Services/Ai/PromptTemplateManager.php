@@ -28,7 +28,7 @@ final class PromptTemplateManager
             if (! in_array($version->status, ['draft', 'tested'], true)) {
                 throw ValidationException::withMessages(['template' => '历史版本只读，请复制为新草稿。']);
             }
-            $rendered = str_starts_with($version->scope, 'builtin_') ? $version->body : $this->render($version->body, ['title' => '验收样例书名', 'genre' => '现实生活', 'stage' => $version->scope]);
+            $rendered = $this->preview($version->scope, $version->body);
             $report = ['passed' => true, 'kind' => 'local-variable-render-regression', 'content_hash' => $version->content_hash, 'sample' => $rendered, 'real_ai_requests' => 0, 'tested_at' => now()->toIso8601String()];
             DB::table('prompt_template_versions')->where('id', $id)->update(['status' => 'tested', 'test_report' => json_encode($report, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)]);
 
@@ -108,6 +108,12 @@ final class PromptTemplateManager
     }
 
     /** 仅替换白名单变量，不执行 Blade、PHP 或递归模板求值。 */
+    /** 用固定样例变量渲染模板，供本地回归与编辑页预览共用；内置固定文本原样返回，变量错误抛出校验异常。 */
+    public function preview(string $scope, string $body): string
+    {
+        return str_starts_with($scope, 'builtin_') ? $body : $this->render($body, ['title' => '验收样例书名', 'genre' => '现实生活', 'stage' => $scope]);
+    }
+
     private function render(string $body, array $variables): string
     {
         $result = preg_replace_callback('/\{\{\s*([a-z_]+)\s*\}\}/', function (array $match) use ($variables): string {

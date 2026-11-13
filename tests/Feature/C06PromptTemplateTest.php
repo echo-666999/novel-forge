@@ -239,7 +239,9 @@ class C06PromptTemplateTest extends TestCase
         $manager->activate($second, $first, auth()->id());
         $page = Livewire::test(ManagePromptTemplates::class)->assertSee('各阶段当前生效')->assertSee('创建时间');
         $this->assertSame(10, $page->instance()->getTableRecords()->perPage());
-        $this->assertSame(12, $page->instance()->getTableRecords()->total());
+        // 已退役的设定 V1 默认收起，不计入列表。
+        $this->assertSame(11, $page->instance()->getTableRecords()->total());
+        $page->assertSee('已收起 1 个已退役旧版本');
         $page->set('filterScope', 'setting')->set('filterStatus', 'published');
         $this->assertSame([$second], $page->instance()->getTableRecords()->getCollection()->pluck('id')->all());
         $this->assertSame(['V2'], $page->instance()->getTableRecords()->getCollection()->pluck('version')->all());
@@ -304,6 +306,58 @@ class C06PromptTemplateTest extends TestCase
         $this->assertStringContainsString('暂无小说使用', $modal);
         $this->assertStringContainsString('<div style="white-space:pre-wrap;', $modal);
         $this->assertStringNotContainsString('完整模板正文', $modal);
+        Http::assertNothingSent();
+    }
+
+    /** 详情弹窗底部按状态直接操作；已退役旧版本默认收起并提示数量。 */
+    public function test_detail_modal_actions_and_retired_versions_collapsed(): void
+    {
+        $manager = app(PromptTemplateManager::class);
+        $first = $manager->draft('outline', '大纲补充第一版', '首版', auth()->id());
+        $page = Livewire::test(ManagePromptTemplates::class)
+            ->assertActionVisible([['name' => 'details', 'arguments' => ['id' => $first]], 'detailTestAndPublish'])
+            ->assertActionHidden([['name' => 'details', 'arguments' => ['id' => $first]], 'detailRollback'])
+            ->callAction([['name' => 'details', 'arguments' => ['id' => $first]], 'detailTestAndPublish'])->assertNotified('已发布');
+        $this->assertSame('published', DB::table('prompt_template_versions')->where('id', $first)->value('status'));
+
+        $second = $manager->draft('outline', '大纲补充第二版', '次版', auth()->id());
+        $manager->test($second);
+        $page = Livewire::test(ManagePromptTemplates::class)
+            ->callAction([['name' => 'details', 'arguments' => ['id' => $second]], 'detailPublish'])->assertNotified('已发布');
+        $this->assertSame('retired', DB::table('prompt_template_versions')->where('id', $first)->value('status'));
+
+        // 默认不列已退役版本，提示收起数量；切到全部状态后出现，并可在弹窗内回滚。
+        $page->assertSee('已收起 1 个已退役旧版本');
+        $this->assertNotContains($first, $page->instance()->getTableRecords()->getCollection()->pluck('id')->all());
+        $page->set('filterScope', 'outline')->set('filterStatus', '')->assertDontSee('已收起');
+        $this->assertContains($first, $page->instance()->getTableRecords()->getCollection()->pluck('id')->all());
+        $page->callAction([['name' => 'details', 'arguments' => ['id' => $first]], 'detailRollback'])->assertNotified('已回滚');
+        $this->assertSame('published', DB::table('prompt_template_versions')->where('id', $first)->value('status'));
+        Http::assertNothingSent();
+    }
+
+    /** 编辑页按阶段带出生效正文，作者改过的正文不被切换覆盖；预览渲染样例变量并对照生效版本；一步保存并发布。 */
+    public function test_editor_loads_published_previews_and_saves_and_publishes(): void
+    {
+        $fixedBody = DB::table('prompt_template_versions')->where('id', DB::table('prompt_template_routes')->where('scope', 'builtin_draft')->value('version_id'))->value('body');
+        $editor = Livewire::withQueryParams(['scope' => 'builtin_draft'])->test(CreatePromptTemplate::class)
+            ->assertSet('scope', 'builtin_draft')->assertSet('body', $fixedBody)->assertSee('与当前生效的')->assertSee('完全相同');
+        $editor->set('scope', 'draft')->assertSet('body', '')->set('body', '书名 {{ title }} 的正文要求')
+            ->assertSee('书名 验收样例书名 的正文要求')->assertSee('本阶段暂无生效版本')
+            ->set('scope', 'outline')->assertSet('body', '书名 {{ title }} 的正文要求');
+        $editor->set('body', '坏变量 {{ unknown }}')->assertSee('未知模板变量：unknown');
+
+        Livewire::test(CreatePromptTemplate::class)->set('scope', 'draft')->set('body', '一步发布 {{ genre }}')->set('notes', '一步发布')
+            ->call('saveAndPublish')->assertHasNoErrors()->assertNotified()->assertRedirect(ManagePromptTemplates::getUrl());
+        $id = DB::table('prompt_template_routes')->where('scope', 'draft')->value('version_id');
+        $this->assertSame('一步发布 {{ genre }}', DB::table('prompt_template_versions')->where('id', $id)->value('body'));
+        $this->assertSame('published', DB::table('prompt_template_versions')->where('id', $id)->value('status'));
+
+        // 概览卡片：已生效项可点开详情，未生效补充提供“添加”入口并带上阶段参数。
+        $page = Livewire::test(ManagePromptTemplates::class)->assertSee('补充 V1')->assertSee('添加')
+            ->assertSee(CreatePromptTemplate::getUrl(['scope' => 'builtin_draft']), false)
+            ->assertSeeHtml("mountAction('details', { id: ".$id.' })');
+        $page->mountAction('details', ['id' => $id])->assertActionMounted('details');
         Http::assertNothingSent();
     }
 
