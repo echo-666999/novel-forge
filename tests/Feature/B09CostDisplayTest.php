@@ -111,4 +111,14 @@ class B09CostDisplayTest extends TestCase
         CostLog::factory()->create(['novel_id' => $another->id, 'mode' => 'real', 'actual_cost' => '999999999999.00000000', 'currency' => 'USD']);
         $this->assertSame('completed', app(NovelPipelineService::class)->run($another, true)->reason);
     }
+
+    /** 汇总为一行标签；明细默认只显示时间、模型、结果、计费状态与合并后的费用，编号与模式列默认隐藏。 */
+    public function test_cost_page_shows_summary_badges_and_compact_columns(): void
+    {
+        $novel = Novel::factory()->create();
+        CostLog::factory()->create(['novel_id' => $novel->id, 'mode' => 'real', 'status' => 'succeeded', 'billing_status' => 'estimated', 'currency' => 'CNY', 'estimated_cost' => '0.12000000']);
+        Livewire::test(ViewNovelCosts::class, ['record' => $novel->id])->assertSee('真实请求 1 次')->assertSee('CNY 未结算估算 0.12000000')
+            ->assertSee('约 0.12000000 CNY')->assertCanRenderTableColumn('cost')->assertCanNotRenderTableColumn('id')->assertCanNotRenderTableColumn('mode')->assertCanNotRenderTableColumn('novel_stage_id');
+        Http::assertNothingSent();
+    }
 }

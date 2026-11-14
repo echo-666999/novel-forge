@@ -8,9 +8,11 @@ use App\Filament\Resources\Novels\NovelResource;
 use App\Filament\Resources\Novels\Pages\CreateNovel;
 use App\Filament\Resources\Novels\Pages\ListNovels;
 use App\Filament\Resources\Novels\Pages\ViewNovel;
+use App\Filament\Resources\Novels\Pages\ViewNovelCosts;
 use App\Jobs\RunNovelPipelineJob;
 use App\Jobs\RunSettingJob;
 use App\Models\Chapter;
+use App\Models\CostLog;
 use App\Models\Novel;
 use App\Models\User;
 use App\Services\Pipeline\CreateNovelService;
@@ -231,7 +233,7 @@ class B01NovelCreationTest extends TestCase
         Livewire::test(ListNovels::class)->assertTableActionVisible('archive', $novel)->assertTableActionVisible('copyInput', $novel);
     }
 
-    /** 详情页顶部以标签汇总状态、章数、篇幅、执行次数与预算，近期章节合并章号标题并标注状态。 */
+    /** 详情页顶部以标签汇总状态、章数与篇幅，请求与费用收进底部记录，近期章节合并章号标题并标注状态。 */
     public function test_details_show_compact_overview_badges_and_recent_chapters(): void
     {
         $novel = Novel::factory()->create(['title' => '归舟录', 'target_chapters' => 20, 'chapters_done' => 0, 'execution_count' => 3, 'max_execution_count' => 10,
@@ -239,9 +241,24 @@ class B01NovelCreationTest extends TestCase
         Chapter::factory()->create(['novel_id' => $novel->id, 'number' => 1, 'title' => '缺口钥匙']);
 
         Livewire::test(ViewNovel::class, ['record' => $novel->id])
-            ->assertSee('已完成 0 / 20 章')->assertSee('每章 2000～3000 字')->assertSee('执行 3 / 10')->assertSee('未设预算')
+            ->assertSee('已完成 0 / 20 章')->assertSee('每章 2000～3000 字')->assertDontSee('预算正常')
+            // 请求与费用统一收进底部记录区块，标题描述给出一行摘要。
+            ->assertSee('请求与费用记录')->assertSee('真实请求 0 次 · 执行 3 / 10')->assertDontSee('预算、费用与执行次数')->assertDontSee('设定执行记录')
             ->assertSee('第1章 缺口钥匙')->assertSee('生成中')->assertSee('去处理')
             ->assertDontSee('篇幅计划')->assertDontSee('运行状态');
+    }
+
+    /** 有金额未知的真实请求时顶部出现提醒标签，带筛选直达费用明细；低频操作收进“更多”菜单。 */
+    public function test_unknown_cost_badge_links_to_filtered_costs_and_secondary_actions_grouped(): void
+    {
+        $novel = Novel::factory()->create();
+        CostLog::factory()->create(['novel_id' => $novel->id, 'mode' => 'real', 'status' => 'unknown', 'billing_status' => 'unknown']);
+
+        Livewire::test(ViewNovel::class, ['record' => $novel->id])->assertSee('1 次请求金额未知')
+            ->assertSee(e(NovelResource::getUrl('costs', ['record' => $novel, 'tableFilters' => ['billing_status' => ['value' => 'unknown']]])), false)
+            ->assertSee('真实请求 1 次 · 金额未知 1 次')->assertSee('更多')->assertActionVisible('refreshStatus');
+        Livewire::withQueryParams(['tableFilters' => ['billing_status' => ['value' => 'unknown']]])->test(ViewNovelCosts::class, ['record' => $novel->id])
+            ->assertSet('tableFilters.billing_status.value', 'unknown');
     }
 
     /** 服务端策略和路由同时禁止编辑删除，未登录请求必须去登录页。 */

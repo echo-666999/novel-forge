@@ -10,7 +10,6 @@ use Filament\Actions\Action;
 use Filament\Forms\Components\DatePicker;
 use Filament\Pages\Page;
 use Filament\Schemas\Components\EmbeddedTable;
-use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\TextColumn;
@@ -43,7 +42,6 @@ class GenerationRuns extends Page implements HasTable
     public function content(Schema $schema): Schema
     {
         return $schema->components([
-            Section::make('章节运行历史')->description('保留所有历史尝试；旧运行失败不代表当前小说失败。暂停、恢复及生成范围仍在原书运行台明确确认，列表不会自动重发请求。')->schema([]),
             EmbeddedTable::make(),
         ]);
     }
@@ -52,16 +50,22 @@ class GenerationRuns extends Page implements HasTable
     public function table(Table $table): Table
     {
         return $table->query(ChapterGenerationRun::with('chapter.novel'))->defaultSort('id', 'desc')
+            ->description('保留全部历史运行；暂停、恢复与生成范围在各书的运行台确认。')
             ->columns([
-                TextColumn::make('id')->label('运行编号')->sortable(),
-                TextColumn::make('chapter.novel.title')->label('小说')->searchable(),
-                TextColumn::make('chapter.number')->label('章节'),
-                TextColumn::make('status')->label('状态')->badge()->formatStateUsing(fn (string $state): string => self::statuses()[$state] ?? $state),
-                TextColumn::make('next_step')->label('下一步骤'),
+                TextColumn::make('chapter.novel.title')->label('小说')->searchable()->weight('bold')
+                    ->description(fn (ChapterGenerationRun $record): string => '第'.$record->chapter->number.'章'),
+                TextColumn::make('status')->label('状态')->badge()->formatStateUsing(fn (string $state): string => self::statuses()[$state] ?? $state)
+                    ->color(fn (string $state): string => match ($state) {
+                        'completed' => 'success', 'running', 'pending' => 'info', 'paused' => 'warning', 'error', 'failed' => 'danger', default => 'gray'
+                    }),
+                TextColumn::make('next_step')->label('下一步骤')->placeholder('无')->formatStateUsing(fn (?string $state): string => match ($state) {
+                    'fine' => '章节细纲', 'draft' => '正文生成', 'check' => '独立推进检查', 'revise' => '推进点修订', 'length_repair' => '定点扩写', default => (string) $state
+                }),
+                TextColumn::make('stop_reason')->label('停止原因')->placeholder('无')->wrap()->lineClamp(2),
+                TextColumn::make('created_at')->label('创建时间')->since()->dateTimeTooltip('Y-m-d H:i:s')->sortable()->color('gray'),
                 TextColumn::make('requests_used')->label('已用 / 授权请求')->formatStateUsing(fn (ChapterGenerationRun $record): string => $record->requests_used.' / '.$record->request_limit)->toggleable(isToggledHiddenByDefault: true),
-                TextColumn::make('parent_run_id')->label('父运行')->placeholder('首次运行'),
-                TextColumn::make('stop_reason')->label('停止原因')->placeholder('无')->wrap(),
-                TextColumn::make('created_at')->label('创建时间')->dateTime()->sortable(),
+                TextColumn::make('id')->label('运行编号')->sortable()->color('gray')->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('parent_run_id')->label('父运行')->placeholder('首次运行')->color('gray')->toggleable(isToggledHiddenByDefault: true),
             ])->filters([
                 SelectFilter::make('novel')->label('小说')->options(fn (): array => Novel::orderByDesc('id')->pluck('title', 'id')->all())->searchable()
                     ->query(fn (Builder $query, array $data): Builder => $query->when($data['value'] ?? null, fn (Builder $q, $id): Builder => $q->whereHas('chapter', fn (Builder $chapter): Builder => $chapter->where('novel_id', $id)))),

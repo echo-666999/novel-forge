@@ -99,22 +99,38 @@ class NovelResource extends Resource
         };
     }
 
-    /** 单本小说页面的子导航放在左侧，按规划、人物与世界、正文、生产、交付分组。 */
+    /** 单本小说页面的子导航放在左侧，按规划、人物与世界、正文、交付分组。 */
     protected static ?SubNavigationPosition $subNavigationPosition = SubNavigationPosition::Start;
 
+    /** 诊断与低频页面，统一收进默认收起的“更多”分组。
+     * @var list<class-string<Page>>
+     */
+    public const MORE_PAGES = [
+        Pages\Requirements::class, Pages\StoryStructurePlan::class, Pages\ViewNovelRun::class, Pages\ViewContextManifests::class,
+        Pages\SearchLab::class, Pages\ViewNovelCosts::class, Pages\ManageBaselines::class, Pages\ViewStoryState::class,
+    ];
+
     /** 进入任意一本书后显示的子导航；需要额外参数的页面（编辑草稿、验收阅读）从对应页面进入。
+     * 显式传入的分组排在前面，按此顺序固定分组次序，“更多”放在最后。
+     *
      * @return array<NavigationItem|NavigationGroup>
      */
     public static function getRecordSubNavigation(Page $page): array
     {
-        return $page->generateNavigationItems([
-            ViewNovel::class,
-            Pages\Requirements::class, Pages\BlueprintVersions::class, Pages\StoryStructurePlan::class, ViewOutlinePlan::class, Pages\ScenePlans::class,
-            Pages\EntityLibrary::class, Pages\ViewCharacterKnowledge::class, Pages\ViewForeshadows::class,
-            Pages\ChapterDirectory::class, ViewChapterContent::class, Pages\ReadChapter::class,
-            Pages\ViewNovelRun::class, Pages\ViewContextManifests::class, Pages\SearchLab::class,
-            Pages\AcceptanceWorkbench::class, Pages\ExportCenter::class, Pages\ViewNovelCosts::class, Pages\FormalRevisions::class, Pages\ManageBaselines::class, Pages\ViewStoryState::class,
-        ]);
+        $more = array_map(fn (NavigationItem $item): NavigationItem => $item->group('更多'), $page->generateNavigationItems(self::MORE_PAGES));
+
+        return [
+            ...array_map(fn (string $label): NavigationGroup => NavigationGroup::make($label), ['规划', '人物与世界', '正文', '交付']),
+            NavigationGroup::make('更多')->extraSidebarAttributes(['data-nf-more' => 'true']),
+            ...$page->generateNavigationItems([
+                ViewNovel::class,
+                Pages\BlueprintVersions::class, ViewOutlinePlan::class, Pages\ScenePlans::class,
+                Pages\EntityLibrary::class, Pages\ViewCharacterKnowledge::class, Pages\ViewForeshadows::class,
+                Pages\ChapterDirectory::class, ViewChapterContent::class, Pages\ReadChapter::class,
+                Pages\AcceptanceWorkbench::class, Pages\ExportCenter::class, Pages\FormalRevisions::class,
+            ]),
+            ...$more,
+        ];
     }
 
     /** 只注册列表、创建与详情路由，不暴露编辑或删除入口。

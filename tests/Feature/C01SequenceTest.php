@@ -1206,6 +1206,7 @@ class C01SequenceTest extends TestCase
         $revision = FormalRevision::sole();
         $first = $revision->chapters()->firstOrFail();
         $page = Livewire::test(FormalRevisions::class, ['record' => $novel->id])->assertActionHidden('start')
+            ->assertSee('第1～2章')->assertSee('已用请求 0 / 4 次')->assertDontSee('最近错误')
             ->callTableAction('suggest', $first)->assertNotified('已排队生成建议');
         Queue::assertPushed(FormalRevisionStepJob::class, fn (FormalRevisionStepJob $job): bool => $job->chapterId === $first->id && $job->step === 'suggest');
         (new FormalRevisionStepJob($first->id, 'suggest'))->handle(app(FormalRevisionService::class), app(AiTextGenerationService::class));

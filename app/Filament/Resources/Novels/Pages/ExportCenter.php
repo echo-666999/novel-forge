@@ -68,9 +68,9 @@ class ExportCenter extends Page implements HasTable
     public function table(Table $table): Table
     {
         return $table->query(NovelExport::where('novel_id', $this->getRecord()->id)->where('actor_id', Filament::auth()->id()))->defaultSort('id', 'desc')->poll('5s')->columns([
-            TextColumn::make('id')->label('任务编号'), TextColumn::make('end_chapter')->label('首章至章号'), TextColumn::make('format')->label('格式'),
+            TextColumn::make('id')->label('任务编号')->prefix('#')->color('gray'), TextColumn::make('end_chapter')->label('首章至章号'), TextColumn::make('format')->label('格式'),
             TextColumn::make('status')->label('文件状态')->formatStateUsing(fn ($state, NovelExport $record): string => $record->deleted_at !== null ? '派生文件已移除' : ($record->status === 'ready' && $record->expires_at?->isPast() ? '已过期，等待清理' : self::statuses()[$state])),
-            TextColumn::make('byte_size')->label('文件字节数')->placeholder('未生成'), TextColumn::make('created_at')->label('申请时间')->dateTime(),
+            TextColumn::make('byte_size')->label('文件字节数')->placeholder('未生成'), TextColumn::make('created_at')->label('申请时间')->since()->dateTimeTooltip('Y-m-d H:i:s')->color('gray'),
             TextColumn::make('expires_at')->label('保留截止')->dateTime()->placeholder('完成后起算'),
         ])->filters([
             SelectFilter::make('format')->label('格式')->options(['txt' => 'TXT', 'md' => 'Markdown']),

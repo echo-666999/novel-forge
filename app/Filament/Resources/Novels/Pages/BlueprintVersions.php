@@ -4,6 +4,7 @@ namespace App\Filament\Resources\Novels\Pages;
 
 use App\Filament\Resources\Novels\NovelResource;
 use App\Filament\Resources\Novels\Schemas\SettingConfirmationForm;
+use App\Filament\Support\HelpHint;
 use App\Models\NovelSettingConfirmation;
 use App\Models\RequirementVersion;
 use App\Services\Pipeline\ConfirmSettingService;
@@ -63,10 +64,10 @@ class BlueprintVersions extends Page implements HasTable
     public function content(Schema $schema): Schema
     {
         return $schema->components([
-            Section::make('版本边界')->description('确认设定是候选规划来源，不是正式剧情。新增确认版本不会替换既有大纲及章节冻结来源；原始生成结果始终保留。')->schema([]),
+            Section::make('版本边界')->compact()->description('确认设定是规划来源，不是正式剧情。')->headerActions([HelpHint::action('确认设定是候选规划来源，不是正式剧情。新增确认版本不会替换既有大纲及章节冻结来源；原始生成结果始终保留。')])->schema([]),
             EmbeddedTable::make(),
             Section::make(fn (): string => count($this->comparison) === 2 ? '版本对照：确认记录 #'.$this->comparison[0].' → #'.$this->comparison[1] : '版本对照')
-                ->description('按字段对照两个确认版本：人物按姓名、作者决定按问题匹配，规则与保留细节按条目比较。')
+                ->description('按字段对照两个确认版本。')->headerActions([HelpHint::action('人物按姓名、作者决定按问题匹配，规则与保留细节按条目比较。', 'compareHelp')])
                 ->visible(fn (): bool => count($this->comparison) === 2)
                 ->headerActions([Action::make('closeComparison')->label('关闭对照')->link()->action(fn () => $this->comparison = [])])
                 ->schema([
@@ -85,7 +86,7 @@ class BlueprintVersions extends Page implements HasTable
     public function table(Table $table): Table
     {
         return $table->query(NovelSettingConfirmation::where('novel_id', $this->getRecord()->id))->defaultSort('id', 'desc')->columns([
-            TextColumn::make('id')->label('确认记录编号')->sortable(),
+            TextColumn::make('id')->label('确认记录编号')->prefix('#')->color('gray')->sortable(),
             TextColumn::make('source_stage_id')->label('生成来源阶段'),
             TextColumn::make('confirmed_by')->label('确认账号'),
             TextColumn::make('confirmed_at')->label('确认时间')->dateTime(),

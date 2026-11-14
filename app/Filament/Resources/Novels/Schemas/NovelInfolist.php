@@ -44,15 +44,16 @@ class NovelInfolist
                                 ->state(fn (Novel $record): string => '已完成 '.$record->chapters_done.' / '.$record->target_chapters.' 章'),
                             TextEntry::make('length_overview')->hiddenLabel()->badge()->grow(false)->color('gray')
                                 ->state(fn (Novel $record): string => filled($record->chapter_length_policy['min_characters'] ?? null) ? '每章 '.$record->chapter_length_policy['min_characters'].'～'.$record->chapter_length_policy['max_characters'].' 字' : '每章字数未设置'),
-                            TextEntry::make('execution_overview')->hiddenLabel()->badge()->grow(false)->color('gray')
-                                ->state(fn (Novel $record): string => '执行 '.$record->execution_count.' / '.$record->max_execution_count),
+                            // 请求与费用默认收起，顶部只在需要处理时出现提醒标签。
                             TextEntry::make('budget_overview')->hiddenLabel()->badge()->grow(false)
-                                ->state(fn (Novel $record): string => match (app(NovelBudget::class)->summary($record)['state']) {
-                                    'exhausted' => '预算已用完', 'warning' => '预算已用超过80%', default => app(NovelBudget::class)->summary($record)['budget'] === null ? '未设预算' : '预算正常',
-                                })
-                                ->color(fn (Novel $record): string => match (app(NovelBudget::class)->summary($record)['state']) {
-                                    'exhausted' => 'danger', 'warning' => 'warning', default => 'gray',
-                                }),
+                                ->visible(fn (Novel $record): bool => in_array(app(NovelBudget::class)->summary($record)['state'], ['exhausted', 'warning'], true))
+                                ->state(fn (Novel $record): string => app(NovelBudget::class)->summary($record)['state'] === 'exhausted' ? '预算已用完' : '预算已用超过80%')
+                                ->color(fn (Novel $record): string => app(NovelBudget::class)->summary($record)['state'] === 'exhausted' ? 'danger' : 'warning'),
+                            TextEntry::make('unknown_cost_overview')->hiddenLabel()->badge()->grow(false)->color('warning')
+                                ->visible(fn (Novel $record): bool => app(NovelCostSummary::class)->forNovel($record->id)['unknown_amounts'] > 0)
+                                ->state(fn (Novel $record): string => app(NovelCostSummary::class)->forNovel($record->id)['unknown_amounts'].' 次请求金额未知')
+                                ->tooltip('未登记单价或尚未结算，不代表免费；点击查看费用明细')
+                                ->url(fn (Novel $record): string => NovelResource::getUrl('costs', ['record' => $record, 'tableFilters' => ['billing_status' => ['value' => 'unknown']]])),
                         ])->extraAttributes(['style' => 'flex-wrap: wrap']),
                         TextEntry::make('progress_headline')->hiddenLabel()->weight('bold')->size('lg')->state(fn (Novel $record): string => app(NovelProgressQuery::class)->for($record)['headline']),
                         TextEntry::make('progress_detail')->hiddenLabel()->state(fn (Novel $record): string => app(NovelProgressQuery::class)->for($record)['detail']),
@@ -88,18 +89,6 @@ class NovelInfolist
                         TextEntry::make('creative_brief_text')->label('补充创作要求')->visible(fn (Novel $record): bool => filled($record->creative_brief))
                             ->state(fn (Novel $record): array => collect($record->creative_brief ?? [])->map(fn (string $value, string $key): string => (CreateNovelService::BRIEF_FIELDS[$key] ?? $key).'：'.$value)->values()->all())->listWithLineBreaks()->bulleted(),
                     ]),
-                // 后台以维护小说内容为主：费用与执行次数默认收起；预算接近或已经用尽时自动展开提醒。
-                Section::make('预算、费用与执行次数')->collapsible()->compact()
-                    ->collapsed(fn (Novel $record): bool => ! in_array(app(NovelBudget::class)->summary($record)['state'], ['exhausted', 'warning'], true))
-                    ->description('设了预算时，每次请求前按单价上限预留，余额不足即在发送前停下；未设预算时只受执行次数上限约束。金额未知不等于免费。')->columnSpanFull()->schema([
-                        TextEntry::make('budget_summary')->label('预算')->state(fn (Novel $record): string => app(NovelBudget::class)->describe($record))
-                            ->color(fn (Novel $record): ?string => match (app(NovelBudget::class)->summary($record)['state']) {
-                                'exhausted' => 'danger', 'warning' => 'warning', default => null
-                            }),
-                        TextEntry::make('cost_summary')->label('全部调用')->state(fn (Novel $record): string => app(NovelCostSummary::class)->describe(app(NovelCostSummary::class)->forNovel($record->id))),
-                        TextEntry::make('execution_count')->label('执行次数 / 上限')
-                            ->formatStateUsing(fn (Novel $record): string => $record->execution_count.' / '.$record->max_execution_count),
-                    ]),
                 Section::make('最新确认设定版本')->collapsible()->compact()->columnSpanFull()
                     ->visible(fn (Novel $record): bool => $record->generation_mode === GenerationMode::SettingReal && $record->settingConfirmations()->exists())
                     ->description('这里保存作者修订与决定；下方供应商原始候选保留原样。确认不等于已经发送大纲请求。')
@@ -116,22 +105,32 @@ class NovelInfolist
                                 ]),
                             ]),
                     ]),
-                Section::make('设定执行记录')->collapsible()->collapsed()->compact()->columnSpanFull()
-                    ->visible(fn (Novel $record): bool => $record->generation_mode === GenerationMode::SettingReal)
-                    ->description('保留每次尝试。只有结构校验通过的结果才显示为设定候选，未知费用不代表免费。')
+                Section::make('原始设定候选')->collapsible()->collapsed()->compact()->columnSpanFull()
+                    ->visible(fn (Novel $record): bool => $record->generation_mode === GenerationMode::SettingReal && self::latestCandidate($record) !== null)
+                    ->description('模型最近一次通过结构校验的设定结果，保留原样。')
                     ->schema([
-                        RepeatableEntry::make('setting_attempts')->label('设定尝试')->hiddenLabel()->state(fn (Novel $record): array => self::attempts($record))
-                            ->placeholder('任务尚未领取，请稍后刷新。')->columns(3)->schema([
-                                TextEntry::make('id')->label('阶段编号'),
-                                TextEntry::make('attempt')->label('尝试次数'),
-                                TextEntry::make('status')->label('执行状态'),
-                                TextEntry::make('model')->label('请求模型'),
-                                TextEntry::make('duration')->label('耗时'),
-                                TextEntry::make('cost')->label('费用'),
-                                TextEntry::make('cost_log_id')->label('调用日志编号')->placeholder('尚无调用记录'),
-                                TextEntry::make('error')->label('失败说明')->placeholder('无')->columnSpanFull(),
-                                ...self::settingFields(),
+                        RepeatableEntry::make('setting_candidate')->hiddenLabel()->contained(false)
+                            ->state(fn (Novel $record): array => array_filter([self::latestCandidate($record)]))
+                            ->schema(self::settingFields()),
+                    ]),
+                // 请求、费用、预算与执行次数统一收起在页面底部，标题描述给出一行摘要。
+                Section::make('请求与费用记录')->collapsible()->collapsed()->compact()->columnSpanFull()
+                    ->description(fn (Novel $record): string => app(NovelCostSummary::class)->brief(app(NovelCostSummary::class)->forNovel($record->id)).' · 执行 '.$record->execution_count.' / '.$record->max_execution_count)
+                    ->schema([
+                        TextEntry::make('budget_summary')->label('预算')->state(fn (Novel $record): string => app(NovelBudget::class)->describe($record))
+                            ->color(fn (Novel $record): ?string => match (app(NovelBudget::class)->summary($record)['state']) {
+                                'exhausted' => 'danger', 'warning' => 'warning', default => null
+                            }),
+                        TextEntry::make('cost_summary')->label('全部调用')->state(fn (Novel $record): string => app(NovelCostSummary::class)->describe(app(NovelCostSummary::class)->forNovel($record->id))),
+                        TextEntry::make('execution_count')->label('执行次数 / 上限')
+                            ->formatStateUsing(fn (Novel $record): string => $record->execution_count.' / '.$record->max_execution_count),
+                        RepeatableEntry::make('setting_attempts')->label('设定请求')->visible(fn (Novel $record): bool => $record->generation_mode === GenerationMode::SettingReal)
+                            ->state(fn (Novel $record): array => self::attempts($record))->placeholder('任务尚未领取，请稍后刷新。')->schema([
+                                TextEntry::make('line')->hiddenLabel(),
+                                TextEntry::make('error')->hiddenLabel()->color('danger')->visible(fn (?string $state): bool => filled($state)),
                             ]),
+                        TextEntry::make('costs_link')->hiddenLabel()->state('查看费用明细 →')->color('primary')
+                            ->url(fn (Novel $record): string => NovelResource::getUrl('costs', ['record' => $record])),
                     ]),
             ]);
     }
@@ -187,24 +186,38 @@ class NovelInfolist
         })->all();
     }
 
-    /** 一次性读取有序尝试并投影可展示字段，认证信息和原始供应商响应不进入页面。
-     * @return list<array<string, mixed>>
+    /** 设定请求压成一行：第几次 · 状态 · 模型 · 耗时 · 费用，编号附在末尾；认证信息和原始供应商响应不进入页面。
+     * @return list<array{line: string, error: ?string}>
      */
     private static function attempts(Novel $novel): array
     {
         $logs = CostLog::query()->select(['id', 'novel_stage_id'])->where('novel_id', $novel->id)->orderBy('id')->get()->keyBy('novel_stage_id');
 
         return $novel->stages()->where('stage', Stage::Setting->value)->orderBy('id')->get()->map(function (NovelStage $stage) use ($logs): array {
-            $setting = data_get($stage->output, 'data.setting', []);
             $cost = $stage->cost;
+            $logId = data_get($stage->output, 'data.cost_log_id') ?? $logs->get($stage->id)?->id;
 
-            return [
-                ...$setting, 'id' => $stage->id, 'attempt' => $stage->execution_count, 'status' => $stage->status->label(),
-                'model' => data_get($stage->input, 'generation_config.model'),
-                'duration' => $stage->duration_ms === null ? '未知' : $stage->duration_ms.'毫秒',
-                'cost' => ($cost['billing_status'] ?? 'unknown') === 'estimated' ? '估算 '.$cost['estimated_cost'].' '.$cost['currency'] : '未知（请核查调用记录）',
-                'cost_log_id' => data_get($stage->output, 'data.cost_log_id') ?? $logs->get($stage->id)?->id, 'error' => $stage->error_message,
-            ];
+            return ['line' => implode(' · ', array_filter([
+                '第 '.$stage->execution_count.' 次', $stage->status->label(), data_get($stage->input, 'generation_config.model'),
+                $stage->duration_ms === null ? null : round($stage->duration_ms / 1000, 1).' 秒',
+                ($cost['billing_status'] ?? 'unknown') === 'estimated' ? '估算 '.$cost['estimated_cost'].' '.$cost['currency'] : '金额未知',
+                '#'.$stage->id.($logId === null ? '' : ' / 日志 #'.$logId),
+            ])), 'error' => $stage->error_message];
         })->all();
+    }
+
+    /** 最近一次通过结构校验的原始设定候选；没有有效结果时返回空。
+     * @return array<string, mixed>|null
+     */
+    private static function latestCandidate(Novel $novel): ?array
+    {
+        foreach ($novel->stages()->where('stage', Stage::Setting->value)->orderByDesc('id')->get() as $stage) {
+            $setting = data_get($stage->output, 'data.setting');
+            if (is_array($setting) && $setting !== []) {
+                return $setting;
+            }
+        }
+
+        return null;
     }
 }

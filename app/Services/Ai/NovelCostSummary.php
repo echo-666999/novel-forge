@@ -52,4 +52,24 @@ final class NovelCostSummary
         return ($lines === [] ? '暂无已知金额（不代表零费用）' : implode('；', $lines))
             .'。真实请求 '.$summary['real_requests'].' 次，金额未知 '.$summary['unknown_amounts'].' 次，待返回 '.$summary['pending_requests'].' 次；模拟调用 '.$summary['simulated_requests'].' 次（不计入费用）。';
     }
+
+    /** 一行摘要，用于默认收起区块的标题描述：真实请求数、各币种合计金额（含估算时标“约”）与金额未知次数。
+     * @param  array{real_requests: int, simulated_requests: int, unknown_amounts: int, pending_requests: int, currencies: list<array<string, mixed>>}  $summary
+     */
+    public function brief(array $summary): string
+    {
+        $parts = ['真实请求 '.$summary['real_requests'].' 次'];
+        foreach ($summary['currencies'] as $row) {
+            $total = function_exists('bcadd') ? bcadd($row['actual'], $row['estimated'], 2) : number_format((float) $row['actual'] + (float) $row['estimated'], 2, '.', '');
+            $parts[] = $row['currency'].' '.($row['estimated_count'] > 0 ? '约 ' : '').$total;
+        }
+        if ($summary['unknown_amounts'] > 0) {
+            $parts[] = '金额未知 '.$summary['unknown_amounts'].' 次';
+        }
+        if ($summary['simulated_requests'] > 0) {
+            $parts[] = '模拟 '.$summary['simulated_requests'].' 次';
+        }
+
+        return implode(' · ', $parts);
+    }
 }

@@ -274,8 +274,8 @@ class ChapterContentWorkbenchViewTest extends TestCase
         Livewire::test(ViewChapterContent::class, ['record' => $run->chapter->novel_id])
             ->assertSee('已授权 1 / 2 轮')
             ->assertSee('可发起修订')
-            ->assertSee('冻结正文记录 #77')
-            ->assertSee('复评正文记录 #'.$revised->id)
+            ->assertSee('正文版本 #77')
+            ->assertSee('复评版本 #'.$revised->id)
             ->assertSee('复评通过，等待全文核对')
             ->assertSee('对白已统一为回避语气')
             ->assertSee('第1段：修订后正文。')
@@ -321,5 +321,18 @@ class ChapterContentWorkbenchViewTest extends TestCase
         $this->assertSame('第7章 残页前夜', (new Chapter(['number' => 7, 'title' => '第7章残页前夜']))->numberedTitle());
         $this->assertSame('第12章 双人在场', (new Chapter(['number' => 12, 'title' => '第十二章：双人在场']))->numberedTitle());
         $this->assertSame('第1章 缺口钥匙', (new Chapter(['number' => 1, 'title' => '缺口钥匙']))->numberedTitle());
+    }
+
+    /** 「运行与历史」第一屏只放状态、步骤与停止原因；请求额度与冻结参数收进底部默认收起的记录区块。 */
+    public function test_run_tab_keeps_requests_in_collapsed_record_section(): void
+    {
+        $run = $this->createRun();
+        $run->update(['requests_used' => 2, 'request_limit' => 5]);
+
+        $html = Livewire::test(ViewChapterContent::class, ['record' => $run->chapter->novel_id])->assertSee('当前步骤：')
+            ->assertSee('请求与费用记录')->assertSee('本轮已领用 2 / 5 次 · 提交准备 0 / 2 次')->html();
+        // 请求字段只出现在记录区块之后。
+        $this->assertGreaterThan(strpos($html, '请求与费用记录'), strpos($html, '已领用 / 请求上限'));
+        $this->assertGreaterThan(strpos($html, '请求与费用记录'), strpos($html, '冻结模型'));
     }
 }

@@ -315,7 +315,7 @@ class B10FirstChapterTest extends TestCase
         Queue::assertPushed(AdvanceProductionRunJob::class);
         Http::assertNothingSent();
         Livewire::test(ViewNovelRun::class, ['record' => $run->novel_id])
-            ->assertSee('自动生产运行与进度')->assertSee('本次运行真实 AI 请求')->assertSee('非人工阅读');
+            ->assertSee('授权范围 第')->assertSee('请求与费用记录')->assertSee('本次运行真实 AI 请求')->assertSee('非人工阅读');
     }
 
     /** 未知请求不能未经确认续费，操作者不符也不能恢复。 */

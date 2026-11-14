@@ -17,18 +17,19 @@ use App\Services\Pipeline\ProductionRunService;
 use App\Services\Pipeline\RetrySettingService;
 use App\Services\Pipeline\RunControlService;
 use Filament\Actions\Action;
+use Filament\Actions\ActionGroup;
 use Filament\Facades\Filament;
 use Filament\Forms\Components\Checkbox;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
-use Filament\Infolists\Components\RepeatableEntry;
-use Filament\Infolists\Components\RepeatableEntry\TableColumn;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\Concerns\InteractsWithRecord;
 use Filament\Resources\Pages\Page;
 use Filament\Schemas\Components\EmbeddedTable;
+use Filament\Schemas\Components\Flex;
+use Filament\Schemas\Components\Grid;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
 use Filament\Tables\Columns\TextColumn;
@@ -70,52 +71,60 @@ class ViewNovelRun extends Page implements HasTable
     public function content(Schema $schema): Schema
     {
         return $schema->components([
-            Section::make('当前运行')->columns(3)
-                // 有在途运行时每5秒刷新，离开后回来也显示真实进度。
+            // 第一屏：状态标签、自动生成进度、阶段一行与停止提示；有在途运行时每5秒刷新。
+            Section::make('当前运行')->compact()
                 ->extraAttributes(fn (): array => in_array($this->automation()?->status, ['pending', 'running', 'recovering', 'reconciling'], true) ? ['wire:poll.5s' => ''] : [])
                 ->schema([
-                    TextEntry::make('novel_title')->label('小说')->state(fn (): string => $this->getRecord()->title),
-                    TextEntry::make('run_status')->label('状态')->state(fn (): string => NovelResource::statusLabel($this->getRecord()->status, $this->getRecord())),
-                    TextEntry::make('pause_state')->label('暂停请求')->state(fn (): string => $this->getRecord()->pause_requested ? '已请求：在途调用完成后不再启动下一步' : '未请求'),
-                    TextEntry::make('formal')->label('正式章数 / 故事版本')->state(fn (): string => $this->getRecord()->chapters_done.' / '.$this->getRecord()->state_version),
+                    Flex::make([
+                        TextEntry::make('run_status')->hiddenLabel()->badge()->grow(false)
+                            ->state(fn (): string => NovelResource::statusLabel($this->getRecord()->status, $this->getRecord()))
+                            ->color(fn (): string => NovelResource::statusColor($this->getRecord()->status)),
+                        TextEntry::make('formal')->hiddenLabel()->badge()->grow(false)->color('primary')
+                            ->state(fn (): string => '已正式 '.$this->getRecord()->chapters_done.' 章 · 故事版本 '.$this->getRecord()->state_version),
+                        TextEntry::make('pause_state')->hiddenLabel()->badge()->grow(false)->color('warning')->visible(fn (): bool => (bool) $this->getRecord()->pause_requested)
+                            ->state('已请求暂停')->tooltip('在途调用完成后不再启动下一步'),
+                        TextEntry::make('automation_chapters')->hiddenLabel()->badge()->grow(false)->color('gray')->visible(fn (): bool => $this->automation() !== null)
+                            ->state(fn (): string => '授权范围 第'.$this->automation()?->start_chapter.'～'.$this->automation()?->chapter_limit.'章'),
+                        TextEntry::make('automation_state')->hiddenLabel()->badge()->grow(false)->visible(fn (): bool => $this->automation() !== null)
+                            ->state(fn (): string => '第'.($this->automation()?->artifacts['chapter_number'] ?? $this->automation()?->start_chapter).'章 · '.self::stepLabel($this->automation()?->step).' · '.self::statusLabel($this->automation()?->status))
+                            ->color(fn (): string => match ($this->automation()?->status) {
+                                'completed' => 'success', 'failed', 'error' => 'danger', 'paused' => 'warning', default => 'info'
+                            }),
+                    ])->extraAttributes(['style' => 'flex-wrap: wrap']),
+                    TextEntry::make('automation_error')->hiddenLabel()->weight('bold')->color('danger')->visible(fn (): bool => filled($this->automation()?->error))
+                        ->state(fn (): string => '停止原因：'.ProductionFailure::describe($this->automation()?->error, $this->automation()?->step)['label']),
+                    TextEntry::make('automation_advice')->hiddenLabel()->visible(fn (): bool => filled($this->automation()?->error))
+                        ->state(fn (): string => '建议：'.ProductionFailure::describe($this->automation()?->error, $this->automation()?->step)['advice']),
+                    TextEntry::make('stage_line')->hiddenLabel()->color('gray')->size('sm')
+                        ->state(fn (): string => collect($this->stageSummary())->map(fn (array $stage): string => $stage['name'].' '.$stage['status'])->implode(' → ')),
                 ]),
-            Section::make('自动生产运行与进度')->visible(fn (): bool => $this->automation() !== null)->columns(2)->schema([
-                TextEntry::make('automation_chapters')->label('授权范围 / 当前章')->state(fn (): string => '第'.$this->automation()?->start_chapter.'～'.$this->automation()?->chapter_limit.'章 / 第'.($this->automation()?->artifacts['chapter_number'] ?? $this->automation()?->start_chapter).'章'),
-                TextEntry::make('automation_state')->label('当前步骤')->state(fn (): string => self::stepLabel($this->automation()?->step).' · '.self::statusLabel($this->automation()?->status)),
-                TextEntry::make('automation_error')->label('停止原因')->state(fn (): string => ProductionFailure::describe($this->automation()?->error, $this->automation()?->step)['label'])->placeholder('无'),
-                TextEntry::make('automation_advice')->label('建议下一步')->visible(fn (): bool => filled($this->automation()?->error))->state(fn (): string => ProductionFailure::describe($this->automation()?->error, $this->automation()?->step)['advice'])->columnSpanFull(),
-                RepeatableEntry::make('automation_runs')->label('本书全部生产运行')->columnSpanFull()->state(fn (): array => ProductionRun::where('novel_id', $this->getRecord()->id)->orderByDesc('id')->get()
-                    ->map(fn (ProductionRun $run): array => ['id' => $run->id, 'range' => '第'.$run->start_chapter.'～'.$run->chapter_limit.'章', 'status' => self::statusLabel($run->status), 'error' => $run->error])->all())
-                    ->table([TableColumn::make('运行编号'), TableColumn::make('授权范围'), TableColumn::make('状态'), TableColumn::make('原始错误码')])
-                    ->schema([TextEntry::make('id'), TextEntry::make('range'), TextEntry::make('status'), TextEntry::make('error')->placeholder('无')]),
-                Section::make('技术详情')->collapsed()->columnSpanFull()->schema([
-                    TextEntry::make('automation_raw')->label('原始步骤 / 状态 / 错误码')->state(fn (): string => ($this->automation()?->step ?? '').' / '.($this->automation()?->status ?? '').' / '.($this->automation()?->error ?? '无')),
-                    TextEntry::make('automation_evidence')->label('自动授权与完整断点证据（非人工阅读）')->state(fn (): string => PlanningJson::encode($this->automation()?->only(['id', 'author_id', 'start_chapter', 'chapter_limit', 'policy', 'policy_hash', 'artifacts', 'history']) ?? [])),
+            // 请求次数、阶段尝试、运行记录、技术详情与操作记录统一收起，标题描述给出一行摘要。
+            Section::make('请求与费用记录')->collapsible()->collapsed()->compact()
+                ->description(fn (): string => implode(' · ', array_filter([
+                    $this->automation() ? '本次运行真实请求 '.app(ProductionRunService::class)->requestCount($this->automation()).' 次' : null,
+                    '执行 '.$this->getRecord()->execution_count.' / '.$this->getRecord()->max_execution_count,
+                    '阶段尝试 '.$this->getRecord()->stages()->count().' 次',
+                ])))
+                ->schema([
+                    Grid::make(['default' => 1, 'md' => 2])->schema([
+                        TextEntry::make('count')->label('执行次数 / 上限')->state(fn (): string => $this->getRecord()->execution_count.' / '.$this->getRecord()->max_execution_count),
+                        TextEntry::make('automation_requests')->visible(fn (): bool => $this->automation() !== null)->label('本次运行真实 AI 请求（含失败及未知）')->state(fn (): int => $this->automation() ? app(ProductionRunService::class)->requestCount($this->automation()) : 0),
+                    ]),
+                    TextEntry::make('stages_text')->label('各阶段最后一次尝试')->listWithLineBreaks()->bulleted()
+                        ->state(fn (): array => collect($this->stageSummary())->map(fn (array $stage): string => $stage['name'].' · '.$stage['status'].' · 共 '.$stage['attempts'].' 次'.(filled($stage['error']) ? ' · '.$stage['error'] : ''))->all()),
+                    TextEntry::make('runs_text')->label('生成与提交运行')->listWithLineBreaks()->bulleted()->placeholder('无')
+                        ->state(fn (): array => collect($this->runSummary())->map(fn (array $run): string => $run['kind'].' · '.$run['status'].($run['requests'] === null ? '' : ' · 请求 '.$run['requests']).(filled($run['reason']) ? ' · '.$run['reason'] : '').' · #'.$run['id'])->all()),
+                    TextEntry::make('automation_runs')->label('本书全部生产运行')->listWithLineBreaks()->bulleted()->visible(fn (): bool => $this->automation() !== null)
+                        ->state(fn (): array => ProductionRun::where('novel_id', $this->getRecord()->id)->orderByDesc('id')->get()
+                            ->map(fn (ProductionRun $run): string => '第'.$run->start_chapter.'～'.$run->chapter_limit.'章 · '.self::statusLabel($run->status).' · 错误码 '.($run->error ?? '无').' · #'.$run->id)->all()),
+                    TextEntry::make('controls')->label('运行控制记录')->listWithLineBreaks()->bulleted()->placeholder('无')
+                        ->state(fn (): array => collect($this->getRecord()->run_control_history ?? [])->map(fn (array $control): string => ($control['action'] === 'pause' ? '暂停' : '恢复').' · '.($control['reason'] ?? '').' · 操作人 #'.($control['operator_id'] ?? '?').' · '.($control['at'] ?? ''))->all()),
+                    TextEntry::make('automation_raw')->label('原始步骤 / 状态 / 错误码')->color('gray')->visible(fn (): bool => $this->automation() !== null)
+                        ->state(fn (): string => ($this->automation()?->step ?? '').' / '.($this->automation()?->status ?? '').' / '.($this->automation()?->error ?? '无')),
+                    TextEntry::make('automation_evidence')->label('自动授权与完整断点证据（非人工阅读）')->visible(fn (): bool => $this->automation() !== null)
+                        ->state(fn (): string => PlanningJson::encode($this->automation()?->only(['id', 'author_id', 'start_chapter', 'chapter_limit', 'policy', 'policy_hash', 'artifacts', 'history']) ?? []))->extraAttributes(['style' => 'white-space: pre-wrap; overflow-wrap: anywhere; font-size: .8125rem;']),
+                    EmbeddedTable::make(),
                 ]),
-            ]),
-            // 请求次数、阶段尝试与费用属于生成过程记录，默认收起，需要时点击展开。
-            Section::make('请求与执行次数')->collapsible()->collapsed()->columns(2)->schema([
-                TextEntry::make('count')->label('执行次数 / 上限')->state(fn (): string => $this->getRecord()->execution_count.' / '.$this->getRecord()->max_execution_count),
-                TextEntry::make('automation_requests')->visible(fn (): bool => $this->automation() !== null)->label('本次运行真实 AI 请求（含失败及未知）')->state(fn (): int => $this->automation() ? app(ProductionRunService::class)->requestCount($this->automation()) : 0),
-            ]),
-            Section::make('阶段流水线')->collapsible()->collapsed()->description('显示每阶段最后一次尝试；下方保留全部历史。阶段记录不代表正式提交；正式导出从小说详情单独执行，不计作生成阶段。')->schema([
-                RepeatableEntry::make('stages')->label('阶段状态')->hiddenLabel()->state(fn (): array => $this->stageSummary())->columns(3)->schema([
-                    TextEntry::make('name')->label('阶段'), TextEntry::make('status')->label('状态'), TextEntry::make('attempts')->label('尝试总数'),
-                    TextEntry::make('error')->label('最近错误')->placeholder('无')->columnSpanFull(),
-                ]),
-            ]),
-            Section::make('已有生成与提交产物')->collapsible()->collapsed()->description('保留独立运行的停止原因；正文修复和评审重跑请进入“正文产物 / AI修复”。')->schema([
-                RepeatableEntry::make('runs')->label('运行记录')->hiddenLabel()->state(fn (): array => $this->runSummary())->columns(3)->schema([
-                    TextEntry::make('kind')->label('类型'), TextEntry::make('id')->label('编号'), TextEntry::make('status')->label('状态'),
-                    TextEntry::make('reason')->label('停止原因')->placeholder('无'), TextEntry::make('requests')->label('已用 / 授权请求数')->placeholder('按小说执行额度'),
-                ]),
-            ]),
-            EmbeddedTable::make(),
-            Section::make('运行控制记录')->collapsible()->collapsed()->schema([
-                RepeatableEntry::make('controls')->label('操作记录')->hiddenLabel()->state(fn (): array => $this->getRecord()->run_control_history ?? [])->schema([
-                    TextEntry::make('action')->label('操作')->formatStateUsing(fn (string $state): string => $state === 'pause' ? '暂停' : '恢复'), TextEntry::make('operator_id')->label('操作人'), TextEntry::make('reason')->label('原因'), TextEntry::make('at')->label('时间'),
-                ]),
-            ]),
         ]);
     }
 
@@ -148,7 +157,7 @@ class ViewNovelRun extends Page implements HasTable
     public function table(Table $table): Table
     {
         return $table->query(NovelStage::where('novel_id', $this->getRecord()->id))->defaultSort('id', 'desc')->columns([
-            TextColumn::make('id')->label('尝试编号'),
+            TextColumn::make('id')->label('编号')->color('gray'),
             TextColumn::make('stage')->label('阶段')->formatStateUsing(fn (Stage $state): string => $state->label()),
             TextColumn::make('status')->label('状态')->formatStateUsing(fn ($state): string => $state->label()),
             TextColumn::make('execution_count')->label('阶段尝试次数')->toggleable(isToggledHiddenByDefault: true),
@@ -164,7 +173,7 @@ class ViewNovelRun extends Page implements HasTable
     }
 
     /** 操作资格只控制展示，服务还会加锁复核，拒绝过期页面重复恢复。
-     * @return list<Action>
+     * @return list<Action|ActionGroup>
      */
     protected function getHeaderActions(): array
     {
@@ -193,10 +202,13 @@ class ViewNovelRun extends Page implements HasTable
                         throw new InvalidArgumentException('投递未确认，请核查记录后再操作。');
                     }
                 })),
-            Action::make('outlineRecovery')->label('大纲产物 / 继续')->url(fn (): string => NovelResource::getUrl('view', ['record' => $this->getRecord()]))->visible(fn (): bool => $this->getRecord()->outlinePlans()->exists()),
-            Action::make('contentRecovery')->label('正文产物 / AI修复')->url(fn (): string => NovelResource::getUrl('content', ['record' => $this->getRecord()]))->visible(fn (): bool => $this->getRecord()->chapters()->exists()),
-            Action::make('refreshRun')->label('刷新状态')->action(fn () => $this->getRecord()->refresh()),
-            Action::make('back')->label('返回小说')->url(fn (): string => NovelResource::getUrl('view', ['record' => $this->getRecord()])),
+            // 跳转与刷新收进一个菜单，页头只露出恢复、暂停等主操作。
+            ActionGroup::make([
+                Action::make('outlineRecovery')->label('大纲产物 / 继续')->url(fn (): string => NovelResource::getUrl('view', ['record' => $this->getRecord()]))->visible(fn (): bool => $this->getRecord()->outlinePlans()->exists()),
+                Action::make('contentRecovery')->label('正文产物 / AI修复')->url(fn (): string => NovelResource::getUrl('content', ['record' => $this->getRecord()]))->visible(fn (): bool => $this->getRecord()->chapters()->exists()),
+                Action::make('refreshRun')->label('刷新状态')->action(fn () => $this->getRecord()->refresh()),
+                Action::make('back')->label('返回小说')->url(fn (): string => NovelResource::getUrl('view', ['record' => $this->getRecord()])),
+            ])->label('前往')->icon('heroicon-m-chevron-down')->button()->color('gray'),
         ];
     }
 

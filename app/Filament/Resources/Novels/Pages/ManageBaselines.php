@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\Novels\Pages;
 
 use App\Filament\Resources\Novels\NovelResource;
+use App\Filament\Support\HelpHint;
 use App\Models\CanonicalBaseline;
 use App\Models\CanonicalCommit;
 use App\Models\ChapterVersion;
@@ -60,7 +61,7 @@ class ManageBaselines extends Page implements HasTable
     /** 说明基线含义，并列出活动基线概况。 */
     public function content(Schema $schema): Schema
     {
-        return $schema->components([Section::make('正式基线')->description('基线是一条从第1章起连续的正式提交链。正式稿修订在候选基线中进行，验证通过后才能切换；切换后旧基线只读保留，仍可回放和导出。切换后请在系统健康页确认检索投影，必要时重建索引。')->schema([
+        return $schema->components([Section::make('正式基线')->compact()->description('基线是从第1章起连续的正式提交链。')->headerActions([HelpHint::action('正式稿修订在候选基线中进行，验证通过后才能切换；切换后旧基线只读保留，仍可回放和导出。切换后请在系统健康页确认检索投影，必要时重建索引。')])->schema([
             TextEntry::make('active')->label('活动基线')->state(function (): string {
                 $active = app(CanonicalBaselines::class)->current($this->getRecord());
 

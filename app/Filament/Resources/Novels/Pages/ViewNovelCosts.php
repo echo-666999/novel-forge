@@ -12,6 +12,7 @@ use Filament\Infolists\Components\TextEntry;
 use Filament\Resources\Pages\Concerns\InteractsWithRecord;
 use Filament\Resources\Pages\Page;
 use Filament\Schemas\Components\EmbeddedTable;
+use Filament\Schemas\Components\Flex;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
 use Filament\Tables\Columns\TextColumn;
@@ -21,12 +22,17 @@ use Filament\Tables\Filters\Filter;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
+use Livewire\Attributes\Url;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use UnitEnum;
 
 /** 逐次成本明细只读页面，不重发请求、不修订账单、不影响流水线。 */
 class ViewNovelCosts extends Page implements HasTable
 {
+    /** 筛选写入地址栏，概览页“金额未知”标签可直接带筛选进入。 */
+    #[Url]
+    public ?array $tableFilters = null;
+
     use InteractsWithRecord;
     use InteractsWithTable;
 
@@ -56,8 +62,11 @@ class ViewNovelCosts extends Page implements HasTable
     public function content(Schema $schema): Schema
     {
         return $schema->components([
-            Section::make('小说累计费用')->description('实际金额与未结算估算分别累计；不同币种不折算。失败及未知请求不会被删除，费用不参与运行停止判断。')->schema([
-                TextEntry::make('summary')->label('全部调用汇总')->state(fn (): string => app(NovelCostSummary::class)->describe(app(NovelCostSummary::class)->forNovel($this->getRecord()->id))),
+            // 汇总压成一行标签；实际与估算分币种列出，未知与待返回单独提醒。
+            Section::make('小说累计费用')->compact()->schema([
+                Flex::make(fn (): array => $this->summaryBadges())->extraAttributes(['style' => 'flex-wrap: wrap']),
+                TextEntry::make('summary_note')->hiddenLabel()->color('gray')->size('sm')
+                    ->state('实际金额与未结算估算分别累计，不同币种不折算；失败及未知请求不会被删除。'),
             ]), EmbeddedTable::make(),
         ]);
     }
@@ -70,23 +79,28 @@ class ViewNovelCosts extends Page implements HasTable
             'estimated_cost', 'actual_cost', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'reasoning_tokens',
             'provider_request_id', 'price_version', 'error_category', 'error_message', 'duration_ms', 'started_at',
         ]))->defaultSort('id', 'desc')->columns([
-            TextColumn::make('id')->label('调用编号')->sortable(),
-            TextColumn::make('mode')->label('模式')->formatStateUsing(fn (string $state): string => $state === 'fake' ? '模拟' : '真实'),
-            TextColumn::make('novel_stage_id')->label('阶段编号')->placeholder('独立调用'),
+            TextColumn::make('started_at')->label('请求时间')->since()->dateTimeTooltip('Y-m-d H:i:s')->placeholder('未记录')->sortable(),
             TextColumn::make('requested_model')->label('请求模型')->searchable(),
-            TextColumn::make('status')->label('请求结果')->formatStateUsing(fn (string $state): string => match ($state) {
+            TextColumn::make('status')->label('请求结果')->badge()->formatStateUsing(fn (string $state): string => match ($state) {
                 'succeeded' => '成功', 'failed' => '失败', 'pending' => '待返回', default => '结果未知'
+            })->color(fn (string $state): string => match ($state) {
+                'succeeded' => 'success', 'failed' => 'danger', 'pending' => 'info', default => 'warning'
             }),
-            TextColumn::make('billing_status')->label('计费状态')->formatStateUsing(fn (string $state): string => match ($state) {
+            TextColumn::make('billing_status')->label('计费状态')->badge()->formatStateUsing(fn (string $state): string => match ($state) {
                 'simulated' => '模拟', 'estimated' => '估算', default => '未知'
-            }),
-            TextColumn::make('actual_cost')->label('实际费用')->placeholder('未知')->formatStateUsing(fn (string $state, CostLog $record): string => self::amount($state, $record)),
-            TextColumn::make('estimated_cost')->label('估算费用')->placeholder('未知')->formatStateUsing(fn (string $state, CostLog $record): string => self::amount($state, $record)),
-            TextColumn::make('started_at')->label('请求时间')->dateTime('Y-m-d H:i:s')->placeholder('未记录'),
+            })->color(fn (string $state): string => $state === 'unknown' ? 'warning' : 'gray'),
+            // 实际金额优先，没有账单时显示估算并标“约”，都没有时显示未知。
+            TextColumn::make('cost')->label('费用')->state(fn (CostLog $record): string => $record->actual_cost !== null ? self::amount($record->actual_cost, $record)
+                : ($record->estimated_cost !== null ? '约 '.self::amount($record->estimated_cost, $record) : '未知')),
+            TextColumn::make('id')->label('调用编号')->sortable()->color('gray')->toggleable(isToggledHiddenByDefault: true),
+            TextColumn::make('mode')->label('模式')->formatStateUsing(fn (string $state): string => $state === 'fake' ? '模拟' : '真实')->toggleable(isToggledHiddenByDefault: true),
+            TextColumn::make('novel_stage_id')->label('步骤')->prefix('#')->placeholder('独立调用')->color('gray')->toggleable(isToggledHiddenByDefault: true),
+            TextColumn::make('actual_cost')->label('实际费用')->placeholder('未知')->formatStateUsing(fn (string $state, CostLog $record): string => self::amount($state, $record))->toggleable(isToggledHiddenByDefault: true),
+            TextColumn::make('estimated_cost')->label('估算费用')->placeholder('未知')->formatStateUsing(fn (string $state, CostLog $record): string => self::amount($state, $record))->toggleable(isToggledHiddenByDefault: true),
         ])->filters([
             SelectFilter::make('requested_model')->label('请求模型')->options(fn (): array => CostLog::where('novel_id', $this->getRecord()->id)->distinct()->pluck('requested_model', 'requested_model')->all())->searchable(),
             SelectFilter::make('billing_status')->label('计费状态')->options(['unknown' => '未知', 'estimated' => '估算', 'simulated' => '模拟']),
-            SelectFilter::make('novel_stage_id')->label('阶段编号')->options(fn (): array => CostLog::where('novel_id', $this->getRecord()->id)->whereNotNull('novel_stage_id')->distinct()->pluck('novel_stage_id', 'novel_stage_id')->all()),
+            SelectFilter::make('novel_stage_id')->label('步骤')->options(fn (): array => CostLog::where('novel_id', $this->getRecord()->id)->whereNotNull('novel_stage_id')->distinct()->pluck('novel_stage_id', 'novel_stage_id')->all()),
             Filter::make('date')->label('请求日期')->schema([DatePicker::make('from')->label('起始日期'), DatePicker::make('to')->label('截至日期')->afterOrEqual('from')])
                 ->query(fn (Builder $query, array $data): Builder => $query->when($data['from'] ?? null, fn (Builder $q, $date): Builder => $q->whereDate('started_at', '>=', $date))->when($data['to'] ?? null, fn (Builder $q, $date): Builder => $q->whereDate('started_at', '<=', $date))),
             SelectFilter::make('mode')->label('模式')->options(['real' => '真实', 'fake' => '模拟']),
@@ -103,6 +117,33 @@ class ViewNovelCosts extends Page implements HasTable
                 TextEntry::make('message')->label('失败说明')->state($record->error_message)->placeholder('无'),
             ]),
         ]);
+    }
+
+    /** 汇总标签：真实请求数、各币种实际与估算、金额未知、待返回与模拟次数。
+     * @return list<TextEntry>
+     */
+    private function summaryBadges(): array
+    {
+        $summary = app(NovelCostSummary::class)->forNovel($this->getRecord()->id);
+        $badges = [['real', '真实请求 '.$summary['real_requests'].' 次', 'primary']];
+        foreach ($summary['currencies'] as $row) {
+            if ($row['actual_count'] > 0) {
+                $badges[] = ['actual_'.$row['currency'], $row['currency'].' 实际 '.$row['actual'], 'success'];
+            }
+            if ($row['estimated_count'] > 0) {
+                $badges[] = ['estimated_'.$row['currency'], $row['currency'].' 未结算估算 '.$row['estimated'], 'gray'];
+            }
+        }
+        if ($summary['currencies'] === []) {
+            $badges[] = ['none', '暂无已知金额（不代表零费用）', 'gray'];
+        }
+        foreach (['unknown_amounts' => ['金额未知', 'warning'], 'pending_requests' => ['待返回', 'info'], 'simulated_requests' => ['模拟调用', 'gray']] as $key => [$label, $color]) {
+            if ($summary[$key] > 0) {
+                $badges[] = [$key, $label.' '.$summary[$key].' 次', $color];
+            }
+        }
+
+        return array_map(fn (array $badge): TextEntry => TextEntry::make('summary_'.$badge[0])->hiddenLabel()->badge()->grow(false)->state($badge[1])->color($badge[2]), $badges);
     }
 
     /** 缺少币种不伪造货币标识，模拟金额始终另作标记。 */

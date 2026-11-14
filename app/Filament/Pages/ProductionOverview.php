@@ -14,10 +14,10 @@ use App\Services\Pipeline\WorkerHeartbeat;
 use App\Services\Search\SearchIndexStatus;
 use Filament\Actions\Action;
 use Filament\Infolists\Components\RepeatableEntry;
-use Filament\Infolists\Components\RepeatableEntry\TableColumn;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Pages\Dashboard;
 use Filament\Schemas\Components\EmbeddedTable;
+use Filament\Schemas\Components\Flex;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
 use Filament\Tables\Columns\TextColumn;
@@ -45,30 +45,42 @@ class ProductionOverview extends Dashboard implements HasTable
     public function content(Schema $schema): Schema
     {
         return $schema->components([
-            Section::make('待我处理')->description('需要你决定或处理的事项；处理入口直接打开对应页面。')
+            // 服务状态压成一行标签：正常只显示绿色“服务正常”，异常项单独给出说明。
+            Section::make('生产与服务状态')->compact()->schema([
+                Flex::make([
+                    TextEntry::make('novels')->hiddenLabel()->badge()->grow(false)->color('gray')->state(fn (): string => Novel::count().' 本小说'),
+                    TextEntry::make('formal')->hiddenLabel()->badge()->grow(false)->color('primary')->state(fn (): string => '正式 '.(int) Novel::sum('chapters_done').' 章'),
+                    TextEntry::make('service')->hiddenLabel()->badge()->grow(false)->color(fn (): string => $this->serviceIssues() === [] ? 'success' : 'warning')
+                        ->state(fn (): string => $this->serviceIssues() === [] ? '服务正常' : count($this->serviceIssues()).' 项服务需排查'),
+                    TextEntry::make('unknown')->hiddenLabel()->badge()->grow(false)->color('warning')->visible(fn (): bool => $this->unknownRequests() > 0)
+                        ->state(fn (): string => $this->unknownRequests().' 次真实请求结果未知')->tooltip('恢复前先在对应小说的费用明细核对，避免重复计费。'),
+                ])->extraAttributes(['style' => 'flex-wrap: wrap']),
+                TextEntry::make('service_issues')->hiddenLabel()->color('warning')->size('sm')->listWithLineBreaks()->bulleted()
+                    ->visible(fn (): bool => $this->serviceIssues() !== [])->state(fn (): array => $this->serviceIssues()),
+            ]),
+            Section::make('待我处理')->compact()
                 ->extraAttributes(fn (): array => ProductionRun::whereIn('status', ['pending', 'running'])->exists() ? ['wire:poll.10s' => ''] : [])
                 ->schema([
                     RepeatableEntry::make('todo')->hiddenLabel()->state(fn (): array => $this->todo())->placeholder('目前没有待处理事项。')
-                        ->table([TableColumn::make('小说'), TableColumn::make('事项'), TableColumn::make('建议'), TableColumn::make('入口')])
-                        ->schema([
-                            TextEntry::make('novel'), TextEntry::make('item'), TextEntry::make('advice'),
-                            TextEntry::make('url')->url(fn (?string $state): ?string => $state)->formatStateUsing(fn (): string => '去处理'),
+                        ->grid(['default' => 1, 'lg' => 2])->schema([
+                            Flex::make([
+                                TextEntry::make('novel')->hiddenLabel()->weight('bold'),
+                                TextEntry::make('url')->hiddenLabel()->grow(false)->url(fn (?string $state): ?string => $state)->color('primary')->formatStateUsing(fn (): string => '去处理 →'),
+                            ])->verticallyAlignCenter(),
+                            TextEntry::make('item')->hiddenLabel(),
+                            TextEntry::make('advice')->hiddenLabel()->color('gray')->size('sm'),
                         ]),
                 ]),
-            Section::make('正在运行')->schema([
+            Section::make('正在运行')->compact()->schema([
                 RepeatableEntry::make('running')->hiddenLabel()->state(fn (): array => $this->running())->placeholder('当前没有在途的自动生成。')
-                    ->table([TableColumn::make('小说'), TableColumn::make('授权范围'), TableColumn::make('当前'), TableColumn::make('入口')])
-                    ->schema([
-                        TextEntry::make('novel'), TextEntry::make('range'), TextEntry::make('current'),
-                        TextEntry::make('url')->url(fn (?string $state): ?string => $state)->formatStateUsing(fn (): string => '查看进度'),
+                    ->grid(['default' => 1, 'lg' => 2])->schema([
+                        Flex::make([
+                            TextEntry::make('novel')->hiddenLabel()->weight('bold'),
+                            TextEntry::make('url')->hiddenLabel()->grow(false)->url(fn (?string $state): ?string => $state)->color('primary')->formatStateUsing(fn (): string => '查看进度 →'),
+                        ])->verticallyAlignCenter(),
+                        TextEntry::make('current')->hiddenLabel()->badge()->color('info'),
+                        TextEntry::make('range')->hiddenLabel()->color('gray')->size('sm')->formatStateUsing(fn (string $state): string => '授权范围 '.$state),
                     ]),
-            ]),
-            Section::make('生产与服务状态')->columns(3)->collapsible()->schema([
-                TextEntry::make('novels')->label('小说数')->state(fn (): int => Novel::count()),
-                TextEntry::make('formal')->label('正式章节数')->state(fn (): int => (int) Novel::sum('chapters_done')),
-                TextEntry::make('unknown')->label('金额未知的真实请求')->state(fn (): int => CostLog::where('mode', 'real')->where('billing_status', 'unknown')->count()),
-                TextEntry::make('health')->label('Worker心跳')->state(fn (): string => app(WorkerHeartbeat::class)->summary())->columnSpanFull(),
-                TextEntry::make('index')->label('检索投影覆盖')->state(fn (): string => app(SearchIndexStatus::class)->summary())->columnSpanFull(),
             ]),
             EmbeddedTable::make(),
         ]);
@@ -79,9 +91,10 @@ class ProductionOverview extends Dashboard implements HasTable
     {
         return $table->query(Novel::query()->whereNull('archived_at'))->heading('最近的书')->defaultSort('updated_at', 'desc')->columns([
             TextColumn::make('title')->label('书名')->searchable(),
-            TextColumn::make('chapters_done')->label('正式章数')->formatStateUsing(fn (Novel $record): string => $record->chapters_done.' / '.$record->target_chapters),
-            TextColumn::make('status')->label('运行状态')->formatStateUsing(fn ($state, Novel $record): string => NovelResource::statusLabel($state, $record)),
-            TextColumn::make('updated_at')->label('最近活动')->dateTime('Y-m-d H:i')->sortable(),
+            TextColumn::make('chapters_done')->label('正式章数')->badge()->color('gray')->formatStateUsing(fn (Novel $record): string => $record->chapters_done.' / '.$record->target_chapters.' 章'),
+            TextColumn::make('status')->label('运行状态')->badge()->formatStateUsing(fn ($state, Novel $record): string => NovelResource::statusLabel($state, $record))
+                ->color(fn ($state): string => NovelResource::statusColor($state)),
+            TextColumn::make('updated_at')->label('最近活动')->since()->dateTimeTooltip('Y-m-d H:i')->sortable()->color('gray'),
         ])->filters([SelectFilter::make('status')->label('状态')->options(collect(NovelStatus::cases())->mapWithKeys(fn ($status): array => [$status->value => $status->label()])->all())])
             ->recordActions([
                 Action::make('open')->label('打开工作台')->url(fn (Novel $record): string => NovelResource::getUrl('view', ['record' => $record])),
@@ -91,7 +104,7 @@ class ProductionOverview extends Dashboard implements HasTable
             ->emptyStateHeading('尚无小说')->emptyStateDescription('点击右上角“创建小说”开始，空态不会调用模型。');
     }
 
-    /** 待处理事项：停止的生产运行、待批准的新实体、待人工评分的验收批次、结果未知的请求。
+    /** 待处理事项：停止的生产运行、待批准的新实体、待人工评分的验收批次；结果未知的请求改由状态标签提醒。
      * @return list<array{novel: string, item: string, advice: string, url: ?string}>
      */
     public function todo(): array
@@ -114,12 +127,32 @@ class ProductionOverview extends Dashboard implements HasTable
                 'advice' => $batch->status === 'system_pass' ? '在验收工作台确认关闭。' : '逐章阅读并评分，补齐外部证据。',
                 'url' => $batch->status === 'system_pass' ? NovelResource::getUrl('acceptance', ['record' => $batch->novel_id]) : NovelResource::getUrl('acceptanceReading', ['record' => $batch->novel_id, 'batch' => $batch->id])];
         }
-        $unknown = CostLog::where('mode', 'real')->whereIn('status', ['pending', 'unknown'])->count();
-        if ($unknown > 0) {
-            $items[] = ['novel' => '全部', 'item' => $unknown.' 次真实请求结果未知或尚未返回', 'advice' => '恢复前先在对应小说的成本明细核对，避免重复计费。', 'url' => null];
-        }
 
         return $items;
+    }
+
+    /** 结果未知或尚未返回的真实请求数，改由状态标签提醒。 */
+    public function unknownRequests(): int
+    {
+        return CostLog::where('mode', 'real')->whereIn('status', ['pending', 'unknown'])->count();
+    }
+
+    /** 需要排查的服务项说明；消费者心跳过期或缺失、检索投影有缺口时列出原文说明。
+     * @return list<string>
+     */
+    public function serviceIssues(): array
+    {
+        $issues = [];
+        $worker = app(WorkerHeartbeat::class)->summary();
+        if (! str_starts_with($worker, '最近观测')) {
+            $issues[] = 'Worker 心跳：'.$worker;
+        }
+        $index = app(SearchIndexStatus::class)->summary();
+        if (! str_starts_with($index, '未发现当前代词法块的正式章数：0；') || ! str_contains($index, '待嵌入块：0。')) {
+            $issues[] = '检索投影：'.$index;
+        }
+
+        return $issues;
     }
 
     /** 在途的生产运行与当前章节、步骤。

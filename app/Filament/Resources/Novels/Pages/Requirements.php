@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\Novels\Pages;
 
 use App\Filament\Resources\Novels\NovelResource;
+use App\Filament\Support\HelpHint;
 use App\Models\NovelOutlineChapter;
 use App\Models\RequirementVersion;
 use App\Services\Pipeline\RequirementCoverage;
@@ -59,7 +60,7 @@ class Requirements extends Page implements HasTable
     public function content(Schema $schema): Schema
     {
         return $schema->components([
-            Section::make('原始输入')->description('覆盖代表作者基于计划证据作出的决定，不是已实现的正式剧情，也不会改写既有运行快照。')->schema([
+            Section::make('原始输入')->compact()->description('覆盖是作者基于计划证据的决定，不是正式剧情。')->headerActions([HelpHint::action('覆盖代表作者基于计划证据作出的决定，不是已实现的正式剧情，也不会改写既有运行快照。')])->schema([
                 TextEntry::make('premise')->label('原始创意（只读）')->state(fn (): string => $this->getRecord()->premise_raw),
             ]), EmbeddedTable::make(),
         ]);
@@ -71,15 +72,15 @@ class Requirements extends Page implements HasTable
         // 同一要求的历史连续排列，版本号来自已保存的 revision，不随筛选重算。
         return $table->query(RequirementVersion::where('novel_id', $this->getRecord()->id))->defaultSort(fn (Builder $query): Builder => $query->orderBy('requirement_key')->orderByDesc('revision')->orderByDesc('id'))->columns([
             TextColumn::make('requirement_key')->label('要求标识')->wrap(),
-            TextColumn::make('id')->label('记录编号'),
+            TextColumn::make('id')->label('记录编号')->prefix('#')->color('gray'),
             TextColumn::make('source_quote')->label('要求原句')->wrap()->searchable(),
             TextColumn::make('description')->label('提炼内容')->wrap()->searchable(),
             TextColumn::make('category')->label('归类'),
             TextColumn::make('strength')->label('强度')->formatStateUsing(fn (string $state): string => $state === 'hard' ? '硬约束' : '软要求'),
             TextColumn::make('status')->label('覆盖状态')->formatStateUsing(fn (string $state): string => self::statuses()[$state]),
             TextColumn::make('revision')->label('要求版本')->formatStateUsing(fn ($state): string => 'V'.$state),
-            TextColumn::make('outline_chapter_id')->label('承接计划编号')->placeholder('无'),
-            TextColumn::make('created_at')->label('决定时间')->dateTime(),
+            TextColumn::make('outline_chapter_id')->label('承接计划编号')->placeholder('无')->toggleable(isToggledHiddenByDefault: true),
+            TextColumn::make('created_at')->label('决定时间')->since()->dateTimeTooltip('Y-m-d H:i:s')->color('gray'),
         ])->filters([
             SelectFilter::make('versions')->label('版本范围')->options(['latest' => '当前版本', 'all' => '所有历史版本'])->default('latest')
                 ->query(fn (Builder $query, array $data): Builder => ($data['value'] ?? 'latest') === 'all' ? $query : $query->whereIn('id', RequirementVersion::selectRaw('MAX(id)')->where('novel_id', $this->getRecord()->id)->groupBy('requirement_key'))),

@@ -151,7 +151,7 @@ class B03OutlineTest extends TestCase
         $this->assertSame(2, $novel->fresh()->execution_count);
         $this->assertSame('33.33', $novel->fresh()->progress);
         $this->assertSame('unknown', CostLog::query()->sole()->billing_status);
-        $page = Livewire::test(ViewOutlinePlan::class, ['record' => $novel->id])->assertSee('大纲候选已完成')->assertCanSeeTableRecords($plan->chapters()->get())->mountTableAction('readChapter', $plan->chapters()->first())->assertActionMounted(TestAction::make('readChapter')->table($plan->chapters()->first()));
+        $page = Livewire::test(ViewOutlinePlan::class, ['record' => $novel->id])->assertSee('大纲候选已完成')->assertSee('请求与费用记录')->assertSee('1 个大纲批次请求')->assertDontSee('确认设定记录编号')->assertCanSeeTableRecords($plan->chapters()->get())->mountTableAction('readChapter', $plan->chapters()->first())->assertActionMounted(TestAction::make('readChapter')->table($plan->chapters()->first()));
         $modalHtml = $page->instance()->getSchema($page->instance()->getMountedActionSchemaName())->toHtml();
         $this->assertStringContainsString('正文完成条件', $modalHtml);
         $this->assertStringContainsString('取得第1份可验证航线证据', $modalHtml);

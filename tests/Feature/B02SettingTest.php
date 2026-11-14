@@ -152,7 +152,7 @@ class B02SettingTest extends TestCase
         $job->handle(app(SettingExecutor::class));
         (new RunNovelPipelineJob($novel->id, true))->handle();
         $this->assertSame($before, $stage->fresh()->getRawOriginal());
-        Livewire::test(ViewNovel::class, ['record' => $novel->id])->assertSee('设定已生成，等待大纲阶段')->assertSee('林澈')->assertSee('世界背景')->assertSee('未知（请核查调用记录）')->callAction('refreshStatus')->assertSuccessful();
+        Livewire::test(ViewNovel::class, ['record' => $novel->id])->assertSee('设定已生成，等待大纲阶段')->assertSee('林澈')->assertSee('世界背景')->assertSee('第 1 次 · ')->assertSee('金额未知')->callAction('refreshStatus')->assertSuccessful();
         Http::assertSentCount(1);
     }
 

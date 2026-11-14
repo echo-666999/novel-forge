@@ -10,6 +10,7 @@ use Filament\Http\Middleware\DispatchServingFilamentEvent;
 use Filament\Panel;
 use Filament\PanelProvider;
 use Filament\Support\Colors\Color;
+use Filament\View\PanelsRenderHook;
 use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
 use Illuminate\Cookie\Middleware\EncryptCookies;
 use Illuminate\Foundation\Http\Middleware\PreventRequestForgery;
@@ -51,6 +52,8 @@ class AdminPanelProvider extends PanelProvider
                 DisableBladeIconComponents::class,
                 DispatchServingFilamentEvent::class,
             ])
+            // 单本小说子导航的“更多”分组默认收起。
+            ->renderHook(PanelsRenderHook::PAGE_SUB_NAVIGATION_SIDEBAR_AFTER, fn (): string => view('filament.resources.novels.partials.sub-navigation-more')->render())
             // ->sidebarWidth('sm')
             ->maxContentWidth('full')
             ->authMiddleware([

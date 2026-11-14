@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\Novels\Pages;
 
 use App\Filament\Resources\Novels\NovelResource;
+use App\Filament\Support\HelpHint;
 use App\Models\NovelOutlineChapter;
 use App\Models\ScenePlanVersion;
 use App\Services\Pipeline\FieldDiff;
@@ -61,7 +62,7 @@ class ScenePlans extends Page implements HasTable
     /** 作者通过新增、删除与重排列表表达拆分或合并，保存形成新版本。 */
     public function content(Schema $schema): Schema
     {
-        return $schema->components([Section::make('未开始章节的场景计划')->description('新增场景或拆分时填写不同目标；合并时将事件与推进点合入保留场景再移除旧项。每次保存产生新版本。冻结检查推进点覆盖和总字数，并进入以后新运行的细纲、正文和检查请求；已经开始的章节只能查看。')->schema([]), EmbeddedTable::make()]);
+        return $schema->components([Section::make('未开始章节的场景计划')->compact()->description('每次保存产生新版本；已开始的章节只读。')->headerActions([HelpHint::action('新增场景或拆分时填写不同目标；合并时将事件与推进点合入保留场景再移除旧项。每次保存产生新版本。冻结检查推进点覆盖和总字数，并进入以后新运行的细纲、正文和检查请求；已经开始的章节只能查看。')])->schema([]), EmbeddedTable::make()]);
     }
 
     /** 章节大纲列表提供首版编辑，历史场景独立展示。 */
@@ -70,7 +71,7 @@ class ScenePlans extends Page implements HasTable
         // 先集中同一大纲，再按章序展示，避免多个大纲的同章号交错。
         return $table->query(NovelOutlineChapter::whereHas('plan', fn ($q) => $q->where('novel_id', $this->getRecord()->id)))->defaultSort(fn ($query) => $query->orderByDesc('outline_plan_id')->orderBy('chapter_number')->orderBy('id'))->columns([
             // 相同章号可能来自不同大纲，始终展示来源记录以便区分。
-            TextColumn::make('outline_plan_id')->label('所属大纲记录编号'),
+            TextColumn::make('outline_plan_id')->label('所属大纲记录编号')->toggleable(isToggledHiddenByDefault: true),
             TextColumn::make('chapter_number')->label('章号')->sortable(), TextColumn::make('title')->label('标题')->searchable()->wrap(),
             TextColumn::make('objective')->label('目标')->wrap(),
             TextColumn::make('scene_status')->label('最新场景状态')->state(fn (NovelOutlineChapter $record): string => $this->latest($record)?->status ?? '未规划'),

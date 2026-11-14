@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\Novels\Pages;
 
 use App\Filament\Resources\Novels\NovelResource;
+use App\Filament\Support\HelpHint;
 use App\Models\ChapterVersion;
 use App\Models\FormalRevision;
 use App\Models\FormalRevisionChapter;
@@ -18,6 +19,7 @@ use Filament\Notifications\Notification;
 use Filament\Resources\Pages\Concerns\InteractsWithRecord;
 use Filament\Resources\Pages\Page;
 use Filament\Schemas\Components\EmbeddedTable;
+use Filament\Schemas\Components\Flex;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\View as ViewComponent;
 use Filament\Schemas\Schema;
@@ -25,6 +27,7 @@ use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Concerns\InteractsWithTable;
 use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Table;
+use Illuminate\Support\Str;
 use InvalidArgumentException;
 use UnitEnum;
 
@@ -65,15 +68,33 @@ class FormalRevisions extends Page implements HasTable
     /** 任务概况。 */
     public function content(Schema $schema): Schema
     {
-        return $schema->components([Section::make('只改文字、事实不变')->description('模型按规则信号给出逐条润色建议，你逐条接受、拒绝或标为有意保留；程序只替换被接受的原句，其余逐字不变。每章改动后由模型核对事实等价（事件、伏笔证据、限制与线索），通过后才能在候选基线提交；切换前正式正文不变，切换后旧基线只读保留。修订期间不能写新章。每章约2次请求：建议1次、核对1次。')->schema([
-            TextEntry::make('summary')->label('当前任务')->state(function (): string {
-                $revision = $this->revision();
+        $help = '模型按规则信号给出逐条润色建议，你逐条接受、拒绝或标为有意保留；程序只替换被接受的原句，其余逐字不变。每章改动后由模型核对事实等价（事件、伏笔证据、限制与线索），通过后才能在候选基线提交；切换前正式正文不变，切换后旧基线只读保留。修订期间不能写新章。';
 
-                return $revision === null ? '尚未发起' : '#'.$revision->id.' · 第'.$revision->from_chapter.'～'.$revision->to_chapter.'章 · '.FormalRevision::statusLabel($revision->status)
-                    .' · 已用请求 '.$revision->requests_used.' / '.$revision->request_limit.' · 候选基线 #'.$revision->baseline_id;
-            }),
-            TextEntry::make('intent')->label('修订意图')->state(fn (): ?string => $this->revision()?->intent)->placeholder('无'),
-        ]), EmbeddedTable::make()]);
+        return $schema->components([
+            Section::make('只改文字、事实不变')->compact()->description('逐条取舍润色建议，改动后由模型核对事实。')
+                ->headerActions([HelpHint::action($help)])
+                ->schema([
+                    Flex::make([
+                        TextEntry::make('status')->hiddenLabel()->badge()->grow(false)
+                            ->state(fn (): string => $this->revision() === null ? '尚未发起' : FormalRevision::statusLabel($this->revision()->status))
+                            ->color(fn (): string => match ($this->revision()?->status) {
+                                'open' => 'info', 'ready' => 'warning', 'switched' => 'success', default => 'gray'
+                            }),
+                        TextEntry::make('range')->hiddenLabel()->badge()->grow(false)->color('primary')->visible(fn (): bool => $this->revision() !== null)
+                            ->state(fn (): string => '第'.$this->revision()?->from_chapter.'～'.$this->revision()?->to_chapter.'章'),
+                        TextEntry::make('baseline')->hiddenLabel()->color('gray')->size('sm')->visible(fn (): bool => $this->revision() !== null)
+                            ->state(fn (): string => '任务 #'.$this->revision()?->id.' · 候选基线 #'.$this->revision()?->baseline_id),
+                    ])->verticallyAlignCenter()->extraAttributes(['style' => 'flex-wrap: wrap']),
+                    TextEntry::make('intent')->label('修订意图')->inlineLabel()->state(fn (): ?string => $this->revision()?->intent)->visible(fn (): bool => filled($this->revision()?->intent)),
+                ]),
+            EmbeddedTable::make(),
+            Section::make('请求与费用记录')->collapsible()->collapsed()->compact()->visible(fn (): bool => $this->revision() !== null)
+                ->description(fn (): string => '已用请求 '.$this->revision()?->requests_used.' / '.$this->revision()?->request_limit.' 次')
+                ->schema([
+                    TextEntry::make('requests')->label('已用 / 上限')->state(fn (): string => $this->revision()?->requests_used.' / '.$this->revision()?->request_limit),
+                    TextEntry::make('request_rule')->hiddenLabel()->color('gray')->size('sm')->state('每章约2次请求：建议1次、核对1次；不同意某章时可重新核对，会多用请求。'),
+                ]),
+        ]);
     }
 
     /** 逐章记录与操作。 */
@@ -84,12 +105,13 @@ class FormalRevisions extends Page implements HasTable
             TextColumn::make('status')->label('状态')->formatStateUsing(fn (string $state): string => FormalRevisionChapter::statusLabel($state))->badge()
                 ->color(fn (string $state): string => match ($state) {
                     'verified', 'committed' => 'success', 'failed' => 'danger', 'suggested', 'decided' => 'warning', default => 'gray',
-                }),
+                })
+                // 错误优先，其次事实核对结论；完整内容在“查看改动”里。
+                ->description(fn (FormalRevisionChapter $record): ?string => filled($record->error) ? '错误：'.Str::limit($record->error, 40)
+                    : (filled($record->equivalence['summary'] ?? null) ? Str::limit($record->equivalence['summary'], 40) : null)),
             TextColumn::make('suggestion_count')->label('建议（合格 / 全部）')->state(fn (FormalRevisionChapter $record): string => $record->suggestions === null ? '—'
                 : count(array_filter($record->suggestions, fn (array $item): bool => $item['valid'])).' / '.count($record->suggestions)),
             TextColumn::make('accepted')->label('接受')->state(fn (FormalRevisionChapter $record): int => count(array_filter($record->decisions ?? [], fn (string $choice): bool => $choice === 'accept'))),
-            TextColumn::make('equivalence.summary')->label('事实核对')->limit(40)->placeholder('—'),
-            TextColumn::make('error')->label('最近错误')->limit(40)->placeholder('无')->color('danger'),
         ])->recordActions([
             Action::make('suggest')->label('生成建议')->visible(fn (FormalRevisionChapter $record): bool => $this->open() && in_array($record->status, ['pending', 'suggested', 'unchanged'], true))
                 ->requiresConfirmation()->modalDescription('发送1次请求，重新生成会清空本章已有取舍。')

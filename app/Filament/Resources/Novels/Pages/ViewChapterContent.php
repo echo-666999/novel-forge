@@ -48,6 +48,7 @@ use Filament\Resources\Pages\Page;
 use Filament\Schemas\Components\Component;
 use Filament\Schemas\Components\EmbeddedTable;
 use Filament\Schemas\Components\Flex;
+use Filament\Schemas\Components\Grid;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Tabs;
 use Filament\Schemas\Components\Tabs\Tab;
@@ -618,10 +619,10 @@ class ViewChapterContent extends Page implements HasTable
                         ])->verticallyAlignCenter(),
                         TextEntry::make('revision_status')->label('处理边界')->state(fn (): string => $this->revisionRounds()['note']),
                         TextEntry::make('revision_issues')->label('本轮指定问题')->state(fn (): array => data_get($this->run()?->config, 'workbench.issues', []))
-                            ->hint(fn (): ?string => data_get($this->run()?->config, 'workbench.version_id') === null ? null : '冻结正文记录 #'.data_get($this->run()?->config, 'workbench.version_id'))
+                            ->hint(fn (): ?string => data_get($this->run()?->config, 'workbench.version_id') === null ? null : '正文版本 #'.data_get($this->run()?->config, 'workbench.version_id'))
                             ->listWithLineBreaks()->bulleted()->placeholder('当前运行不是工作台修订，尚未指定问题')->extraAttributes(['style' => 'line-height: 1.8']),
                         Flex::make([
-                            TextEntry::make('revision_review_title')->hiddenLabel()->weight('bold')->state(fn (): string => '复评正文记录 #'.data_get($this->run()?->chapter->progression_result, 'version_id')),
+                            TextEntry::make('revision_review_title')->hiddenLabel()->weight('bold')->state(fn (): string => '复评版本 #'.data_get($this->run()?->chapter->progression_result, 'version_id')),
                             TextEntry::make('revision_review_verdict')->hiddenLabel()->badge()->grow(false)->state(fn (): string => match (data_get($this->run()?->chapter->progression_result, 'verdict')) {
                                 'pass' => '复评通过，等待全文核对', 'blocked' => '存在阻塞问题', default => '仍有待解决问题',
                             })->color(fn (string $state): string => match ($state) {
@@ -635,53 +636,69 @@ class ViewChapterContent extends Page implements HasTable
                     ]),
                 ]),
                 Tab::make('运行与历史')->schema([
-                    Section::make('章节运行')->description(fn (): string => $this->candidate()?->id !== null && $this->run()?->chapter->formal_version_id === $this->candidate()->id ? '该版本已正式提交，事件与状态已原子保存。' : '这里是正文候选，须通过提交准备与作者批准后才成为正式稿。')->columns(3)->schema([
-                        TextEntry::make('run_status')->label('运行状态')->state(fn (): string => match ($this->run()?->status) {
-                            'pending' => '待处理', 'running' => '运行中', 'completed' => '候选检查完成', 'paused' => '已暂停', 'error' => '异常', default => '尚未启动'
-                        }),
-                        TextEntry::make('step')->label('当前步骤')->state(fn (): string => match ($this->run()?->next_step) {
-                            'fine' => '章节细纲', 'draft' => '正文生成', 'check' => '独立推进检查', 'revise' => '推进点修订', 'length_repair' => '定点扩写', default => '无'
-                        }),
-                        TextEntry::make('requests')->label('已领用 / 请求上限')->state(fn (): string => ($this->run()?->requests_used ?? 0).' / '.($this->run()?->request_limit ?? 0)),
-                        TextEntry::make('submission_requests')->label('提交准备请求（评审与提取）')->state(fn (): string => ($this->submission()?->requests_used ?? 0).' / 2'),
-                        TextEntry::make('continuous_scope')->label('持续验收范围')->state(fn (): string => ($this->run()?->config['version'] ?? null) === ContentExecutionContract::VERSION ? '本授权内最多一次修订，请求上限不可通过继续操作扩大' : '历史协议，只读保留；恢复会创建有限运行'),
-                        TextEntry::make('repair_mode')->label('本轮修复方式')->state(fn (): string => data_get($this->run()?->config, 'repair_mode') === 'rewrite' ? '已授权的整章候选重写' : '局部修订'),
-                        TextEntry::make('shared_requests')->label('本轮质量修复合计请求')->state(fn (): string => data_get($this->run()?->config, 'shared_request_limit') === null ? '按上方本运行额度执行' : ((int) data_get($this->run()?->config, 'parent_requests_used') + $this->run()->requests_used).' / '.data_get($this->run()?->config, 'shared_request_limit')),
-                        TextEntry::make('model')->label('冻结模型')->state(fn (): ?string => data_get($this->run()?->config, 'model')),
-                        TextEntry::make('tokens')->label('正文输出Token上限')->state(fn (): ?int => data_get($this->run()?->config, 'max_output_tokens')),
-                        TextEntry::make('budget')->label('冻结段落预算')->state(fn (): string => $this->budgetDescription()),
-                        TextEntry::make('reused_fine')->label('细纲来源')->state(fn (): string => $this->fineSourceLabel()),
-                        TextEntry::make('stop')->label('停止原因与下一步')->state(fn (): string => $this->stopLabel())->columnSpanFull(),
-                    ]),
-                    // 请求历史与费用默认收起，需要时点击展开。
-                    Section::make('生成与恢复历史')->collapsible()->collapsed()->schema([
-                        RepeatableEntry::make('runs')->label('保留全部运行')->state(fn (): array => $this->run() === null ? [] : ChapterGenerationRun::query()->where('chapter_id', $this->run()->chapter_id)->orderBy('id')->get()->map(fn (ChapterGenerationRun $run): array => [
-                            'id' => $run->id, 'parent' => $run->parent_run_id, 'source' => $run->source_version_id, 'status' => $run->status,
-                            'requests' => $run->requests_used.' / '.$run->request_limit, 'hook' => data_get($run->plan_data, 'hook'),
-                            'reason' => data_get($run->control_history, '0.reason'),
-                        ])->all())->schema([
-                            TextEntry::make('id')->label('运行编号'), TextEntry::make('parent')->label('上次暂停运行')->placeholder('首次生成'),
-                            TextEntry::make('source')->label('扩写源记录编号')->placeholder('无'), TextEntry::make('requests')->label('领用 / 上限'),
-                            TextEntry::make('status')->label('历史状态')->formatStateUsing(fn (string $state): string => match ($state) {
-                                'pending' => '待处理', 'running' => '运行中', 'completed' => '候选检查完成', default => '已停止'
+                    // 第一屏只放运行状态、当前步骤、细纲来源与停止原因；请求、额度与冻结参数统一收进底部记录。
+                    Section::make('章节运行')->compact()->description(fn (): string => $this->candidate()?->id !== null && $this->run()?->chapter->formal_version_id === $this->candidate()->id ? '该版本已正式提交。' : '正文候选须经提交准备与作者批准才成为正式稿。')->schema([
+                        Flex::make([
+                            TextEntry::make('run_status')->hiddenLabel()->badge()->grow(false)->state(fn (): string => self::runStatusLabel($this->run()?->status))
+                                ->color(fn (): string => match ($this->run()?->status) {
+                                    'completed' => 'success', 'running', 'pending' => 'info', 'paused' => 'warning', 'error' => 'danger', default => 'gray'
+                                }),
+                            TextEntry::make('step')->hiddenLabel()->badge()->grow(false)->color('gray')->state(fn (): string => '当前步骤：'.match ($this->run()?->next_step) {
+                                'fine' => '章节细纲', 'draft' => '正文生成', 'check' => '独立推进检查', 'revise' => '推进点修订', 'length_repair' => '定点扩写', default => '无'
                             }),
-                            TextEntry::make('hook')->label('该运行细纲钩子')->placeholder('尚未生成'), TextEntry::make('reason')->label('操作原因'),
-                        ]),
-                    ]),
-                    Section::make('尝试与费用')->key('content-attempts')->collapsible()->collapsed()->headerActions([
-                        Action::make('viewPrompts')->label('查看完整Prompt')->modalHeading('完整Prompt与请求契约')->modalSubmitAction(false)->modalCancelActionLabel('关闭')->modalWidth('7xl')->schema(fn (): array => [
-                            TextEntry::make('prompts')->label('调用前快照与已验证历史还原')->state(fn (): string => json_encode(CostLog::where('novel_id', $this->getRecord()->id)->whereHas('novelStage', fn ($query) => $query->whereNotNull('input->run_id'))->orderBy('id')->get()->map(fn (CostLog $log): array => ['cost_log_id' => $log->id, ...app(ContentPromptAudit::class)->read($log)])->all(), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES))->extraAttributes(['style' => 'white-space: pre-wrap; overflow-wrap: anywhere;']),
-                        ]),
-                    ])->schema([
-                        RepeatableEntry::make('attempts')->label('请求历史')->state(fn (): array => $this->attempts())->schema([
-                            TextEntry::make('id')->label('阶段编号'), TextEntry::make('step')->label('步骤'), TextEntry::make('status')->label('执行状态'), TextEntry::make('log_id')->label('费用日志编号'), TextEntry::make('cost')->label('费用'), TextEntry::make('error')->label('失败原因')->placeholder('无'), TextEntry::make('validation_error')->label('具体校验原因')->placeholder('无'),
-                            TextEntry::make('quality_issues')->label('本地正文质量问题')->placeholder('无'),
-                        ]),
+                            TextEntry::make('reused_fine')->hiddenLabel()->color('gray')->size('sm')->state(fn (): string => $this->fineSourceLabel()),
+                        ])->verticallyAlignCenter()->extraAttributes(['style' => 'flex-wrap: wrap']),
+                        TextEntry::make('stop')->label('停止原因与下一步')->weight('medium')->state(fn (): string => $this->stopLabel()),
                     ]),
                     EmbeddedTable::make(),
+                    Section::make('请求与费用记录')->key('content-attempts')->collapsible()->collapsed()->compact()
+                        ->description(fn (): string => '本轮已领用 '.($this->run()?->requests_used ?? 0).' / '.($this->run()?->request_limit ?? 0).' 次 · 提交准备 '.($this->submission()?->requests_used ?? 0).' / 2 次 · 共 '.count($this->attempts()).' 次生成请求')
+                        ->headerActions([
+                            Action::make('viewPrompts')->label('查看完整Prompt')->link()->modalHeading('完整Prompt与请求契约')->modalSubmitAction(false)->modalCancelActionLabel('关闭')->modalWidth('7xl')->schema(fn (): array => [
+                                TextEntry::make('prompts')->label('调用前快照与已验证历史还原')->state(fn (): string => json_encode(CostLog::where('novel_id', $this->getRecord()->id)->whereHas('novelStage', fn ($query) => $query->whereNotNull('input->run_id'))->orderBy('id')->get()->map(fn (CostLog $log): array => ['cost_log_id' => $log->id, ...app(ContentPromptAudit::class)->read($log)])->all(), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES))->extraAttributes(['style' => 'white-space: pre-wrap; overflow-wrap: anywhere;']),
+                            ]),
+                        ])->schema([
+                            Grid::make(['default' => 1, 'md' => 3])->schema([
+                                TextEntry::make('requests')->label('已领用 / 请求上限')->state(fn (): string => ($this->run()?->requests_used ?? 0).' / '.($this->run()?->request_limit ?? 0)),
+                                TextEntry::make('submission_requests')->label('提交准备请求（评审与提取）')->state(fn (): string => ($this->submission()?->requests_used ?? 0).' / 2'),
+                                TextEntry::make('shared_requests')->label('本轮质量修复合计请求')->state(fn (): string => data_get($this->run()?->config, 'shared_request_limit') === null ? '按本运行额度执行' : ((int) data_get($this->run()?->config, 'parent_requests_used') + $this->run()->requests_used).' / '.data_get($this->run()?->config, 'shared_request_limit')),
+                                TextEntry::make('repair_mode')->label('本轮修复方式')->state(fn (): string => data_get($this->run()?->config, 'repair_mode') === 'rewrite' ? '已授权的整章候选重写' : '局部修订'),
+                                TextEntry::make('model')->label('冻结模型')->state(fn (): ?string => data_get($this->run()?->config, 'model'))->placeholder('—'),
+                                TextEntry::make('tokens')->label('正文输出Token上限')->state(fn (): ?int => data_get($this->run()?->config, 'max_output_tokens'))->placeholder('—'),
+                                TextEntry::make('budget')->label('冻结段落预算')->state(fn (): string => $this->budgetDescription())->columnSpanFull(),
+                                TextEntry::make('continuous_scope')->label('持续验收范围')->color('gray')->state(fn (): string => ($this->run()?->config['version'] ?? null) === ContentExecutionContract::VERSION ? '本授权内最多一次修订，请求上限不可通过继续操作扩大' : '历史协议，只读保留；恢复会创建有限运行')->columnSpanFull(),
+                            ]),
+                            RepeatableEntry::make('attempts')->label('逐次请求')->placeholder('尚无请求')->state(fn (): array => $this->attempts())->schema([
+                                Flex::make([
+                                    TextEntry::make('step')->hiddenLabel()->weight('bold')->grow(false),
+                                    TextEntry::make('status')->hiddenLabel()->badge()->color('gray')->grow(false),
+                                    TextEntry::make('cost')->hiddenLabel()->color('gray')->size('sm')->grow(false),
+                                ])->verticallyAlignCenter()->extraAttributes(['style' => 'flex-wrap: wrap']),
+                                TextEntry::make('error')->hiddenLabel()->color('danger')->visible(fn (?string $state): bool => filled($state)),
+                                TextEntry::make('validation_error')->label('具体校验原因')->visible(fn (?string $state): bool => filled($state)),
+                                TextEntry::make('quality_issues')->label('本地正文质量问题')->visible(fn (?string $state): bool => filled($state)),
+                            ]),
+                            RepeatableEntry::make('runs')->label('历次运行')->state(fn (): array => $this->run() === null ? [] : ChapterGenerationRun::query()->where('chapter_id', $this->run()->chapter_id)->orderBy('id')->get()->values()->map(fn (ChapterGenerationRun $run, int $index): array => [
+                                'line' => '第 '.($index + 1).' 次运行 · '.self::runStatusLabel($run->status, true).' · 领用 '.$run->requests_used.' / '.$run->request_limit
+                                    .' · #'.$run->id.($run->parent_run_id === null ? '' : ' ← #'.$run->parent_run_id).($run->source_version_id === null ? '' : ' · 扩写源 #'.$run->source_version_id),
+                                'hook' => data_get($run->plan_data, 'hook'), 'reason' => data_get($run->control_history, '0.reason'),
+                            ])->all())->schema([
+                                TextEntry::make('line')->hiddenLabel(),
+                                TextEntry::make('hook')->label('细纲钩子')->inlineLabel()->color('gray')->visible(fn (?string $state): bool => filled($state)),
+                                TextEntry::make('reason')->label('操作原因')->inlineLabel()->color('gray')->visible(fn (?string $state): bool => filled($state)),
+                            ]),
+                        ]),
                 ]),
             ]),
         ]);
+    }
+
+    /** 运行状态中文名；历史列表把其余状态统一称为“已停止”。 */
+    private static function runStatusLabel(?string $status, bool $history = false): string
+    {
+        return match ($status) {
+            'pending' => '待处理', 'running' => '运行中', 'completed' => '候选检查完成', 'paused' => $history ? '已停止' : '已暂停', 'error' => $history ? '已停止' : '异常', null => '尚未启动', default => '已停止'
+        };
     }
 
     /** 已正式提交的章节返回正式版本；正式稿可能是候选之后再修订的版本，不能用候选正文代替。 */
@@ -800,7 +817,7 @@ class ViewChapterContent extends Page implements HasTable
             return ['id' => $stage->id, 'step' => match (data_get($stage->input, 'step')) {
                 'fine' => '细纲', 'draft' => '正文', 'check' => '独立检查', 'revise' => '定点修订', 'length_repair' => '定点扩写', default => '未知'
             },
-                'status' => $stage->status->label(), 'log_id' => $log?->id, 'cost' => $log?->billing_status === 'estimated' ? '估算 '.$log->estimated_cost.' '.$log->currency : '未知（不代表免费）', 'error' => $stage->error_message, 'validation_error' => data_get($stage->output, 'data.validation_error'),
+                'status' => $stage->status->label(), 'log_id' => $log?->id, 'cost' => ($log?->billing_status === 'estimated' ? '估算 '.$log->estimated_cost.' '.$log->currency : '金额未知').' · #'.$stage->id.($log === null ? '' : ' / 日志 #'.$log->id), 'error' => $stage->error_message, 'validation_error' => data_get($stage->output, 'data.validation_error'),
                 'quality_issues' => collect(data_get($stage->output, 'data.quality_issues', []))->map(fn (array $issue): string => ($issue['anchor_id'] ?? '').' '.$issue['reason'])->implode('；')];
         })->all();
     }
@@ -967,7 +984,7 @@ class ViewChapterContent extends Page implements HasTable
             ->modalDescription('每章工作台最多两轮；本轮最多两次真实请求：范围修订和独立复评各一次。旧正文与费用保留，失败不自动重发。')
             ->schema([
                 TextInput::make('parent_id')->label('冻结运行编号')->default(fn (): ?int => $this->run()?->id)->readOnly()->required(),
-                TextInput::make('version_id')->label('冻结正文记录编号')->default(fn (): ?int => $this->candidate()?->id)->readOnly()->required(),
+                TextInput::make('version_id')->label('冻结正文版本')->default(fn (): ?int => $this->candidate()?->id)->readOnly()->required(),
                 Textarea::make('issues')->label('指定问题（每行一条，最多10条）')->helperText('例如：人物口吻不一致，请引用具体对白并说明人物应有的表达方式。')->required()->maxLength(10000),
                 TextInput::make('execution_limit')->label('确认小说累计执行上限')->integer()->required()->minValue(1)->maxValue(2147483647)->default(fn (): int => max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + 2)),
                 Checkbox::make('accept_request')->label('授权本轮修订与复评及对应费用')->accepted(),

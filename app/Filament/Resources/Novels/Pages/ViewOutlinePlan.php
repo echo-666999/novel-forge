@@ -21,6 +21,7 @@ use Filament\Notifications\Notification;
 use Filament\Resources\Pages\Concerns\InteractsWithRecord;
 use Filament\Resources\Pages\Page;
 use Filament\Schemas\Components\EmbeddedTable;
+use Filament\Schemas\Components\Flex;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
 use Filament\Tables\Columns\TextColumn;
@@ -75,26 +76,36 @@ class ViewOutlinePlan extends Page implements HasTable
     public function content(Schema $schema): Schema
     {
         return $schema->components([
-            Section::make('大纲计划')->description('此处是候选规划，不是已生成正文或正式故事事实。')->columns(3)->schema([
-                TextEntry::make('plan_status')->label('计划状态')->state(fn (): string => $this->plan()?->statusLabel() ?? '尚无计划'),
-                TextEntry::make('confirmation')->label('确认设定记录编号')->state(fn (): ?int => $this->plan()?->setting_confirmation_id),
-                TextEntry::make('completed')->label('已接纳 / 目标章数')->state(fn (): string => ($this->plan() === null ? 0 : $this->plan()->next_chapter - 1).' / '.($this->plan()?->target_chapters ?? $this->getRecord()->target_chapters)),
-                TextEntry::make('model')->label('请求模型')->state(fn (): ?string => data_get($this->plan()?->config, 'model')),
-                TextEntry::make('next_chapter')->label('下批起始章')->state(fn (): string => $this->plan()?->status === 'completed' ? '无，全部完成' : (string) ($this->plan()?->next_chapter ?? '尚未开始')),
-                TextEntry::make('stop_reason')->label('停止原因')->state(fn (): string => match ($this->plan()?->stop_reason) {
-                    'user_paused' => '作者已暂停，成功批次保留，可显式继续', 'execution_limit' => '执行额度耗尽，请显式调整后继续', 'batch_failed' => '本批失败，前面成功章节已保留', 'queue_interrupted' => '任务中断，先核查未知费用', 'dispatch_unconfirmed' => '投递未确认，请先核查状态', 'awaiting_next_stage' => '大纲完成，等待后续阶段', default => '无'
-                }),
-                TextEntry::make('roadmap')->label('全书走向候选')->state(fn (): ?string => data_get($this->plan()?->roadmap, 'whole_story_summary'))->columnSpanFull(),
-                TextEntry::make('ending')->label('终局方向候选')->state(fn (): ?string => data_get($this->plan()?->roadmap, 'ending_direction'))->columnSpanFull(),
+            // 顶部标签给出计划状态与进度，停止原因只在有值时提示；全书走向与终局方向是本页重点。
+            Section::make('大纲计划')->compact()->description('候选规划，不是已生成正文或正式故事事实。')->schema([
+                Flex::make([
+                    TextEntry::make('plan_status')->hiddenLabel()->badge()->grow(false)->state(fn (): string => $this->plan()?->statusLabel() ?? '尚无计划')
+                        ->color(fn (): string => match ($this->plan()?->status) {
+                            'completed' => 'success', 'running', 'pending' => 'info', 'paused' => 'warning', 'error' => 'danger', default => 'gray'
+                        }),
+                    TextEntry::make('completed')->hiddenLabel()->badge()->grow(false)->color('primary')
+                        ->state(fn (): string => '已接纳 '.($this->plan() === null ? 0 : $this->plan()->next_chapter - 1).' / '.($this->plan()?->target_chapters ?? $this->getRecord()->target_chapters).' 章'),
+                    TextEntry::make('next_chapter')->hiddenLabel()->badge()->grow(false)->color('gray')
+                        ->state(fn (): string => $this->plan()?->status === 'completed' ? '全部完成' : ($this->plan()?->next_chapter === null ? '尚未开始' : '下批从第'.$this->plan()->next_chapter.'章起')),
+                ])->extraAttributes(['style' => 'flex-wrap: wrap']),
+                TextEntry::make('stop_reason')->hiddenLabel()->weight('medium')->color('warning')
+                    ->visible(fn (): bool => filled($this->plan()?->stop_reason))
+                    ->state(fn (): string => '停止原因：'.match ($this->plan()?->stop_reason) {
+                        'user_paused' => '作者已暂停，成功批次保留，可显式继续', 'execution_limit' => '执行额度耗尽，请显式调整后继续', 'batch_failed' => '本批失败，前面成功章节已保留', 'queue_interrupted' => '任务中断，先核查未知费用', 'dispatch_unconfirmed' => '投递未确认，请先核查状态', 'awaiting_next_stage' => '大纲完成，等待后续阶段', default => (string) $this->plan()?->stop_reason
+                    }),
+                TextEntry::make('roadmap')->label('全书走向候选')->state(fn (): ?string => data_get($this->plan()?->roadmap, 'whole_story_summary'))->extraAttributes(['style' => 'line-height: 1.8']),
+                TextEntry::make('ending')->label('终局方向候选')->state(fn (): ?string => data_get($this->plan()?->roadmap, 'ending_direction'))->extraAttributes(['style' => 'line-height: 1.8']),
             ]),
             EmbeddedTable::make(),
-            Section::make('批次尝试与费用')->collapsible()->collapsed()->schema([
-                RepeatableEntry::make('attempts')->label('大纲批次')->state(fn (): array => $this->attempts())->columns(3)->schema([
-                    TextEntry::make('id')->label('阶段编号'), TextEntry::make('range')->label('章序范围'), TextEntry::make('status')->label('执行状态'),
-                    TextEntry::make('duration')->label('耗时'), TextEntry::make('cost')->label('费用'), TextEntry::make('cost_log_id')->label('调用日志编号')->placeholder('尚无记录'),
-                    TextEntry::make('error')->label('失败说明')->placeholder('无')->columnSpanFull(),
+            // 请求模型、确认来源与批次尝试统一收起，标题描述给出一行摘要。
+            Section::make('请求与费用记录')->collapsible()->collapsed()->compact()
+                ->description(fn (): string => count($this->attempts()).' 个大纲批次请求'.(filled(data_get($this->plan()?->config, 'model')) ? ' · 模型 '.data_get($this->plan()?->config, 'model') : ''))
+                ->schema([
+                    TextEntry::make('source')->label('来源')->color('gray')->state(fn (): string => '确认设定记录 #'.($this->plan()?->setting_confirmation_id ?? '—').' · 请求模型 '.(data_get($this->plan()?->config, 'model') ?? '—')),
+                    TextEntry::make('attempt_lines')->label('大纲批次')->listWithLineBreaks()->bulleted()->placeholder('尚无请求')
+                        ->state(fn (): array => collect($this->attempts())->map(fn (array $attempt): string => '第'.$attempt['range'].'章 · '.$attempt['status'].' · '.$attempt['duration'].' · '.$attempt['cost']
+                            .' · #'.$attempt['id'].($attempt['cost_log_id'] === null ? '' : ' / 日志 #'.$attempt['cost_log_id']).(filled($attempt['error']) ? ' · 失败：'.$attempt['error'] : ''))->all()),
                 ]),
-            ]),
         ]);
     }
 
@@ -196,8 +207,8 @@ class ViewOutlinePlan extends Page implements HasTable
 
         return $this->getRecord()->stages()->where('stage', 'outline')->where('input->outline_plan_id', $plan->id)->orderBy('id')->get()->map(fn (NovelStage $stage): array => [
             'id' => $stage->id, 'range' => data_get($stage->input, 'range.start').'～'.data_get($stage->input, 'range.end'), 'status' => $stage->status->label(),
-            'duration' => $stage->duration_ms === null ? '未知' : $stage->duration_ms.'毫秒',
-            'cost' => data_get($stage->cost, 'billing_status') === 'estimated' ? '估算 '.data_get($stage->cost, 'estimated_cost').' '.data_get($stage->cost, 'currency') : '未知（不代表免费）',
+            'duration' => $stage->duration_ms === null ? '耗时未知' : round($stage->duration_ms / 1000, 1).' 秒',
+            'cost' => data_get($stage->cost, 'billing_status') === 'estimated' ? '估算 '.data_get($stage->cost, 'estimated_cost').' '.data_get($stage->cost, 'currency') : '金额未知',
             'cost_log_id' => data_get($stage->output, 'data.cost_log_id') ?? $logs->get($stage->id)?->id, 'error' => $stage->error_message,
         ])->all();
     }

@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\Novels\Pages;
 
 use App\Filament\Resources\Novels\NovelResource;
+use App\Filament\Support\HelpHint;
 use App\Models\StoryStructureVersion;
 use App\Services\Pipeline\StoryStructure;
 use Filament\Actions\Action;
@@ -58,16 +59,16 @@ class StoryStructurePlan extends Page implements HasTable
     /** 清楚说明草稿未生效及旧运行不自动更新。 */
     public function content(Schema $schema): Schema
     {
-        return $schema->components([Section::make('作者结构约束')->description('编辑、调整顺序和章范围均保存新版本。冻结必须覆盖目标章数，弧范围须覆盖所属卷。冻结卷弧会进入之后新建章节的输入快照，旧运行恢复不追补；涉及已提交章位的变动须走历史变更流程。')->schema([]), EmbeddedTable::make()]);
+        return $schema->components([Section::make('作者结构约束')->compact()->description('编辑、调序和改范围都会保存为新版本。')->headerActions([HelpHint::action('编辑、调整顺序和章范围均保存新版本。冻结必须覆盖目标章数，弧范围须覆盖所属卷。冻结卷弧会进入之后新建章节的输入快照，旧运行恢复不追补；涉及已提交章位的变动须走历史变更流程。')])->schema([]), EmbeddedTable::make()]);
     }
 
     /** 版本和层级可展开核对，历史记录没有原地编辑或删除按钮。 */
     public function table(Table $table): Table
     {
         return $table->query(StoryStructureVersion::where('novel_id', $this->getRecord()->id))->defaultSort('id', 'desc')->columns([
-            TextColumn::make('id')->label('结构记录编号'), TextColumn::make('parent_id')->label('来源记录编号')->placeholder('首次'),
+            TextColumn::make('id')->label('结构记录编号')->prefix('#')->color('gray'), TextColumn::make('parent_id')->label('来源记录编号')->placeholder('首次')->toggleable(isToggledHiddenByDefault: true),
             TextColumn::make('status')->label('状态')->formatStateUsing(fn (string $state): string => $state === 'frozen' ? '已冻结' : '草稿'),
-            TextColumn::make('reason')->label('原因')->wrap(), TextColumn::make('created_at')->label('保存时间')->dateTime(),
+            TextColumn::make('reason')->label('原因')->wrap(), TextColumn::make('created_at')->label('保存时间')->since()->dateTimeTooltip('Y-m-d H:i:s')->color('gray'),
         ])->filters([SelectFilter::make('status')->label('状态')->options(['draft' => '草稿', 'frozen' => '已冻结'])])->recordActions([
             Action::make('inspect')->label('查看卷弧树')->modalSubmitAction(false)->schema(fn (StoryStructureVersion $record): array => [
                 RepeatableEntry::make('volumes')->label('卷')->state($record->structure)->schema([

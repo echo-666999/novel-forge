@@ -3,6 +3,7 @@
 namespace App\Filament\Pages;
 
 use App\Filament\Resources\Novels\NovelResource;
+use App\Filament\Support\HelpHint;
 use App\Models\Novel;
 use App\Models\StoryOutboxEvent;
 use App\Services\Pipeline\BackendCapabilities;
@@ -13,8 +14,6 @@ use App\Services\Search\SearchIndexStatus;
 use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Facades\Filament;
-use Filament\Infolists\Components\RepeatableEntry;
-use Filament\Infolists\Components\RepeatableEntry\TableColumn;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Pages\Page;
 use Filament\Schemas\Components\EmbeddedTable;
@@ -51,7 +50,7 @@ class SystemHealth extends Page implements HasTable
     /** 仅报告实际观测和积压，不给出没有依据的健康绿灯。 */
     public function content(Schema $schema): Schema
     {
-        return $schema->components([Section::make('系统观测')->description('通知投递时间是全局标记；检索订阅者不会更新此字段，不能用它判断检索是否已经消费。')->schema([
+        return $schema->components([Section::make('系统观测')->compact()->description('消费者心跳、检索投影与通知投递状态。')->headerActions([HelpHint::action('通知投递时间是全局标记；检索订阅者不会更新此字段，不能用它判断检索是否已经消费。')])->schema([
             TextEntry::make('worker')->label('消费者心跳')->state(fn (): string => app(WorkerHeartbeat::class)->summary()),
             TextEntry::make('watchdog')->label('生产看门狗')->state(fn (): string => app(ProductionWatchdog::class)->summary()),
             TextEntry::make('index')->label('检索投影覆盖')->state(fn (): string => app(SearchIndexStatus::class)->summary()),
@@ -87,9 +86,9 @@ class SystemHealth extends Page implements HasTable
     {
         return $table->query(StoryOutboxEvent::query()->join('canonical_commits', 'canonical_commits.id', '=', 'story_outbox_events.commit_id')->select(['story_outbox_events.*', 'canonical_commits.novel_id']))
             ->defaultSort('id', 'desc')->columns([
-                TextColumn::make('id')->label('通知编号'), TextColumn::make('novel_id')->label('小说编号'),
-                TextColumn::make('commit_id')->label('正式提交编号'), TextColumn::make('event_type')->label('通知类型'),
-                TextColumn::make('created_at')->label('产生时间')->dateTime(), TextColumn::make('published_at')->label('投递时间')->dateTime()->placeholder('待投递'),
+                TextColumn::make('id')->label('通知编号')->prefix('#')->color('gray'), TextColumn::make('novel_id')->label('小说编号')->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('commit_id')->label('正式提交编号')->toggleable(isToggledHiddenByDefault: true), TextColumn::make('event_type')->label('通知类型'),
+                TextColumn::make('created_at')->label('产生时间')->since()->dateTimeTooltip('Y-m-d H:i:s')->color('gray'), TextColumn::make('published_at')->label('投递时间')->since()->dateTimeTooltip('Y-m-d H:i:s')->color('gray')->placeholder('待投递'),
             ])->filters([
                 TernaryFilter::make('published_at')->label('已投递')->nullable(),
                 SelectFilter::make('novel')->label('小说')->options(fn (): array => Novel::pluck('title', 'id')->all())->searchable()

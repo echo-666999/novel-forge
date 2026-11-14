@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\Novels\Pages;
 
 use App\Filament\Resources\Novels\NovelResource;
+use App\Filament\Support\HelpHint;
 use App\Models\Chapter;
 use App\Models\Foreshadow;
 use App\Models\ForeshadowEvidence;
@@ -61,7 +62,7 @@ class ViewForeshadows extends Page implements HasTable
     /** 到期提示基于下一章，计划不会被当作已经发生的事实。 */
     public function content(Schema $schema): Schema
     {
-        return $schema->components([Section::make('计划与正式事实')->description('先登记计划。带回收窗口的伏笔由正式提交时的正文自动流转（埋设、强化、回收），必回收伏笔在窗口末章未回收时会阻塞提交；旧伏笔仍可依据正式正文手工登记。已有未提交章节时暂停维护，避免改变冻结输入。')->schema([
+        return $schema->components([Section::make('计划与正式事实')->compact()->description('登记伏笔计划；带回收窗口的伏笔随正式提交自动流转。')->headerActions([HelpHint::action('先登记计划。带回收窗口的伏笔由正式提交时的正文自动流转（埋设、强化、回收），必回收伏笔在窗口末章未回收时会阻塞提交；旧伏笔仍可依据正式正文手工登记。已有未提交章节时暂停维护，避免改变冻结输入。')])->schema([
             TextEntry::make('due')->label('下一章提醒')->state(function (): string {
                 $number = $this->getRecord()->chapters_done + 1;
                 $count = Foreshadow::where('novel_id', $this->getRecord()->id)->where('status', '!=', 'resolved')->where('target_chapter', '<=', $number)->count();

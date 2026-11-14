@@ -145,4 +145,15 @@ class B08RunRecoveryTest extends TestCase
         NovelStage::factory()->create(['novel_id' => $novel->id, 'stage' => Stage::Polish]);
         $this->assertSame(['设定', '大纲', '细纲', '正文', '润色'], $stages());
     }
+
+    /** 运行台第一屏只放状态标签与阶段一行；执行次数、阶段尝试与控制记录收进底部默认收起的记录区块。 */
+    public function test_run_page_keeps_counts_in_collapsed_record_section(): void
+    {
+        $novel = Novel::factory()->create(['pause_requested' => true, 'execution_count' => 2, 'max_execution_count' => 8]);
+
+        $html = Livewire::test(ViewNovelRun::class, ['record' => $novel->id])->assertSee('已请求暂停')->assertDontSee('暂停请求')
+            ->assertSee('设定 未执行 → 大纲 未执行')->assertSee('执行 2 / 8 · 阶段尝试 0 次')->assertSee('前往')->html();
+        $this->assertGreaterThan(strpos($html, '请求与费用记录'), strpos($html, '执行次数 / 上限'));
+        $this->assertGreaterThan(strpos($html, '请求与费用记录'), strpos($html, '运行控制记录'));
+    }
 }

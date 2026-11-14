@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\Novels\Pages;
 
 use App\Filament\Resources\Novels\NovelResource;
+use App\Filament\Support\HelpHint;
 use App\Models\ContextManifest;
 use App\Models\CostLog;
 use App\Services\Pipeline\PlanningJson;
@@ -65,19 +66,19 @@ class ViewContextManifests extends Page implements HasTable
             return $schema->components($this->details($manifest));
         }
 
-        return $schema->components([Section::make('请求上下文清单')->description('仅新运行保存清单，旧请求不追补。就绪表示组装通过，是否调用请看关联流水。Token使用保守估算，未校准模型分词误差。')->schema([]), EmbeddedTable::make()]);
+        return $schema->components([Section::make('请求上下文清单')->compact()->description('新运行组装的上下文清单；Token 为保守估算。')->headerActions([HelpHint::action('仅新运行保存清单，旧请求不追补。就绪表示组装通过，是否调用请看关联流水。Token使用保守估算，未校准模型分词误差。')])->schema([]), EmbeddedTable::make()]);
     }
 
     /** 按章筛选当前小说清单，阻塞项也保留且不会产生模型调用。 */
     public function table(Table $table): Table
     {
         return $table->query(ContextManifest::where('novel_id', $this->getRecord()->id))->defaultSort('id', 'desc')->columns([
-            TextColumn::make('id')->label('清单编号'), TextColumn::make('chapter_number')->label('章号'),
+            TextColumn::make('id')->label('清单编号')->prefix('#')->color('gray'), TextColumn::make('chapter_number')->label('章号'),
             TextColumn::make('purpose')->label('用途')->formatStateUsing(fn (string $state): string => match ($state) {
                 'preview' => '验收预览（未发送）', 'fine' => '细纲', 'draft' => '正文', 'revise' => '修订', 'check' => '检查', 'review' => '评审', 'extract' => '提取', default => $state
             }),
             TextColumn::make('status')->label('组装状态')->formatStateUsing(fn (string $state): string => $state === 'ready' ? '就绪（不代表已发送）' : '容量阻塞'),
-            TextColumn::make('document.required_capacity')->label('总预算需求（估算）'), TextColumn::make('created_at')->label('组装时间')->dateTime(),
+            TextColumn::make('document.required_capacity')->label('总预算需求（估算）'), TextColumn::make('created_at')->label('组装时间')->since()->dateTimeTooltip('Y-m-d H:i:s')->color('gray'),
         ])->filters([SelectFilter::make('chapter_number')->label('目标章节')->options(fn (): array => ContextManifest::where('novel_id', $this->getRecord()->id)->distinct()->orderBy('chapter_number')->pluck('chapter_number', 'chapter_number')->all())])
             ->recordActions([Action::make('inspectContext')->label('查看入选与裁剪')->url(fn (ContextManifest $record): string => NovelResource::getUrl('contexts', ['record' => $record->novel_id, 'manifest' => $record->id]))]);
     }

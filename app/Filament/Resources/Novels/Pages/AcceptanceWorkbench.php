@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\Novels\Pages;
 
 use App\Filament\Resources\Novels\NovelResource;
+use App\Filament\Support\HelpHint;
 use App\Models\AcceptanceBatch;
 use App\Models\AcceptanceEvidence;
 use App\Services\Pipeline\AcceptanceWorkbench as Workbench;
@@ -101,7 +102,7 @@ class AcceptanceWorkbench extends Page implements HasTable
                     TextEntry::make('sum'), TextEntry::make('result'),
                     TextEntry::make('url')->url(fn (?string $state): ?string => $state)->formatStateUsing(fn (): string => '阅读评分'),
                 ])]),
-            Section::make('外部证据待办')->description('以下项目需要你在系统外核验后，通过表格中的“导入外部证据”记录；系统不会代为判定。')
+            Section::make('外部证据待办')->compact()->description('在系统外核验后，用“导入外部证据”记录。')->headerActions([HelpHint::action('以下项目需要你在系统外核验后，通过表格中的“导入外部证据”记录；系统不会代为判定。', 'evidenceHelp')])
                 ->schema([RepeatableEntry::make('cases')->hiddenLabel()->state(array_map(fn (array $case): array => [...$case, 'status' => $status($case['pass'])], $progress['cases']))->schema([
                     TextEntry::make('label')->label('用例'), TextEntry::make('status')->label('状态'),
                     TextEntry::make('guidance')->label('如何取证')->columnSpanFull(),
@@ -121,14 +122,14 @@ class AcceptanceWorkbench extends Page implements HasTable
         $editable = fn (AcceptanceBatch $record): bool => $record->actor_id === Filament::auth()->id() && $record->status !== 'accepted';
 
         return $table->query(AcceptanceBatch::where('novel_id', $this->getRecord()->id))->defaultSort('id', 'desc')->columns([
-            TextColumn::make('id')->label('验收编号'), TextColumn::make('kind')->label('类别')->formatStateUsing(fn ($state) => self::kinds()[$state]),
+            TextColumn::make('id')->label('验收编号')->prefix('#')->color('gray'), TextColumn::make('kind')->label('类别')->formatStateUsing(fn ($state) => self::kinds()[$state]),
             TextColumn::make('end_chapter')->label('首章至章号'), TextColumn::make('status')->label('结论状态')->formatStateUsing(fn ($state) => self::statuses()[$state]),
             TextColumn::make('rating_progress')->label('人工评分')->state(function (AcceptanceBatch $record): string {
                 $progress = app(Workbench::class)->progress($record);
 
                 return '已评 '.$progress['rated'].'/'.$progress['total'].' · 达标 '.$progress['passed'];
             }),
-            TextColumn::make('actor_id')->label('负责人'), TextColumn::make('created_at')->label('冻结时间')->dateTime(),
+            TextColumn::make('actor_id')->label('负责人'), TextColumn::make('created_at')->label('冻结时间')->since()->dateTimeTooltip('Y-m-d H:i:s')->color('gray'),
         ])->filters([SelectFilter::make('kind')->label('类别')->options(self::kinds()), SelectFilter::make('status')->label('状态')->options(self::statuses())])
             ->recordActions([
                 Action::make('inspect')->label('缺口与证据')->modalSubmitAction(false)->schema(function (AcceptanceBatch $record): array {
