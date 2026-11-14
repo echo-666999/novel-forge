@@ -246,6 +246,11 @@ final class ContentExecutionService
         if (isset($recovery['validation_error'])) {
             $payload['previous_response_failure'] = $recovery['validation_error'];
         }
+        // 修订段落格式未通过后的补发：给出上次的具体错误，范围与问题编号仍按原契约。
+        if ($step === 'revise' && ($revisionError = $this->revisionRetry($run)) !== null) {
+            $payload['previous_response_failure'] = $revisionError;
+            $payload['retry_instruction'] = '上次修订的段落格式未通过，按previous_response_failure逐条修正后重新给出全部范围替换：人物原话必须放在对白段，对白段只含一个人的一次发言及紧邻动作；叙述段不得引用或转述人物原话。';
+        }
         if ($step === 'fine') {
             // 场景数随冻结篇幅确定，细纲不能排出每场只够写流程摘要的密集场景。
             $context['scene_range'] = ContentExecutionContract::sceneRange($run->snapshot['novel']['chapter_length_policy']);
@@ -439,12 +444,40 @@ final class ContentExecutionService
         return (bool) ($run->config['slot_repair'] ?? false) || isset($run->snapshot['acceptance_branch']);
     }
 
-    /** 正文篇幅或分段未通过时，在已授权额度内继续修复：须启用单场景修复，且修复后仍留一次推进检查的请求与执行额度。 */
-    private function canRepairInRun(ChapterGenerationRun $run, Novel $novel, ?string $error): bool
+    /** 未通过时在已授权额度内继续修复：正文篇幅或分段须启用单场景修复；修订段落格式每次运行只补发一次。修复后仍须留一次推进检查的请求与执行额度。 */
+    private function canRepairInRun(ChapterGenerationRun $run, Novel $novel, ?string $error, string $step): bool
     {
-        return self::slotRepair($run)
-            && $error !== null && preg_match('/^正文(场景|单段)预算或格式无效/u', $error) === 1
-            && $run->requests_used + 2 <= $run->request_limit && $novel->execution_count + 2 <= $novel->max_execution_count;
+        if ($error === null || ! $this->hasRepairQuota($run, $novel)) {
+            return false;
+        }
+
+        return match ($step) {
+            'draft' => self::slotRepair($run) && preg_match('/^正文(场景|单段)预算或格式无效/u', $error) === 1,
+            'revise' => str_starts_with($error, '修订段落格式无效') && $this->revisionRetry($run, true) === null,
+            default => false,
+        };
+    }
+
+    /** 再发一次请求后仍够做一次推进检查。 */
+    private function hasRepairQuota(ChapterGenerationRun $run, Novel $novel): bool
+    {
+        return $run->requests_used + 2 <= $run->request_limit && $novel->execution_count + 2 <= $novel->max_execution_count;
+    }
+
+    /** 本运行内最近一次需要补发的修订：返回其格式错误；$any 为真时返回任何一次已补发记录，用于限制每次运行只补发一次。 */
+    private function revisionRetry(ChapterGenerationRun $run, bool $any = false): ?string
+    {
+        $stages = NovelStage::where('novel_id', $run->chapter->novel_id)->where('input->run_id', $run->id)->where('input->step', 'revise')->orderByDesc('id')->get();
+        foreach ($stages as $stage) {
+            if (data_get($stage->output, 'data.outcome') === self::IN_RUN_REPAIR) {
+                return (string) data_get($stage->output, 'data.validation_error');
+            }
+            if (! $any) {
+                return null;
+            }
+        }
+
+        return null;
     }
 
     /** 失败草稿的字段与当前预算槽位完全一致、且每个槽位都是段落列表时才能逐场景修复。
@@ -494,13 +527,15 @@ final class ContentExecutionService
                 return null;
             }
             $reuse = isset($request['context']['reused_draft']);
+            // 修订格式补发须在新建阶段之前判定，否则会被当成第二次修订，也不另计修订次数。
+            $formatRetry = $run->next_step === 'revise' && $this->revisionRetry($run) !== null;
             if (! $reuse && ($run->requests_used >= $run->request_limit || $novel->execution_count >= $novel->max_execution_count)) {
                 $this->stop($run, $novel, 'execution_limit');
 
                 return null;
             }
             if ($novel->stages()->where('status', 'running')->exists() || CostLog::where('novel_id', $novel->id)->where('status', 'pending')->exists()
-                || ($run->next_step === 'revise' && ! $this->canRevise($run))) {
+                || ($run->next_step === 'revise' && ! ($formatRetry ? $this->hasRepairQuota($run, $novel) : $this->canRevise($run)))) {
                 $this->stop($run, $novel, 'retry_limit');
 
                 return null;
@@ -515,7 +550,7 @@ final class ContentExecutionService
                     (isset($request['context']['context_policy']) ? 'source_payload_hash' : 'payload_hash') => PlanningJson::hash($request['payload']),
                     ...($reuse ? ['reused_draft' => $request['context']['reused_draft']] : [])], 'started_at' => now()]);
             // 采用已合格的保存草稿不发送请求，不占用运行请求额度和小说执行次数。
-            $run->update(['status' => 'running', 'requests_used' => $run->requests_used + ($reuse ? 0 : 1), 'retry_count' => $run->retry_count + ($step === 'revise' ? 1 : 0)]);
+            $run->update(['status' => 'running', 'requests_used' => $run->requests_used + ($reuse ? 0 : 1), 'retry_count' => $run->retry_count + ($step === 'revise' && ! $formatRetry ? 1 : 0)]);
             $novel->update(['status' => NovelStatus::Running, 'current_stage' => $stageType, 'execution_count' => $novel->execution_count + ($reuse ? 0 : 1)]);
             $run->chapter->update(['status' => $step === 'check' ? ChapterStatus::Checking : ChapterStatus::Generating]);
 
@@ -613,7 +648,7 @@ final class ContentExecutionService
                 }
                 $stop = $failure;
                 // 篇幅或分段未通过时，在已授权额度内继续修复，不再一次失败就停下等待手动恢复。
-                $repairInRun = $failure === 'invalid_schema' && $step === 'draft' && $this->canRepairInRun($run, $novel, $error);
+                $repairInRun = $failure === 'invalid_schema' && $this->canRepairInRun($run, $novel, $error, $step);
                 if ($repairInRun) {
                     $stop = null;
                 }
@@ -631,7 +666,7 @@ final class ContentExecutionService
                     $output['repair_slot'] = $repairSlot;
                 }
                 if ($repairInRun) {
-                    $run->next_step = 'draft';
+                    $run->next_step = $step;
                 } elseif ($stop === null && $step === 'fine') {
                     $run->plan_data = $data;
                     $run->fine_stage_id = $stage->id;

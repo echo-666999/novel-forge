@@ -90,8 +90,8 @@ class ContentDraftBudgetTest extends TestCase
     public static function invalidParagraphs(): array
     {
         return [
-            '叙述夹带原话' => [self::narration('她拨回去，说：“妈，这不是随手锉的。”母亲沉默了几秒。'), '是叙述段却夹带人物原话'],
-            '叙述转引原话' => [self::narration('母亲已经说了句“先这样，我这边水开了”，挂了。听筒里只剩忙音。'), '是叙述段却夹带人物原话'],
+            '叙述夹带原话' => [self::narration('她拨回去，说：“妈，这不是随手锉的。”母亲沉默了几秒。一柜三格，第三格放底册；账上却写柜体锈蚀、无保存价值。前者像在指路，后者像有人拿布把路标盖住了，她越看越觉得这两页纸说的根本不是同一只柜子。'), '是叙述段却夹带人物原话'],
+            '叙述转引原话' => [self::narration('沈禾没有立刻接话。小陶说“好好的，锁都还在”时，嘴角往下撇了一下，那点不信比任何解释都让她心里发沉。一柜三格，第三格放底册；账上却写柜体锈蚀、无保存价值。前者像在指路，后者像有人拿布把路标盖住了，她越看越觉得这两页纸说的根本不是同一只柜子。'), '是叙述段却夹带人物原话'],
             '对白挤多轮' => [self::dialogue('“钥匙呢？”母亲问。“我想留两天。”她说。“留它干什么？”'), '有3处引语'],
             '对白混入长叙述' => [self::dialogue('“放回去。”'.str_repeat('母亲把木箱钥匙收进抽屉，又转身去厨房关火。', 4)), '引号外叙述'],
             '对白无引语' => [self::dialogue('母亲让她把钥匙放回去。'), '是对白段却没有中文引号原话'],
@@ -230,6 +230,16 @@ class ContentDraftBudgetTest extends TestCase
         ContentExecutionContract::authorizedRanges(['ranges' => [$extra]]);
     }
 
+    /** 标成叙述、但整段符合对白段规则（一次发言加紧邻动作）的段落按对白段接受，文字原样不改；正文与修订范围同样适用。 */
+    public function test_narration_that_is_a_valid_dialogue_paragraph_is_accepted(): void
+    {
+        $texts = ['沈禾把杯子挪开，声音放轻：“几点回来的？”', '她拨回去，说：“妈，这不是随手锉的。”母亲沉默了几秒。'];
+        $data = ContentExecutionContract::body(['title' => '标题', 'paragraphs' => ['p1' => array_map(fn (string $text): array => self::narration($text), $texts)]], ['slots' => ['p1'], 'min' => 1, 'max' => 200]);
+        $this->assertSame(implode("\n", $texts), $data['body']);
+        $range = ['start_id' => 'p1', 'end_id' => 'p1', 'reason' => '修', 'addresses' => ['f1'], 'text' => [self::narration($texts[0])]];
+        $this->assertSame($texts[0], ContentExecutionContract::revisionText(['ranges' => [$range]], true)['ranges'][0]['text']);
+    }
+
     /** 修订范围的段落列表按正文规则校验后拼成文本，交给范围替换；叙述夹带原话同样被拒绝。 */
     public function test_revision_text_uses_paragraph_rules(): void
     {
@@ -239,7 +249,7 @@ class ContentDraftBudgetTest extends TestCase
         $this->assertSame("她把手机换到另一只耳朵，听见那头锅铲停了，抽油烟机还在低低地响。\n“你先别跟你舅说。”", $data['ranges'][0]['text']);
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('第1处修订第1段是叙述段却夹带人物原话');
-        ContentExecutionContract::revisionText(['ranges' => [[...$range, 'text' => [self::narration('她对着电话说：“妈，这不是随手锉的。”母亲沉默了。')]]]], false);
+        ContentExecutionContract::revisionText(['ranges' => [[...$range, 'text' => [self::narration('她对着电话说：“妈，这不是随手锉的。”母亲沉默了。一柜三格，第三格放底册；账上却写柜体锈蚀、无保存价值。前者像在指路，后者像有人拿布把路标盖住了，她越看越觉得这两页纸说的根本不是同一只柜子。')]]]], false);
     }
 
     /** 叙述把相邻对白的原话先转述一遍时按叙述段报告；只共用人名物名等短词不算重复。 */

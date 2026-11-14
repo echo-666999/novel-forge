@@ -466,16 +466,22 @@ final class ContentExecutionContract
             if ($complete && ! self::hasCompleteEnding($paragraph['text'])) {
                 throw new InvalidArgumentException('自动首章正文段落未完整结束');
             }
-            $problem = match ($paragraph['kind']) {
+            $kind = $paragraph['kind'];
+            $problem = match ($kind) {
                 'narration' => self::narrationProblem($paragraph['text']),
                 'dialogue' => self::dialogueProblem($paragraph['text']),
                 default => throw new InvalidArgumentException('段落类型只能是narration或dialogue'),
             };
+            // 标成叙述却含人物原话、而整段本身符合对白段规则（一次发言加紧邻动作）时，按对白段接受：只改类型，不改文字。
+            if ($kind === 'narration' && $problem !== null && self::dialogueProblem($paragraph['text']) === null) {
+                $kind = 'dialogue';
+                $problem = null;
+            }
             if ($problem !== null) {
                 $errors[] = $position.$problem;
             }
-            $narration += $paragraph['kind'] === 'narration' ? 1 : 0;
-            $short += $paragraph['kind'] === 'narration' && ContentSchema::count($paragraph['text']) < self::SHORT_NARRATION ? 1 : 0;
+            $narration += $kind === 'narration' ? 1 : 0;
+            $short += $kind === 'narration' && ContentSchema::count($paragraph['text']) < self::SHORT_NARRATION ? 1 : 0;
         }
         $allowed = self::allowedShortNarration($narration);
         if ($short > $allowed) {

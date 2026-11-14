@@ -113,7 +113,7 @@ class B04ExecutionTest extends TestCase
                 foreach ($payload['budget']['slots'] as $i => $slot) {
                     // 每个场景一段叙述加一段对白，拼接后各占一行。
                     $items = B04ContentTest::sceneParagraphs(intdiv($payload['budget']['min'] + $payload['budget']['max'], 2), mb_chr(0x4E00 + $i + 16 * NovelStage::findOrFail($log->novel_stage_id)->input['run_id']));
-                    if (in_array($this->scenario, ['meta', 'meta_extra', 'meta_buried'], true) && $i === 0) {
+                    if (in_array($this->scenario, ['meta', 'meta_extra', 'meta_buried', 'meta_buried_once'], true) && $i === 0) {
                         $items[0]['text'] = '此段约350字。'.mb_substr($items[0]['text'], 8);
                     }
                     // 模拟流程记录式正文：没有任何对白，可读性指标越线。
@@ -136,8 +136,9 @@ class B04ExecutionTest extends TestCase
                 $data = ['ranges' => [['start_id' => $id, 'end_id' => $id, 'text' => [['kind' => 'narration', 'text' => $text]], 'reason' => '隔离修复待解决问题', 'addresses' => array_keys($payload['findings'])]]];
                 // 模拟模型顺手改写无问题段落：该范围没有问题编号，应被丢弃留档。
                 // 模拟修订把对白重新塞回叙述段：替换文本同样受分段规则约束。
-                if ($this->scenario === 'meta_buried') {
-                    $data['ranges'][0]['text'] = [['kind' => 'narration', 'text' => '她拨回去说：“这不是随手锉的。”母亲沉默了几秒。']];
+                // 补发的修订带有上次格式错误；once场景在补发时给出合格范围。
+                if ($this->scenario === 'meta_buried' || ($this->scenario === 'meta_buried_once' && ! isset($payload['retry_instruction']))) {
+                    $data['ranges'][0]['text'] = [['kind' => 'narration', 'text' => '她拨回去说：“这不是随手锉的。”母亲沉默了几秒。'.str_repeat('窗外的雨一直没停，楼道里的声控灯亮了又灭。', 5)]];
                 }
                 if ($this->scenario === 'meta_extra') {
                     $data['ranges'][] = ['start_id' => array_key_last($payload['available_anchors']), 'end_id' => array_key_last($payload['available_anchors']), 'text' => [['kind' => 'narration', 'text' => '无关改写。']], 'reason' => '顺手润色', 'addresses' => []];
@@ -314,16 +315,34 @@ class B04ExecutionTest extends TestCase
         $this->assertSame(explode("\n", ChapterVersion::oldest('id')->firstOrFail()->body)[5], explode("\n", $final)[5]);
     }
 
-    /** 修订替换文本同样按段落列表校验，把对白塞回叙述段的修订被拒绝，原候选保持不变。 */
+    /** 修订替换文本同样按段落列表校验：把对白塞回长叙述段的修订被拒绝，同一运行内带着错误原因补发一次（不另计修订次数），仍不合格才停下，原候选保持不变。 */
     public function test_revise_rejects_dialogue_buried_in_narration(): void
     {
         $this->scenario = 'meta_buried';
         $run = $this->start();
         $this->drain();
         $this->assertSame('invalid_schema', $run->fresh()->stop_reason);
-        $revise = NovelStage::where('input->run_id', $run->id)->where('input->step', 'revise')->sole();
-        $this->assertStringContainsString('是叙述段却夹带人物原话', $revise->output['data']['validation_error']);
+        $revisions = NovelStage::where('input->run_id', $run->id)->where('input->step', 'revise')->orderBy('id')->get();
+        $this->assertCount(2, $revisions);
+        $this->assertSame(ContentExecutionService::IN_RUN_REPAIR, $revisions[0]->output['data']['outcome']);
+        $this->assertStringContainsString('是叙述段却夹带人物原话', $revisions[1]->output['data']['validation_error']);
+        $retry = json_decode(explode('冻结输入：', CostLog::where('request_parameters->step', 'revise')->latest('id')->firstOrFail()->request_parameters['prompt_audit']['user_prompt'], 2)[1], true);
+        $this->assertStringContainsString('是叙述段却夹带人物原话', $retry['previous_response_failure']);
+        $this->assertArrayHasKey('retry_instruction', $retry);
+        $this->assertSame(1, $run->fresh()->retry_count);
         $this->assertSame(1, ChapterVersion::count());
+    }
+
+    /** 修订格式补发成功后照常进入独立检查。 */
+    public function test_revise_format_retry_succeeds_in_same_run(): void
+    {
+        $this->scenario = 'meta_buried_once';
+        $run = $this->start();
+        $this->drain();
+        $this->assertSame('awaiting_review', $run->fresh()->stop_reason);
+        $this->assertSame(2, NovelStage::where('input->run_id', $run->id)->where('input->step', 'revise')->count());
+        $this->assertSame(2, ChapterVersion::count());
+        $this->assertSame(1, ChapterGenerationRun::count());
     }
 
     /** 对白占比过低的正文先交修订；修订后仍越线则停在质量不足，不进入独立检查。 */
