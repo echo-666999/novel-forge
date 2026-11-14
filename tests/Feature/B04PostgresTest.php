@@ -253,7 +253,7 @@ class B04PostgresTest extends TestCase
         $before = $run->fresh()->getRawOriginal();
         $oldVersions = ChapterVersion::orderBy('id')->get()->map->getRawOriginal()->all();
         $next = $service->recover($run->id, User::firstOrFail(), '另行明确授权两次有限请求');
-        $this->assertSame(2, $next->request_limit);
+        $this->assertSame(3, $next->request_limit);
         $this->drain(5);
         $this->assertSame('awaiting_review', $next->fresh()->stop_reason);
         $reviews = ChapterProgressionCheck::latest('id')->firstOrFail()->result['reading_reviews'];

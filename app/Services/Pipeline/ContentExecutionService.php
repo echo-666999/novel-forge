@@ -45,7 +45,8 @@ final class ContentExecutionService
         $imported = $initial === 'check' && isset($config['accepted_comparison']);
         $endingRecheck = $initial === 'check' && isset($config['automated_ending_recheck']);
         $base = ($manual || $imported || $endingRecheck) ? 1 : ($initial === 'fine' ? 3 : 2);
-        $cap = $base + ($initial === 'revise' ? 0 : 2 * ($config['max_retries'] ?? 0));
+        // 恢复修订可多留一次请求，用于修订格式不合格时的运行内补发；其余起点按设置的重试次数放宽。
+        $cap = $base + ($initial === 'revise' ? 1 : 2 * ($config['max_retries'] ?? 0));
         if (! ContentExecutionContract::readable($config['version'] ?? null) || $run->request_limit !== ($config['request_cap'] ?? null)
             || ! in_array($config['max_retries'] ?? null, [0, 1], true) || $run->retry_count > $config['max_retries']
             || ! in_array($initial, ['fine', 'draft', 'revise', 'check'], true) || ($initial === 'check' && ((! $manual && ! $imported && ! $endingRecheck) || $config['max_retries'] !== 0 || (($manual || $endingRecheck) && $run->parent_run_id === null) || ($imported && $run->parent_run_id !== null))) || ($initial === 'fine' && ! $config['enable_fine_outline'])

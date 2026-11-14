@@ -337,7 +337,7 @@ class ChapterContentWorkbenchViewTest extends TestCase
         $this->assertGreaterThan(strpos($html, '请求与费用记录'), strpos($html, '冻结模型'));
     }
 
-    /** 恢复弹窗勾选整章重写后请求上限默认值随之提高，取消后回到定点修订的2次；修复方式按运行实际起始步骤显示。 */
+    /** 恢复弹窗勾选整章重写后请求上限默认值随之提高，取消后回到定点修订的3次；修复方式按运行实际起始步骤显示。 */
     public function test_recovery_rewrite_raises_default_limit_and_mode_label_is_accurate(): void
     {
         $run = $this->createRun();
@@ -347,10 +347,10 @@ class ChapterContentWorkbenchViewTest extends TestCase
         $run->chapter->novel->update(['status' => 'paused']);
 
         $page = Livewire::test(ViewChapterContent::class, ['record' => $run->chapter->novel_id])->assertSee('首次生成')
-            ->mountAction('recoverContent')->assertSet('mountedActions.0.data.request_limit', 2)
+            ->mountAction('recoverContent')->assertSet('mountedActions.0.data.request_limit', 3)
             ->set('mountedActions.0.data.rewrite', true);
         $this->assertGreaterThanOrEqual(4, $page->get('mountedActions.0.data.request_limit'));
-        $page->set('mountedActions.0.data.rewrite', false)->assertSet('mountedActions.0.data.request_limit', 2);
+        $page->set('mountedActions.0.data.rewrite', false)->assertSet('mountedActions.0.data.request_limit', 3);
 
         ChapterGenerationRun::factory()->create(['chapter_id' => $run->chapter_id, 'parent_run_id' => $run->id,
             'config' => [...$run->config, 'initial_step' => 'draft'], 'snapshot' => [...$run->snapshot, 'recovery' => ['source_version_id' => $version->id]]]);

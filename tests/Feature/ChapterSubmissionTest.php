@@ -7,6 +7,7 @@ use App\Filament\Resources\Novels\Pages\ViewNovel;
 use App\Jobs\RunChapterStepJob;
 use App\Models\CanonicalCommit;
 use App\Models\ChapterEventExtraction;
+use App\Models\ChapterGenerationRun;
 use App\Models\ChapterReview;
 use App\Models\ChapterSubmissionRun;
 use App\Models\ChapterSubmissionValidation;
@@ -624,5 +625,24 @@ class ChapterSubmissionTest extends TestCase
         $this->assertSame(0, $successor->requests_used);
         $this->assertSame($before, $run->fresh()->getRawOriginal());
         Http::assertSentCount(4);
+    }
+
+    /** 评审驳回后工作台可按评审意见建修订运行：绑定原评审、默认三次请求（修订、补发、检查），建好后入口消失。 */
+    public function test_rejected_review_can_be_revised_from_workbench(): void
+    {
+        $this->scenario = 'review_reject';
+        [$run, $operator] = self::prepared();
+        $this->assertSame('REVIEW_NOT_PASSED', $run->stop_reason);
+        $this->actingAs($operator);
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        $parent = ChapterGenerationRun::where('chapter_id', $run->chapter_id)->latest('id')->firstOrFail();
+        $page = Livewire::test(ViewChapterContent::class, ['record' => $run->novel_id])->assertActionVisible('reviseFromReview')
+            ->mountAction('reviseFromReview')->assertActionDataSet(['request_limit' => 3])
+            ->setActionData(['execution_limit' => max($run->novel->fresh()->max_execution_count, $run->novel->fresh()->execution_count + 3), 'accept_request' => true])->callMountedAction()->assertHasNoActionErrors()->assertNotNotified('首章操作未执行');
+        $child = ChapterGenerationRun::where('parent_run_id', $parent->id)->sole();
+        $this->assertSame(3, $child->request_limit);
+        $this->assertSame('revise', $child->next_step);
+        $this->assertSame('根据独立提交评审修订当前候选', $child->config['authorization']['reason']);
+        $page->assertActionHidden('reviseFromReview');
     }
 }

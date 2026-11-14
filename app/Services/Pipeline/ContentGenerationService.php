@@ -229,14 +229,15 @@ final class ContentGenerationService
                 throw new InvalidArgumentException('设置禁止修订，不能新建修订运行');
             }
             $base = $step === 'fine' ? 3 : 2;
-            $limit = $step === 'revise' ? ($requestLimit ?? 2) : $this->limit($requestLimit, $base, $config['max_retries']);
+            $limit = $step === 'revise' ? ($requestLimit ?? 3) : $this->limit($requestLimit, $base, $config['max_retries']);
             if ($endingRecheck) {
                 $config['max_retries'] = 0;
                 $limit = 1;
                 $config['automated_ending_recheck'] = ['version_id' => $source->id, 'body_hash' => $source->body_hash];
             }
-            if ($step === 'revise' && $limit !== 2) {
-                throw new InvalidArgumentException('恢复范围修订只允许修订和检查各一次');
+            // 修订格式不合格时可在同一运行内补发一次，补发后仍须留一次推进检查；不留补发额度时为2次。
+            if ($step === 'revise' && ! in_array($limit, [2, 3], true)) {
+                throw new InvalidArgumentException('恢复范围修订的请求上限只能是2或3：修订、格式不合格时补发一次、推进检查');
             }
             $snapshot['recovery'] = ['parent_run_id' => $parent->id, 'parent_input_hash' => $parent->input_hash, 'parent_status' => $parent->status,
                 'parent_stop_reason' => $parent->stop_reason, 'source_version_id' => $source?->id, 'source_body_hash' => $source?->body_hash,

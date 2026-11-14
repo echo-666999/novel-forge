@@ -11,7 +11,7 @@ use InvalidArgumentException;
 /** 问题驱动的候选修订工作台，复用范围修订与独立检查，不修改正式历史。 */
 final class RevisionWorkbench
 {
-    /** 同章工作台最多两轮，每轮修订和复评各一次，耗尽后转人工。 */
+    /** 同章工作台最多两轮，每轮修订（格式不合格时可补发一次）和复评各一次，耗尽后转人工。 */
     public const ROUND_LIMIT = 2;
 
     /** 仅统计已保存的工作台授权，失败请求也占用该轮，不能靠恢复重置。 */
@@ -93,6 +93,6 @@ final class RevisionWorkbench
             return '已授权2 / 2轮；当前轮执行结束后不再开放模型修订，剩余问题转人工处理';
         }
 
-        return '已授权'.$count.' / '.self::ROUND_LIMIT.'轮；每轮修订及独立复评各一次，不自动正式提交';
+        return '已授权'.$count.' / '.self::ROUND_LIMIT.'轮；每轮修订及独立复评各一次（修订格式不合格时补发一次），不自动正式提交';
     }
 }

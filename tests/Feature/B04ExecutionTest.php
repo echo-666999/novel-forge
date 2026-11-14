@@ -362,6 +362,30 @@ class B04ExecutionTest extends TestCase
         $this->assertSame(1, $run->fresh()->retry_count);
     }
 
+    /** 恢复修订默认3次请求：修订缺少问题编号时在同一运行内补发一次，仍留一次推进检查；上限超过3被拒绝。 */
+    public function test_recovery_revision_has_quota_for_one_retry(): void
+    {
+        $run = $this->start();
+        $this->drain();
+        $service = app(ContentGenerationService::class);
+        $service->recordReading($run->id, User::firstOrFail(), false, ['隔离意见：第一段动作交代不清']);
+        try {
+            $service->recover($run->id, User::firstOrFail(), '超出补发额度', 4);
+            $this->fail('修订上限4应被拒绝');
+        } catch (InvalidArgumentException $exception) {
+            $this->assertStringContainsString('请求上限只能是2或3', $exception->getMessage());
+        }
+        $this->scenario = 'meta_unaddressed_once';
+        $next = $service->recover($run->id, User::firstOrFail(), '恢复修订带补发额度');
+        $this->assertSame(3, $next->request_limit);
+        $this->drain();
+        $revisions = NovelStage::where('input->run_id', $next->id)->where('input->step', 'revise')->orderBy('id')->get();
+        $this->assertCount(2, $revisions);
+        $this->assertStringContainsString('没有对应问题编号', $revisions[0]->output['data']['validation_error']);
+        $this->assertSame(3, $next->fresh()->requests_used);
+        $this->assertSame('awaiting_review', $next->fresh()->stop_reason);
+    }
+
     /** 对白占比过低的正文先交修订；修订后仍越线则停在质量不足，不进入独立检查。 */
     public function test_flat_body_is_sent_to_revision_by_readability_metrics(): void
     {
@@ -778,7 +802,7 @@ class B04ExecutionTest extends TestCase
         $this->assertSame($next->id, $service->recover($parent->id, User::firstOrFail(), '重复点击')->id);
         $this->assertSame(4, Queue::pushed(RunChapterStepJob::class)->count());
         $this->assertSame(ContentExecutionContract::VERSION, $next->config['version']);
-        $this->assertSame(2, $next->request_limit);
+        $this->assertSame(3, $next->request_limit);
         $this->assertSame($parent->fine_stage_id, $next->fine_stage_id);
         $this->drain();
         $this->assertSame('awaiting_review', $next->fresh()->stop_reason);

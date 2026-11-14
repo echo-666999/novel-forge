@@ -535,7 +535,7 @@ class ViewChapterContent extends Page implements HasTable
                             }),
                         ])->verticallyAlignCenter(),
                         TextEntry::make('submission_reason')->label('停止原因')->state(fn (): ?string => ProductionFailure::detailLabel($this->submission()?->stop_reason))->visible(fn (): bool => $this->submission()?->stop_reason !== null),
-                        Section::make('基础评审')->compact()->schema([
+                        Section::make('基础评审')->compact()->headerActions([$this->reviewRevisionAction('reviseFromReviewInline')])->schema([
                             TextEntry::make('review_verdict')->hiddenLabel()->badge()->state(fn (): string => $this->submissionView()['review']['verdict'] ?? '尚无记录')
                                 ->color(fn (string $state): string => match ($state) {
                                     '评审通过' => 'success', '需要修订' => 'danger', default => 'gray',
@@ -864,12 +864,56 @@ class ViewChapterContent extends Page implements HasTable
     /** 根据保留产物显示预算，服务仍会重新校验选择的策略和全局修订设置。 */
     private function recoveryCap(bool $rewrite = false): int
     {
-        // 已有候选时默认定点修订，只需修订和检查各一次；整章重写按生成的完整额度，便于不合格时在运行内修复。
+        // 已有候选时默认定点修订：修订、格式不合格时补发一次、推进检查；整章重写按生成的完整额度，便于不合格时在运行内修复。
         if (! $rewrite && $this->run()?->chapter->current_candidate_version_id !== null) {
-            return 2;
+            return 3;
         }
 
         return (($this->run()?->config['enable_fine_outline'] ?? false) && $this->run()?->plan_data === null ? 3 : 2) + 2 * min(1, app(GeneralSettings::class)->max_retries_per_chapter);
+    }
+
+    /** 提交评审驳回且尚未按这份评审建修订运行时，当前候选可按评审意见修订；修订运行失败后改用“恢复本章候选”；自动生产覆盖的章节由恢复台处理。 */
+    private function canReviseFromReview(): bool
+    {
+        $submission = $this->submission();
+
+        return $submission?->status === 'failed' && $submission->stop_reason === 'REVIEW_NOT_PASSED'
+            && ProductionRun::coveringChapter($this->getRecord()->id, $this->chapterNumber) === null
+            && $this->run() !== null && $this->run()->chapter->formal_version_id === null
+            && ($review = ChapterReview::where('submission_run_id', $submission->id)->where('verdict', 'needs_revision')->first()) !== null
+            && ! ChapterGenerationRun::where('parent_run_id', $this->run()->id)->exists()
+            && data_get($this->run()->config, 'submission_review.id') !== $review->id;
+    }
+
+    /** 按提交评审意见修订：评审问题随运行冻结，定点修订后重新检查，通过后再做一键提交；勾选整章重写时按冻结场景重写。 */
+    private function reviewRevisionAction(string $name): Action
+    {
+        return Action::make($name)->label('按评审意见修订')->color('warning')->visible(fn (): bool => $this->canReviseFromReview())
+            ->modalHeading('按评审意见修订当前候选')
+            ->modalDescription('评审问题随本次运行冻结，只修改问题所在段落及前后文，再做一次推进检查；通过后可重新一键提交。旧正文、评审与费用全部保留。')
+            ->schema([
+                Checkbox::make('rewrite')->label('改为整章重写（问题牵涉多个场景时使用）')->live()
+                    ->afterStateUpdated(function (?bool $state, Set $set): void {
+                        $set('request_limit', $this->recoveryCap((bool) $state));
+                        $set('execution_limit', max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + $this->recoveryCap((bool) $state)));
+                    }),
+                TextInput::make('model')->label('仅本次修订使用的模型')->required()->default(fn (): ?string => data_get($this->run()?->config, 'model')),
+                TextInput::make('request_limit')->label('本次请求总上限')->integer()->minValue(2)->maxValue(5)->default(fn (): int => $this->recoveryCap())->required(),
+                TextInput::make('execution_limit')->label('确认本小说执行总上限')->integer()->minValue(1)->maxValue(2147483647)->default(fn (): int => max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + $this->recoveryCap()))->required(),
+                Textarea::make('reason')->label('修订原因')->default('根据独立提交评审修订当前候选')->required(),
+                Checkbox::make('confirm_unknown')->label('若存在未知调用，我已核查并确认独立新请求可能产生额外费用；旧费用保持未知'),
+                Checkbox::make('accept_request')->label('确认上述本次有限请求及可能费用；不代表作者批准或正式提交')->accepted(),
+            ])->action(function (array $data): void {
+                // 打开弹窗后评审或候选若已变化，服务层按评审绑定的版本与正文摘要拒绝。
+                $this->performContentAction(function () use ($data): void {
+                    $review = ChapterReview::where('submission_run_id', $this->submission()?->id)->firstOrFail();
+                    app(ContentGenerationService::class)->recover($this->run()->id, Filament::auth()->user(), $data['reason'], (int) $data['request_limit'], (int) $data['execution_limit'],
+                        (bool) ($data['confirm_unknown'] ?? false), (bool) ($data['rewrite'] ?? false), $data['model'], submissionReviewId: $review->id);
+                });
+                $this->resolvedRun = null;
+                $this->resolvedFormalVersion = null;
+                $this->getRecord()->refresh();
+            });
     }
 
     /** 仅查询当前候选的准备记录；迁移前旧页面仍可阅读。 */
@@ -995,12 +1039,12 @@ class ViewChapterContent extends Page implements HasTable
                 }), Action::make('back')->label('返回小说')->url(fn (): string => NovelResource::getUrl('view', ['record' => $this->getRecord()]))];
         }
 
-        return [$this->selectChapterAction(), Action::make('reviseIssues')->label('针对指定问题修订')
+        return [$this->selectChapterAction(), $this->reviewRevisionAction('reviseFromReview'), Action::make('reviseIssues')->label('针对指定问题修订')
             ->visible(fn (): bool => $this->run() !== null && $this->candidate() !== null && $this->run()->chapter->formal_version_id === null
                 && in_array($this->run()->status, ['completed', 'paused', 'error'], true)
                 && app(RevisionWorkbench::class)->rounds($this->run()->chapter_id) < RevisionWorkbench::ROUND_LIMIT)
             ->modalHeading('指定问题并授权一轮定点修订')
-            ->modalDescription('每章工作台最多两轮；本轮最多两次真实请求：范围修订和独立复评各一次。旧正文与费用保留，失败不自动重发。')
+            ->modalDescription('每章工作台最多两轮；本轮最多三次真实请求：范围修订、格式不合格时补发一次、独立复评。旧正文与费用保留，其他失败不自动重发。')
             ->schema([
                 TextInput::make('parent_id')->label('冻结运行编号')->default(fn (): ?int => $this->run()?->id)->readOnly()->required(),
                 TextInput::make('version_id')->label('冻结正文版本')->default(fn (): ?int => $this->candidate()?->id)->readOnly()->required(),
@@ -1014,7 +1058,7 @@ class ViewChapterContent extends Page implements HasTable
                         throw new InvalidArgumentException('正文已变化，请刷新后重新指定问题');
                     }
                     $issues = array_values(array_filter(array_map('trim', explode("\n", $data['issues'])), fn (string $issue): bool => $issue !== ''));
-                    app(ContentGenerationService::class)->recover($this->run()->id, Filament::auth()->user(), '作者指定问题修订', 2,
+                    app(ContentGenerationService::class)->recover($this->run()->id, Filament::auth()->user(), '作者指定问题修订', 3,
                         (int) $data['execution_limit'], issues: $issues, expectedVersionId: (int) $data['version_id']);
                 });
                 $this->resolvedRun = null;
@@ -1082,7 +1126,7 @@ class ViewChapterContent extends Page implements HasTable
                 $this->getRecord()->refresh();
             }), Action::make('recoverContent')->label('恢复本章候选')->modalHeading('显式授权有限恢复')
             ->visible(fn (): bool => data_get($this->run()?->config, 'workbench') === null && in_array($this->run()?->status, ['paused', 'error', 'completed'], true) && $this->run()?->stop_reason !== 'b04_accepted' && ! ChapterGenerationRun::where('parent_run_id', $this->run()?->id)->exists())
-            ->modalDescription('旧版本与费用全部保留，新建v14有限运行。范围修订只调用修订和检查各一次；选择重写时按冻结场景生成独立候选。总预算不能无限续用，未知结果须明确确认。')
+            ->modalDescription('旧版本与费用全部保留，新建v14有限运行。范围修订最多调用三次：修订、格式不合格时补发一次、检查；选择重写时按冻结场景生成独立候选。总预算不能无限续用，未知结果须明确确认。')
             ->schema([
                 // 整章重写需要为运行内修复留出额度，勾选后请求上限默认值随之调整，仍可手动修改。
                 Checkbox::make('rewrite')->label('明确授权整章候选重写；不勾选时优先复用现有正文')->live()
