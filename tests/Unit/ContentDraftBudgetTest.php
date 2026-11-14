@@ -117,6 +117,22 @@ class ContentDraftBudgetTest extends TestCase
         ContentExecutionContract::body(['title' => '标题', 'paragraphs' => ['scene_1' => [self::narration('她来了。'), self::narration('门响了。'), self::narration('灯灭了。')]]], ['slots' => ['scene_1'], 'min' => 1, 'max' => 100]);
     }
 
+    /** 紧挨对白的短叙述是对话节奏中的动作或神态，不计入短叙述上限；前后都不是对白的短叙述仍计数。 */
+    public function test_short_narration_next_to_dialogue_is_not_counted(): void
+    {
+        $long = self::narration(str_repeat('灯', 59).'。');
+        $beats = [];
+        foreach (range(1, 5) as $i) {
+            $beats[] = self::dialogue('“第'.$i.'句话。”');
+            $beats[] = self::narration('母亲擦手的动作停了，过了几秒才开口。');
+        }
+        ContentExecutionContract::body(['title' => '标题', 'paragraphs' => ['scene_1' => [$long, ...$beats]]], ['slots' => ['scene_1'], 'min' => 1, 'max' => 2000]);
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('scene_1有3段叙述不足40字，最多2段');
+        $loose = [self::narration('门响了。'), $long, self::narration('灯灭了。'), $long, self::narration('雨停了。'), $long];
+        ContentExecutionContract::body(['title' => '标题', 'paragraphs' => ['scene_1' => $loose]], ['slots' => ['scene_1'], 'min' => 1, 'max' => 2000]);
+    }
+
     /** 叙述段较多时按四分之一放宽短段，完整的过渡短句不被误判为一句一段。 */
     public function test_short_narration_allowance_scales(): void
     {

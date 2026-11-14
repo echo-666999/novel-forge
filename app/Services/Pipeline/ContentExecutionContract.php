@@ -454,8 +454,9 @@ final class ContentExecutionContract
             throw new InvalidArgumentException($label.'没有段落');
         }
         $errors = [];
-        $short = 0;
         $narration = 0;
+        $kinds = [];
+        $shortAt = [];
         foreach ($paragraphs as $index => $paragraph) {
             ContentSchema::keys($paragraph, ['kind', 'text']);
             ContentSchema::text($paragraph['text']);
@@ -481,7 +482,13 @@ final class ContentExecutionContract
                 $errors[] = $position.$problem;
             }
             $narration += $kind === 'narration' ? 1 : 0;
-            $short += $kind === 'narration' && ContentSchema::count($paragraph['text']) < self::SHORT_NARRATION ? 1 : 0;
+            $kinds[] = $kind;
+            $shortAt[] = $kind === 'narration' && ContentSchema::count($paragraph['text']) < self::SHORT_NARRATION;
+        }
+        // 紧挨对白的短叙述是对话间的动作或神态，不算“一句一段”的碎句；只统计前后都不是对白的短叙述。
+        $short = 0;
+        foreach ($shortAt as $position => $isShort) {
+            $short += $isShort && ($kinds[$position - 1] ?? null) !== 'dialogue' && ($kinds[$position + 1] ?? null) !== 'dialogue' ? 1 : 0;
         }
         $allowed = self::allowedShortNarration($narration);
         if ($short > $allowed) {

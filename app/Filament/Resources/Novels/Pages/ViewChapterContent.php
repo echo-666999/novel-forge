@@ -52,6 +52,7 @@ use Filament\Schemas\Components\Grid;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Tabs;
 use Filament\Schemas\Components\Tabs\Tab;
+use Filament\Schemas\Components\Utilities\Set;
 use Filament\Schemas\Schema;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Concerns\InteractsWithTable;
@@ -662,7 +663,7 @@ class ViewChapterContent extends Page implements HasTable
                                 TextEntry::make('requests')->label('已领用 / 请求上限')->state(fn (): string => ($this->run()?->requests_used ?? 0).' / '.($this->run()?->request_limit ?? 0)),
                                 TextEntry::make('submission_requests')->label('提交准备请求（评审与提取）')->state(fn (): string => ($this->submission()?->requests_used ?? 0).' / 2'),
                                 TextEntry::make('shared_requests')->label('本轮质量修复合计请求')->state(fn (): string => data_get($this->run()?->config, 'shared_request_limit') === null ? '按本运行额度执行' : ((int) data_get($this->run()?->config, 'parent_requests_used') + $this->run()->requests_used).' / '.data_get($this->run()?->config, 'shared_request_limit')),
-                                TextEntry::make('repair_mode')->label('本轮修复方式')->state(fn (): string => data_get($this->run()?->config, 'repair_mode') === 'rewrite' ? '已授权的整章候选重写' : '局部修订'),
+                                TextEntry::make('repair_mode')->label('本轮修复方式')->state(fn (): string => $this->repairModeLabel()),
                                 TextEntry::make('model')->label('冻结模型')->state(fn (): ?string => data_get($this->run()?->config, 'model'))->placeholder('—'),
                                 TextEntry::make('tokens')->label('正文输出Token上限')->state(fn (): ?int => data_get($this->run()?->config, 'max_output_tokens'))->placeholder('—'),
                                 TextEntry::make('budget')->label('冻结段落预算')->state(fn (): string => $this->budgetDescription())->columnSpanFull(),
@@ -822,6 +823,23 @@ class ViewChapterContent extends Page implements HasTable
         })->all();
     }
 
+    /** 本轮实际的修复方式：按运行起始步骤与来源判断，不读取未写入的字段。 */
+    private function repairModeLabel(): string
+    {
+        $run = $this->run();
+        $recovering = $run?->parent_run_id !== null;
+
+        return match (true) {
+            $run === null => '尚未启动',
+            ($run->config['initial_step'] ?? null) === 'revise' => '局部修订',
+            ($run->config['initial_step'] ?? null) === 'check' => '只做复查',
+            $recovering && data_get($run->snapshot, 'recovery.source_version_id') !== null => '整章重写',
+            $recovering && isset($run->config['recovery_draft']) => '按失败草稿逐场景修复',
+            $recovering => '重新生成',
+            default => '首次生成',
+        };
+    }
+
     /** 使用新旧来源字段如实展示细纲归属，关闭时不声称生成过细纲。 */
     private function fineSourceLabel(): string
     {
@@ -844,9 +862,10 @@ class ViewChapterContent extends Page implements HasTable
     }
 
     /** 根据保留产物显示预算，服务仍会重新校验选择的策略和全局修订设置。 */
-    private function recoveryCap(): int
+    private function recoveryCap(bool $rewrite = false): int
     {
-        if ($this->run()?->chapter->current_candidate_version_id !== null) {
+        // 已有候选时默认定点修订，只需修订和检查各一次；整章重写按生成的完整额度，便于不合格时在运行内修复。
+        if (! $rewrite && $this->run()?->chapter->current_candidate_version_id !== null) {
             return 2;
         }
 
@@ -1065,7 +1084,12 @@ class ViewChapterContent extends Page implements HasTable
             ->visible(fn (): bool => data_get($this->run()?->config, 'workbench') === null && in_array($this->run()?->status, ['paused', 'error', 'completed'], true) && $this->run()?->stop_reason !== 'b04_accepted' && ! ChapterGenerationRun::where('parent_run_id', $this->run()?->id)->exists())
             ->modalDescription('旧版本与费用全部保留，新建v14有限运行。范围修订只调用修订和检查各一次；选择重写时按冻结场景生成独立候选。总预算不能无限续用，未知结果须明确确认。')
             ->schema([
-                Checkbox::make('rewrite')->label('明确授权整章候选重写；不勾选时优先复用现有正文'),
+                // 整章重写需要为运行内修复留出额度，勾选后请求上限默认值随之调整，仍可手动修改。
+                Checkbox::make('rewrite')->label('明确授权整章候选重写；不勾选时优先复用现有正文')->live()
+                    ->afterStateUpdated(function (?bool $state, Set $set): void {
+                        $set('request_limit', $this->recoveryCap((bool) $state));
+                        $set('execution_limit', max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + $this->recoveryCap((bool) $state)));
+                    }),
                 TextInput::make('model')->label('仅本次恢复使用的模型')->required()->default(fn (): ?string => data_get($this->run()?->config, 'model')),
                 TextInput::make('request_limit')->label('本次请求总上限')->integer()->minValue(2)->maxValue(5)->default(fn (): int => $this->recoveryCap())->required(),
                 TextInput::make('execution_limit')->label('确认本小说执行总上限')->integer()->minValue(1)->maxValue(2147483647)->default(fn (): int => max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + $this->recoveryCap()))->required(),
