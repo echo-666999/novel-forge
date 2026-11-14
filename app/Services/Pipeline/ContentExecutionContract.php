@@ -8,6 +8,9 @@ use InvalidArgumentException;
 /** v17正文槽位与修订范围都是标明叙述或对白的自然段列表；v14至v16只读保留，供已冻结运行核验。 */
 final class ContentExecutionContract
 {
+    /** 单场景字数容差：严格区间上下各5%。 */
+    public const LENGTH_TOLERANCE = 0.05;
+
     public const VERSION = 'b04-content-v17';
 
     /** 已冻结版本的指令摘要；这些运行只读核验，不再据此发送请求。 */
@@ -259,7 +262,22 @@ final class ContentExecutionContract
             throw new InvalidArgumentException('不能修复冻结目录以外的场景');
         }
 
-        return [...$budget, 'slots' => [$slot], 'count' => 1];
+        return [...$budget, 'slots' => [$slot], 'count' => 1, 'chapter_slots' => count($budget['slots'])];
+    }
+
+    /** 单场景字数的可接受范围：严格区间上下各放宽5%，向内取整，放宽幅度不超过5%。
+     * @param  array{min: int, max: int}  $budget
+     * @return array{0: int, 1: int}
+     */
+    public static function tolerated(array $budget): array
+    {
+        return [(int) ceil($budget['min'] * (1 - self::LENGTH_TOLERANCE)), (int) floor($budget['max'] * (1 + self::LENGTH_TOLERANCE))];
+    }
+
+    /** 字数离严格区间的距离，区间内为0；用于选出最需要修复的场景。 */
+    public static function lengthDistance(int $count, array $budget): int
+    {
+        return max($budget['min'] - $count, $count - $budget['max'], 0);
     }
 
     /** 只接受原槽位的合格替换，原稿其他场景逐字保留；调用方最后必须再验证整章。
@@ -397,14 +415,26 @@ final class ContentExecutionContract
         ContentSchema::keys($data['paragraphs'], $budget['slots']);
         $sections = [];
         $errors = [];
+        $total = 0;
         foreach ($budget['slots'] as $slot) {
             [$problems, $text] = self::paragraphList($slot, $data['paragraphs'][$slot], $budget['complete_paragraphs'] ?? false);
             $errors = [...$errors, ...$problems];
             $count = ContentSchema::count($text);
-            if ($count < $budget['min'] || $count > $budget['max']) {
+            // 单个场景允许偏离区间5%，模型计数误差不再让整章作废；整章合计仍受冻结篇幅约束。
+            [$lowest, $highest] = self::tolerated($budget);
+            if ($count < $lowest || $count > $highest) {
                 $errors[] = $slot.'实际'.$count.'字，要求'.$budget['min'].'至'.$budget['max'].'字';
             }
+            $total += $count;
             $sections[] = $text;
+        }
+        // 单场景修复只看本场景；整章校验时各场景合计不得超出原区间之和，即冻结篇幅。
+        if (! isset($budget['chapter_slots']) && $errors === []) {
+            $chapterMin = $budget['min'] * count($budget['slots']);
+            $chapterMax = $budget['max'] * count($budget['slots']);
+            if ($total < $chapterMin || $total > $chapterMax) {
+                $errors[] = '整章合计'.$total.'字，要求'.$chapterMin.'至'.$chapterMax.'字';
+            }
         }
         // 一次列出所有失败处，恢复请求能按真实问题修正，不能只盲目重写首个失败处。
         if ($errors !== []) {

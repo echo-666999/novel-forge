@@ -37,6 +37,27 @@ class ContentDraftBudgetTest extends TestCase
         ContentExecutionContract::body(['title' => '标题', 'paragraphs' => ['p1' => [self::narration('短。')], 'p2' => [self::narration('这一段长。')]]], ['slots' => ['p1', 'p2'], 'min' => 3, 'max' => 4]);
     }
 
+    /** 单场景字数允许偏离区间5%：区间外5%以内接受，超过5%拒绝；整章合计仍不得超出各场景区间之和。 */
+    public function test_scene_length_tolerance_keeps_chapter_total(): void
+    {
+        $scene = fn (int $characters): array => [self::narration(str_repeat('甲', $characters - 1).'。')];
+        $budget = ['slots' => ['s1', 's2'], 'count' => 2, 'min' => 100, 'max' => 200];
+        $data = ContentExecutionContract::body(['title' => '标题', 'paragraphs' => ['s1' => $scene(210), 's2' => $scene(150)]], $budget);
+        $this->assertSame(360, ContentSchema::count($data['body']));
+        $this->assertSame([95, 210], ContentExecutionContract::tolerated($budget));
+        $this->assertSame(10, ContentExecutionContract::lengthDistance(210, $budget));
+        // 单场景修复只看本场景，5%以内即可合入，整章校验另行把关。
+        ContentExecutionContract::body(['title' => '标题', 'paragraphs' => ['s1' => $scene(205)]], ContentExecutionContract::repairBudget($budget, 's1'));
+        foreach ([[[211, 150], 's1实际211字，要求100至200字'], [[205, 205], '整章合计410字，要求200至400字']] as [[$first, $second], $message]) {
+            try {
+                ContentExecutionContract::body(['title' => '标题', 'paragraphs' => ['s1' => $scene($first), 's2' => $scene($second)]], $budget);
+                $this->fail('应拒绝：'.$message);
+            } catch (InvalidArgumentException $exception) {
+                $this->assertStringContainsString($message, $exception->getMessage());
+            }
+        }
+    }
+
     /** 合法边界原样组装，程序不补字、不截断、不改正文。 */
     public function test_accepts_exact_bounds_without_modifying_prose(): void
     {

@@ -271,18 +271,24 @@ class AcceptanceBranchTest extends B04ExecutionTest
 
             return Http::response($response);
         }]);
-        $run->refresh();
-        app(ContentExecutionService::class)->runStep($run->id, $run->invocation_id, app(AiTextGenerationService::class));
-        $this->assertSame('invalid_schema', $run->fresh()->stop_reason);
-        for ($i = 0; $i < 4; $i++) {
-            $run = app(ContentGenerationService::class)->recover($run->id, User::firstOrFail(), '逐段修复验收');
-            app(ContentExecutionService::class)->runStep($run->id, $run->invocation_id, app(AiTextGenerationService::class));
-            $run->refresh();
-            if ($i < 3) {
-                $this->assertSame('invalid_schema', $run->stop_reason);
-                $this->assertNull($run->chapter->current_candidate_version_id);
+        // 同一运行内的继续修复由队列推进；测试中逐步执行，直到运行停下。
+        $drive = function (ChapterGenerationRun $run): ChapterGenerationRun {
+            for ($step = 0; $step < 6 && $run->status === 'pending'; $step++) {
+                app(ContentExecutionService::class)->runStep($run->id, $run->invocation_id, app(AiTextGenerationService::class));
+                $run->refresh();
             }
-        }
+
+            return $run;
+        };
+        $run = $drive($run->refresh());
+        // 首个运行在已授权额度内连续修复两次仍未达标，为推进检查留出一次请求后才停下。
+        $this->assertSame('invalid_schema', $run->fresh()->stop_reason);
+        $this->assertSame(2, $repairAttempts);
+        $this->assertSame(4, $run->fresh()->requests_used);
+        $this->assertNull($run->fresh()->chapter->current_candidate_version_id);
+        // 一次恢复即可：继承最接近预算的单段尝试，修好首个场景后在同一运行内接着修第二个场景。
+        $run = $drive(app(ContentGenerationService::class)->recover($run->id, User::firstOrFail(), '逐段修复验收'));
+        $this->assertSame(4, $repairAttempts);
         $version = ChapterVersion::findOrFail($run->chapter->current_candidate_version_id);
         $this->assertSame('check', $run->next_step);
         $paragraphs = explode("\n", $version->body);

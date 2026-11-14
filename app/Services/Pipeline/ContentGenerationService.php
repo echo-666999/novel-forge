@@ -264,11 +264,13 @@ final class ContentGenerationService
                 if (is_array($repaired) && $repaired['hash'] === PlanningJson::hash($repaired['response']) && $repaired['source_input_hash'] === $parent->input_hash) {
                     // 继承已通过单段校验的合并结果及来源，失败槽位下一轮继续处理，不篡改旧响应。
                     $config['recovery_draft'] = ['cost_log_id' => $failedLog?->id, 'response' => $repaired['response'], 'merged_stage_id' => $failedStage->id, 'merged_hash' => $repaired['hash']];
-                } elseif (isset($parent->config['recovery_draft']) && $config['slot_repair']) {
-                    $config['recovery_draft'] = $parent->config['recovery_draft'];
+                } elseif (($parentDraft = app(ContentExecutionService::class)->draftSource($parent)['draft'] ?? null) !== null && $config['slot_repair']) {
+                    // 父运行内已继续修复过的场景一并继承，不退回到父运行创建时的旧草稿。
+                    $config['recovery_draft'] = $parentDraft;
                     // 未达字数的完整单段只作为下次修复输入，绝不合入正式正文；截断时保留上次完整尝试。
                     $parts = $failedLog?->structured_output['paragraphs'] ?? null;
-                    $config['recovery_repair'] = $parent->config['recovery_repair'] ?? null;
+                    // 继承父运行内（含继续修复过程中）最接近预算的单段尝试。
+                    $config['recovery_repair'] = app(ContentExecutionService::class)->draftSource($parent)['repair'] ?? null;
                     if (is_array($parts) && count($parts) === 1) {
                         $slot = array_key_first($parts);
                         $previous = $config['recovery_repair']['paragraphs'][$slot] ?? $config['recovery_draft']['response']['paragraphs'][$slot] ?? null;
