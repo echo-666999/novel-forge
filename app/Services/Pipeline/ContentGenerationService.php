@@ -20,6 +20,7 @@ use App\Models\User;
 use App\Services\Ai\AiTextGenerationService;
 use App\Services\Ai\ModelProfiles;
 use App\Services\Ai\TextRequestOptions;
+use App\Services\Search\ContextRetrieval;
 use App\Settings\GeneralSettings;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -102,6 +103,13 @@ final class ContentGenerationService
             $styleSignals = app(StyleSignals::class)->context($novel, $chapterNumber);
             if ($styleSignals !== null) {
                 $snapshot['style_signals'] = $styleSignals;
+            }
+            // 按本章章纲与作者场景检索早前正式原文，冻结进快照；数据库不支持或没有命中时不加，生成照常进行。
+            if ($chapterNumber > 1) {
+                $memory = app(ContextRetrieval::class)->context($novel, $chapterNumber, $snapshot['prior_context'], ContextRetrieval::planTexts($snapshot['source_chapter'], $snapshot['author_scene_plan'] ?? null));
+                if ($memory !== null) {
+                    $snapshot['long_term_memory'] = $memory;
+                }
             }
             $chapter = $novel->chapters()->create(['number' => $chapterNumber, 'title' => $snapshot['source_chapter']['title'], 'objective' => $snapshot['source_chapter']['objective'], 'status' => ChapterStatus::Pending]);
             $config['request_cap'] = $limit;
@@ -195,6 +203,14 @@ final class ContentGenerationService
                 && (($snapshot['prior_context']['version'] ?? null) !== CanonicalChapterContext::VERSION || ($snapshot['context_policy'] ?? null) !== app(ContextBuilder::class)->policy())) {
                 $snapshot['prior_context'] = app(CanonicalChapterContext::class)->build($novel, $parent->chapter->number);
                 $snapshot['context_policy'] = app(ContextBuilder::class)->policy();
+            }
+            // 整章重写按冻结前文链重新检索早前原文，索引已补齐的章节可被检索到；定点修订沿用父运行的检索结果。
+            if ($rewrite && $workbench === null && $parent->chapter->number > 1) {
+                $memory = app(ContextRetrieval::class)->context($novel, $parent->chapter->number, $snapshot['prior_context'], ContextRetrieval::planTexts($snapshot['source_chapter'], $snapshot['author_scene_plan'] ?? null));
+                unset($snapshot['long_term_memory']);
+                if ($memory !== null) {
+                    $snapshot['long_term_memory'] = $memory;
+                }
             }
             if (! $fine) {
                 $plan ??= $snapshot['source_chapter'];

@@ -14,6 +14,7 @@ use App\Models\ChapterVersion;
 use App\Models\NovelOutlineChapter;
 use App\Models\NovelSettingConfirmation;
 use App\Models\NovelStage;
+use App\Services\Search\ContextRetrieval;
 use InvalidArgumentException;
 
 /** 只读校验历史协议及共同规划来源，不创建运行、不发送模型请求。 */
@@ -59,6 +60,10 @@ final class LegacyContentSources
         if (array_key_exists('style_signals', $snapshot)) {
             $checks['文风信号与正式来源'] = ($snapshot['style_signals']['version'] ?? null) === StyleSignals::VERSION
                 && PlanningJson::hash($snapshot['style_signals']) === PlanningJson::hash(app(StyleSignals::class)->context($run->chapter->novel, $run->chapter->number, $this->frozenBaseline($snapshot)));
+        }
+        // 检索片段必须来自冻结前文链的对应正式版本并逐字一致；旧运行没有该字段，不补核。
+        if (array_key_exists('long_term_memory', $snapshot)) {
+            $checks['前文检索片段与正式来源'] = ContextRetrieval::verify($snapshot['long_term_memory'], $snapshot['prior_context'] ?? []);
         }
         foreach ($checks as $label => $valid) {
             if (! $valid) {

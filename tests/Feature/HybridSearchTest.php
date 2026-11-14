@@ -17,6 +17,7 @@ use App\Models\StoryStateProjection;
 use App\Models\User;
 use App\Services\Pipeline\PlanningJson;
 use App\Services\Search\ChapterSearchIndex;
+use App\Services\Search\ContextRetrieval;
 use App\Services\Search\EmbeddingService;
 use App\Services\Search\HybridSearch;
 use Illuminate\Foundation\Application;
@@ -256,6 +257,43 @@ class HybridSearchTest extends TestCase
         } catch (\InvalidArgumentException $exception) {
             $this->assertStringContainsString('禁止用于POV', $exception->getMessage());
         }
+        Http::assertNothingSent();
+    }
+
+    /** 生成前检索只取冻结前文链版本、目标章之前的原文，不发请求；片段被篡改时冻结核验失败。 */
+    public function test_context_retrieval_uses_frozen_prior_chain_only(): void
+    {
+        [$novel] = $this->source();
+        $first = Chapter::where('novel_id', $novel->id)->where('number', 1)->sole();
+        $chapter = Chapter::factory()->create(['novel_id' => $novel->id, 'number' => 2]);
+        $run = ChapterGenerationRun::factory()->create(['chapter_id' => $chapter->id]);
+        $body = '林澈回到档案室，在铁皮柜第三格里摸到一封密信。';
+        $version = ChapterVersion::factory()->create(['run_id' => $run->id, 'body' => $body, 'body_hash' => hash('sha256', $body)]);
+        $submission = ChapterSubmissionRun::factory()->create(['version_id' => $version->id]);
+        $validation = ChapterSubmissionValidation::factory()->create(['submission_run_id' => $submission->id]);
+        $commit = CanonicalCommit::factory()->create(['validation_id' => $validation->id, 'previous_state_version' => 1, 'state_version' => 2, 'result' => ['body_hash' => $version->body_hash]]);
+        $chapter->update(['formal_version_id' => $version->id, 'canonical_commit_id' => $commit->id]);
+        StoryStateProjection::factory()->create(['commit_id' => $commit->id]);
+        StoryOutboxEvent::factory()->create(['commit_id' => $commit->id]);
+        app(ChapterSearchIndex::class)->build($novel);
+        Http::fake();
+        $retrieval = app(ContextRetrieval::class);
+        $prior = ['chapters' => [['number' => 1, 'version_id' => $first->formal_version_id], ['number' => 2, 'version_id' => $version->id]]];
+
+        $memory = $retrieval->context($novel, 3, $prior, ContextRetrieval::planTexts(['title' => '密信', 'objective' => '林澈打开铁皮柜里的密信']));
+        $this->assertSame(ContextRetrieval::VERSION, $memory['version']);
+        $this->assertSame([1, 2], $memory['coverage']['indexed_chapters']);
+        $this->assertContains(2, array_column($memory['passages'], 'chapter'));
+        $this->assertContains('铁皮柜', $memory['passages'][array_search(2, array_column($memory['passages'], 'chapter'), true)]['matched_terms']);
+        $this->assertTrue(ContextRetrieval::verify($memory, $prior));
+
+        // 目标章之前、且版本属于冻结前文链的块才可检索。
+        $this->assertNotContains(2, array_column($retrieval->context($novel, 2, ['chapters' => [$prior['chapters'][0]]], ['铁皮柜里的密信'])['passages'] ?? [], 'chapter'));
+        $other = ['chapters' => [$prior['chapters'][0], ['number' => 2, 'version_id' => $version->id + 1000]]];
+        $this->assertNotContains(2, array_column($retrieval->context($novel, 3, $other, ['铁皮柜里的密信'])['passages'] ?? [], 'chapter'));
+
+        $memory['passages'][0]['quote'] .= '伪造';
+        $this->assertFalse(ContextRetrieval::verify($memory, $prior));
         Http::assertNothingSent();
     }
 }

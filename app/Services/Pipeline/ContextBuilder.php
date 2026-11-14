@@ -155,8 +155,11 @@ final class ContextBuilder
     {
         $text = is_string($value) ? $value : PlanningJson::encode($value);
 
-        return ['id' => $id, 'source_version' => $source, 'text_hash' => hash('sha256', $text), 'category' => $category, 'priority' => $priority, 'retrieval_score' => null,
-            'summary' => $id === 'foreshadow_context' ? implode('；', array_map(fn (array $item): string => ($item['title'] ?? '伏笔').'（编号'.($item['id'] ?? '未记录').'，'.(($item['must_address'] ?? false) ? '本章必须处理' : '保持连续性').'）', $value['items'] ?? [])) : null,
+        // 前文检索记下最高得分和各片段出处，便于在上下文清单中核对。
+        $retrieval = $id === 'long_term_memory' && is_array($value) ? ($value['passages'] ?? []) : [];
+
+        return ['id' => $id, 'source_version' => $source, 'text_hash' => hash('sha256', $text), 'category' => $category, 'priority' => $priority, 'retrieval_score' => $retrieval === [] ? null : max(array_column($retrieval, 'score')),
+            'summary' => $retrieval !== [] ? implode('；', array_map(fn (array $passage): string => '第'.$passage['chapter'].'章第'.$passage['start_offset'].'字起（得分'.$passage['score'].'）', $retrieval)) : ($id === 'foreshadow_context' ? implode('；', array_map(fn (array $item): string => ($item['title'] ?? '伏笔').'（编号'.($item['id'] ?? '未记录').'，'.(($item['must_address'] ?? false) ? '本章必须处理' : '保持连续性').'）', $value['items'] ?? [])) : null),
             'tokens_estimated' => $this->estimate($text), 'protected' => $protected, 'selected' => true, 'selection_reason' => $protected ? '完整保留的必需上下文' : '预算允许的补充上下文', 'trim_reason' => null];
     }
 

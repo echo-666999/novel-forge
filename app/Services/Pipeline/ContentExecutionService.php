@@ -311,6 +311,10 @@ final class ContentExecutionService
         if (array_key_exists('style_signals', $run->snapshot) && in_array($step, ['draft', 'revise'], true)) {
             $payload['style_signals'] = $run->snapshot['style_signals'];
         }
+        // 检索到的早前原文只供细纲、写作和修订保持细节一致；检查步骤按本章正文判定，不需要。
+        if (array_key_exists('long_term_memory', $run->snapshot) && in_array($step, ['fine', 'draft', 'revise'], true)) {
+            $payload['long_term_memory'] = $run->snapshot['long_term_memory'];
+        }
 
         // 分支恢复按实测失败槽位逐段修复，其他段逐字保留，整章最终仍执行原契约。
         // 新运行按冻结的模型能力决定；旧运行没有该字段时沿用原验收分支判定。
