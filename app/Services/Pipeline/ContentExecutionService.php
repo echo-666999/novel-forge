@@ -31,6 +31,9 @@ final class ContentExecutionService
     /** 正文篇幅或分段未通过、仍在本运行额度内继续修复的请求结果标记。 */
     public const IN_RUN_REPAIR = 'draft_repair_in_run';
 
+    /** 由程序对当前正文重新检测的问题类型；与产生它的正文版本绑定。 */
+    private const LOCAL_FINDING_TYPES = ['plan_copy', 'echoed_dialogue', 'meta_text', 'length', 'readability_dialogue', 'readability_process', 'repeated_text', 'possible_time_order'];
+
     /** 每次领用和回写均核对规划、版本、预算、细纲及受检正文。 */
     public function validate(ChapterGenerationRun $run): void
     {
@@ -154,7 +157,7 @@ final class ContentExecutionService
     {
         $issues = ContentQualityContract::issues($body, $run->snapshot['novel']['chapter_length_policy']);
         if (($run->config['version'] ?? null) === ContentExecutionContract::VERSION) {
-            $issues = [...$issues, ...ContentQualityContract::planCopies($body, $run->plan_data), ...ContentQualityContract::echoedDialogue($body),
+            $issues = [...$issues, ...ContentQualityContract::planCopies($body, $run->plan_data), ...ContentQualityContract::echoedDialogue($body, ContentQualityContract::characterNames($run->snapshot)),
                 ...ContentReadabilityMetrics::issues(ContentReadabilityMetrics::measure($body))];
         }
 
@@ -193,7 +196,9 @@ final class ContentExecutionService
                 $issues[] = ['type' => 'review', 'reason' => $review['reason']];
             }
         }
-        $findings = $run->config['recovery_findings'] ?? [];
+        // 本地检测的段落级问题针对的是产生它的那版正文；正文已换版时旧问题的段号对不上，丢弃后由当前正文重新检测。
+        $findings = array_filter($run->config['recovery_findings'] ?? [], fn (array $finding): bool => ! in_array($finding['type'] ?? null, self::LOCAL_FINDING_TYPES, true)
+            || ! isset($finding['source_body_hash']) || $finding['source_body_hash'] === $version?->body_hash);
         foreach ($issues as $issue) {
             $issue['source_body_hash'] = $version?->body_hash;
             $findings['finding-'.substr(PlanningJson::hash($issue), 0, 16)] = $issue;
@@ -249,7 +254,7 @@ final class ContentExecutionService
         // 修订段落格式未通过后的补发：给出上次的具体错误，范围与问题编号仍按原契约。
         if ($step === 'revise' && ($revisionError = $this->revisionRetry($run)) !== null) {
             $payload['previous_response_failure'] = $revisionError;
-            $payload['retry_instruction'] = '上次修订的段落格式未通过，按previous_response_failure逐条修正后重新给出全部范围替换：人物原话必须放在对白段，对白段只含一个人的一次发言及紧邻动作；叙述段不得引用或转述人物原话。';
+            $payload['retry_instruction'] = '上次修订未通过，按previous_response_failure逐条修正后重新给出全部范围替换：范围只覆盖问题段及前后'.ContentExecutionContract::REVISION_SLACK.'段，每个范围列出它处理的findings编号并真正改动原文，范围外原文保持不变；人物原话必须放在对白段，叙述段不得引用或转述人物原话。';
         }
         if ($step === 'fine') {
             // 场景数随冻结篇幅确定，细纲不能排出每场只够写流程摘要的密集场景。
@@ -313,10 +318,16 @@ final class ContentExecutionService
             && self::sameSlots($recovery['draft']['response']['paragraphs'], $budget['slots'])) {
             $draft = $recovery['draft']['response'];
             $repairSlot = null;
+            // 照搬细纲、转述对白等文字问题同样按场景修复，与正文校验使用同一检查，避免合格判定前后不一致。
+            $quality = self::draftQualityGate($run) ? ContentExecutionContract::slotQuality($draft['paragraphs'], $budget['slots'], $run->plan_data, ContentQualityContract::characterNames($run->snapshot)) : [];
             foreach ($budget['slots'] as $slot) {
                 try {
                     ContentExecutionContract::body(['title' => $draft['title'], 'paragraphs' => [$slot => $draft['paragraphs'][$slot]]], ContentExecutionContract::repairBudget($budget, $slot));
                 } catch (InvalidArgumentException) {
+                    $repairSlot = $slot;
+                    break;
+                }
+                if (isset($quality[$slot])) {
                     $repairSlot = $slot;
                     break;
                 }
@@ -361,6 +372,7 @@ final class ContentExecutionService
                 $context['repair_direction'] = match (true) {
                     $currentCount > $highest => 'shorten',
                     $currentCount < $lowest => 'expand',
+                    isset($quality[$slot]) => 'quality',
                     default => 'format',
                 };
                 $payload['repair_measurement'] = ['slot' => $slot, 'actual_characters' => $currentCount, 'target_characters' => $targetCount,
@@ -368,6 +380,7 @@ final class ContentExecutionService
                     'instruction' => match ($context['repair_direction']) {
                         'shorten' => '本场景超长，只做压缩，删除重复描述、流程细节与非必要动作，保留已有关键行动和对白，不把后文动作提前写入。',
                         'expand' => '本场景过短，补足在场人物的对白、反应与行动后果，不重复前后场景事件。',
+                        'quality' => '本场景字数合格，只改写previous_response_failure指出的句子：照搬细纲的改成人物言行或自然叙述，叙述里转述对白原话的删去转述；不增删情节。',
                         default => '本场景字数合格，只按previous_response_failure修正分段：对白独立成段，碎句合并为完整叙述段，不增删情节。',
                     }];
                 // 局部修复保留整份草稿作邻段上下文，不重复发送未来大纲、历史事件与全量设定。
@@ -438,6 +451,32 @@ final class ContentExecutionService
         return $draft === null && $error === null ? null : ['draft' => $draft, 'repair' => $repair, 'validation_error' => $error, 'in_run' => $inRun];
     }
 
+    /** 正文校验：篇幅与分段之外，启用单场景修复的当前协议运行还要求各场景没有照搬细纲、转述对白或写作说明，
+     * 不合格时按同一错误前缀报告，由运行内逐场景修复处理，不再进入整章修订。
+     *
+     * @param  array<string, mixed>  $response
+     * @param  array<string, mixed>  $budget
+     * @return array{title: string, body: string}
+     */
+    private function draftBody(ChapterGenerationRun $run, array $response, array $budget): array
+    {
+        $data = ContentExecutionContract::body($response, $budget);
+        if (self::draftQualityGate($run)) {
+            $quality = ContentExecutionContract::slotQuality($response['paragraphs'], $budget['slots'], $run->plan_data, ContentQualityContract::characterNames($run->snapshot));
+            if ($quality !== []) {
+                throw new InvalidArgumentException('正文场景预算或格式无效：'.implode('；', array_merge(...array_values($quality))));
+            }
+        }
+
+        return $data;
+    }
+
+    /** 正文阶段文字问题门禁只用于当前协议且能逐场景修复的运行；不能按场景修复的运行沿用整章修订。 */
+    private static function draftQualityGate(ChapterGenerationRun $run): bool
+    {
+        return self::slotRepair($run) && ($run->config['version'] ?? null) === ContentExecutionContract::VERSION;
+    }
+
     /** 按冻结的模型能力或验收分支启用单场景修复，与恢复运行的判定一致。 */
     private static function slotRepair(ChapterGenerationRun $run): bool
     {
@@ -453,7 +492,8 @@ final class ContentExecutionService
 
         return match ($step) {
             'draft' => self::slotRepair($run) && preg_match('/^正文(场景|单段)预算或格式无效/u', $error) === 1,
-            'revise' => str_starts_with($error, '修订段落格式无效') && $this->revisionRetry($run, true) === null,
+            // 修订的范围、问题编号、改动与格式规则未通过时都可补发一次；模型不一致不是修订内容问题。
+            'revise' => ! str_starts_with($error, '响应模型') && $this->revisionRetry($run, true) === null,
             default => false,
         };
     }
@@ -599,7 +639,7 @@ final class ContentExecutionService
             }
             $data = match ($step) {
                 'fine' => ContentExecutionContract::fine($response, array_column($run->snapshot['source_chapter']['progression_points'], 'id'), $run->snapshot['novel']['chapter_length_policy']),
-                'draft' => ContentExecutionContract::body($response, $request['context']['full_draft_budget'] ?? $request['context']['budget']),
+                'draft' => $this->draftBody($run, $response, $request['context']['full_draft_budget'] ?? $request['context']['budget']),
                 'revise' => (function () use ($response, $source, $request, &$droppedRanges): array {
                     // 没有问题编号的范围不是授权修订，丢弃并留档；其余范围仍按原契约严格校验。
                     [$response, $droppedRanges] = ContentExecutionContract::authorizedRanges($response);

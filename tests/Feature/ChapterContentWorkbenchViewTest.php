@@ -12,6 +12,7 @@ use App\Models\ChapterSubmissionRun;
 use App\Models\ChapterSubmissionValidation;
 use App\Models\ChapterVersion;
 use App\Models\User;
+use App\Services\Pipeline\ContentExecutionService;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Support\Facades\DB;
@@ -354,5 +355,20 @@ class ChapterContentWorkbenchViewTest extends TestCase
         ChapterGenerationRun::factory()->create(['chapter_id' => $run->chapter_id, 'parent_run_id' => $run->id,
             'config' => [...$run->config, 'initial_step' => 'draft'], 'snapshot' => [...$run->snapshot, 'recovery' => ['source_version_id' => $version->id]]]);
         Livewire::test(ViewChapterContent::class, ['record' => $run->chapter->novel_id])->assertSee('整章重写');
+    }
+
+    /** 恢复运行带来的本地段落级问题只适用于产生它的正文；正文换版后丢弃，作者与评审问题仍保留。 */
+    public function test_stale_local_findings_are_dropped_after_body_changes(): void
+    {
+        $base = ChapterGenerationRun::factory()->make();
+        $run = ChapterGenerationRun::factory()->create(['snapshot' => ['novel' => ['chapter_length_policy' => ['min_characters' => 2000, 'max_characters' => 3000]]],
+            'config' => [...$base->config, 'recovery_findings' => [
+                'finding-old-copy' => ['type' => 'plan_copy', 'anchor_id' => 'p19', 'reason' => '旧正文照搬细纲', 'source_body_hash' => 'old-body'],
+                'author-issue-1' => ['type' => 'author_issue', 'reason' => '作者要求删掉重复开头', 'source_body_hash' => 'old-body'],
+            ]]]);
+        $version = $this->createVersion($run, '新正文第一段。');
+        $findings = app(ContentExecutionService::class)->findings($run, $version);
+        $this->assertArrayNotHasKey('finding-old-copy', $findings);
+        $this->assertArrayHasKey('author-issue-1', $findings);
     }
 }

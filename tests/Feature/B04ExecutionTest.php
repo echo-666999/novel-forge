@@ -113,7 +113,7 @@ class B04ExecutionTest extends TestCase
                 foreach ($payload['budget']['slots'] as $i => $slot) {
                     // 每个场景一段叙述加一段对白，拼接后各占一行。
                     $items = B04ContentTest::sceneParagraphs(intdiv($payload['budget']['min'] + $payload['budget']['max'], 2), mb_chr(0x4E00 + $i + 16 * NovelStage::findOrFail($log->novel_stage_id)->input['run_id']));
-                    if (in_array($this->scenario, ['meta', 'meta_extra', 'meta_buried', 'meta_buried_once'], true) && $i === 0) {
+                    if (in_array($this->scenario, ['meta', 'meta_extra', 'meta_buried', 'meta_buried_once', 'meta_unaddressed_once'], true) && $i === 0) {
                         $items[0]['text'] = '此段约350字。'.mb_substr($items[0]['text'], 8);
                     }
                     // 模拟流程记录式正文：没有任何对白，可读性指标越线。
@@ -139,6 +139,10 @@ class B04ExecutionTest extends TestCase
                 // 补发的修订带有上次格式错误；once场景在补发时给出合格范围。
                 if ($this->scenario === 'meta_buried' || ($this->scenario === 'meta_buried_once' && ! isset($payload['retry_instruction']))) {
                     $data['ranges'][0]['text'] = [['kind' => 'narration', 'text' => '她拨回去说：“这不是随手锉的。”母亲沉默了几秒。'.str_repeat('窗外的雨一直没停，楼道里的声控灯亮了又灭。', 5)]];
+                }
+                // 首次修订的范围都没有问题编号（被整体丢弃），补发时给出合格范围。
+                if ($this->scenario === 'meta_unaddressed_once' && ! isset($payload['retry_instruction'])) {
+                    $data['ranges'][0]['addresses'] = [];
                 }
                 if ($this->scenario === 'meta_extra') {
                     $data['ranges'][] = ['start_id' => array_key_last($payload['available_anchors']), 'end_id' => array_key_last($payload['available_anchors']), 'text' => [['kind' => 'narration', 'text' => '无关改写。']], 'reason' => '顺手润色', 'addresses' => []];
@@ -343,6 +347,19 @@ class B04ExecutionTest extends TestCase
         $this->assertSame(2, NovelStage::where('input->run_id', $run->id)->where('input->step', 'revise')->count());
         $this->assertSame(2, ChapterVersion::count());
         $this->assertSame(1, ChapterGenerationRun::count());
+    }
+
+    /** 修订的范围、问题编号等规则未通过时同样在同一运行内补发一次，补发成功后照常进入检查。 */
+    public function test_revise_rule_failure_is_retried_once_in_same_run(): void
+    {
+        $this->scenario = 'meta_unaddressed_once';
+        $run = $this->start();
+        $this->drain();
+        $this->assertSame('awaiting_review', $run->fresh()->stop_reason);
+        $revisions = NovelStage::where('input->run_id', $run->id)->where('input->step', 'revise')->orderBy('id')->get();
+        $this->assertCount(2, $revisions);
+        $this->assertStringContainsString('没有对应问题编号', $revisions[0]->output['data']['validation_error']);
+        $this->assertSame(1, $run->fresh()->retry_count);
     }
 
     /** 对白占比过低的正文先交修订；修订后仍越线则停在质量不足，不进入独立检查。 */

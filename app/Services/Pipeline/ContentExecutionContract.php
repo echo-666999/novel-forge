@@ -133,6 +133,10 @@ final class ContentExecutionContract
                 $instructions .= '原'.$unit.'实测'.$context['repair_current_count'].'字；只能净增'.($budget['min'] - $context['repair_current_count']).'至'.($budget['max'] - $context['repair_current_count']).'字，目标净增'.($target - $context['repair_current_count']).'字。保留原有字句，在当前'.$unit.'内补足人物对白、反应与行动后果；不新增核心事实，不重复其他部分的事件，不写流程步骤凑字。';
             }
             // 字数合格但段落格式失败时只调整分段，不能借修复改变篇幅。
+            // 字数合格而有照搬细纲、转述对白等文字问题时，只改写被指出的句子。
+            if (($context['repair_direction'] ?? null) === 'quality') {
+                $instructions .= '原'.$unit.'字数已合格，只按previous_response_failure改写被指出的句子：照搬细纲的句子改写成人物的言行、反应或自然叙述，叙述里转述对白原话的删去转述、改写说话时的动作和反应，同时修正其中列出的分段问题；不增删情节，篇幅保持在原范围。';
+            }
             if (($context['repair_direction'] ?? null) === 'format') {
                 $instructions .= '原'.$unit.'字数已合格，只按previous_response_failure修正段落格式：把叙述里的对白拆成对白段，把碎句合并成完整叙述段；不增删情节，篇幅保持在原范围。';
             }
@@ -272,6 +276,39 @@ final class ContentExecutionContract
     public static function tolerated(array $budget): array
     {
         return [(int) ceil($budget['min'] * (1 - self::LENGTH_TOLERANCE)), (int) floor($budget['max'] * (1 + self::LENGTH_TOLERANCE))];
+    }
+
+    /** 正文阶段按场景检查的文字问题：照搬细纲、叙述转述相邻对白、混入写作说明。
+     * 这些是段落内的文字问题，在正文阶段逐场景修复，不再留给整章修订；返回各场景的问题说明，没有问题的场景不出现。
+     *
+     * @param  array<string, mixed>  $paragraphs
+     * @param  list<string>  $slots
+     * @param  list<string>  $names  本书人物名，用于区分转述与不同人物之间的接话
+     * @return array<string, list<string>>
+     */
+    public static function slotQuality(array $paragraphs, array $slots, ?array $plan, array $names = []): array
+    {
+        $errors = [];
+        foreach ($slots as $slot) {
+            if (! is_array($paragraphs[$slot] ?? null)) {
+                continue;
+            }
+            $text = self::slotText($paragraphs[$slot]);
+            $issues = [
+                ...ContentQualityContract::planCopies($text, $plan),
+                ...ContentQualityContract::echoedDialogue($text, $names),
+                ...array_filter(ContentQualityContract::issues($text, ['min_characters' => 0, 'max_characters' => PHP_INT_MAX]), fn (array $issue): bool => $issue['type'] === 'meta_text'),
+            ];
+            foreach ($issues as $issue) {
+                $errors[$slot][] = $slot.'第'.$issue['paragraph'].'段'.match ($issue['type']) {
+                    'plan_copy' => '逐字照搬细纲句子「'.implode('」「', $issue['quotes']).'」，须改写为人物的言行、反应或自然叙述',
+                    'echoed_dialogue' => '叙述把第'.$issue['dialogue_paragraph'].'段对白的原话先转述了一遍（「'.$issue['quotes'][0].'」），删去叙述里的转述',
+                    default => '混入写作说明「'.implode('」「', $issue['quotes']).'」，须删去',
+                };
+            }
+        }
+
+        return $errors;
     }
 
     /** 字数离严格区间的距离，区间内为0；用于选出最需要修复的场景。 */

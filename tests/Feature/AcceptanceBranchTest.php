@@ -7,6 +7,7 @@ use App\Models\ChapterGenerationRun;
 use App\Models\ChapterVersion;
 use App\Models\CostLog;
 use App\Models\Novel;
+use App\Models\NovelStage;
 use App\Models\ProductionRun;
 use App\Models\User;
 use App\Services\Ai\AiTextGenerationService;
@@ -294,5 +295,50 @@ class AcceptanceBranchTest extends B04ExecutionTest
         $paragraphs = explode("\n", $version->body);
         $this->assertCount(6, $paragraphs);
         $this->assertSame(array_column(array_merge(...array_slice(array_values($original), 2)), 'text'), array_slice($paragraphs, 4));
+    }
+
+    /** 正文照搬细纲时不进入整章修订：在同一运行内按场景改写被指出的句子，改好后直接生成候选。 */
+    public function test_plan_copy_is_repaired_per_scene_without_revision(): void
+    {
+        $novel = B04ContentTest::readyNovel(true, 50);
+        $novel->update(['chapter_length_policy' => ['min_characters' => 2500, 'max_characters' => 3500], 'generation_config' => [...($novel->generation_config ?? []), 'acceptance_branch' => ['key' => 'test']]]);
+        $run = app(ContentGenerationService::class)->start($novel, User::firstOrFail());
+        app(ContentExecutionService::class)->runStep($run->id, $run->invocation_id, app(AiTextGenerationService::class));
+        $repairs = [];
+        Http::swap(new Factory);
+        Http::preventStrayRequests();
+        Http::fake(['*' => function ($request) use (&$repairs) {
+            $log = CostLog::latest('id')->firstOrFail();
+            $payload = json_decode(explode('冻结输入：', $log->request_parameters['prompt_audit']['user_prompt'], 2)[1], true);
+            $parts = [];
+            foreach ($payload['budget']['slots'] as $slot) {
+                $parts[$slot] = B04ContentTest::sceneParagraphs(intdiv($payload['budget']['min'] + $payload['budget']['max'], 2), '甲');
+            }
+            if (count($parts) > 1) {
+                // 首稿第一个场景照搬细纲行动句，其余篇幅与分段均合格。
+                $scene = $payload['slot_plan']['scene_1'];
+                $copied = collect(['action', 'goal', 'obstacle', 'emotional_beat', 'change'])->flatMap(fn (string $field): array => preg_split('/“[^”]*”|[，。；：！？…（）《》\s]+/u', (string) ($scene[$field] ?? '')))
+                    ->first(fn (string $fragment): bool => mb_strlen($fragment) >= 14);
+                $this->assertNotNull($copied);
+                $narration = $parts['scene_1'][0]['text'];
+                $parts['scene_1'][0]['text'] = $copied.'，'.mb_substr($narration, mb_strlen($copied) + 1);
+            } else {
+                $repairs[] = $payload['repair_measurement']['direction'];
+                $this->assertStringContainsString('逐字照搬细纲', $payload['previous_response_failure']);
+            }
+            $response = B02SettingTest::response(json_encode(['title' => '照搬测试', 'paragraphs' => $parts], JSON_UNESCAPED_UNICODE));
+            $response['model'] = $request['model'];
+
+            return Http::response($response);
+        }]);
+        $run->refresh();
+        for ($step = 0; $step < 4 && $run->status === 'pending' && $run->next_step === 'draft'; $step++) {
+            app(ContentExecutionService::class)->runStep($run->id, $run->invocation_id, app(AiTextGenerationService::class));
+            $run->refresh();
+        }
+        $this->assertSame(['quality'], $repairs);
+        $this->assertNotNull($run->chapter->fresh()->current_candidate_version_id);
+        $this->assertSame('check', $run->next_step);
+        $this->assertSame(0, NovelStage::where('input->run_id', $run->id)->where('input->step', 'revise')->count());
     }
 }

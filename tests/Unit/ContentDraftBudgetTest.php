@@ -133,6 +133,21 @@ class ContentDraftBudgetTest extends TestCase
         ContentExecutionContract::body(['title' => '标题', 'paragraphs' => ['scene_1' => $loose]], ['slots' => ['scene_1'], 'min' => 1, 'max' => 2000]);
     }
 
+    /** 正文阶段逐场景检查照搬细纲、转述相邻对白与写作说明，问题归到所在场景及场景内段号；没有问题的场景不出现。 */
+    public function test_slot_quality_locates_plan_copy_and_echo_per_scene(): void
+    {
+        $plan = ['scenes' => [['action' => '沈禾把信和登记簿复印件并排放在茶几上，等母亲开口。']]];
+        $paragraphs = [
+            'scene_1' => [self::narration('沈禾把信和登记簿复印件并排放在茶几上，灯光落在纸面，她没有立刻说话，只把杯子往旁边挪了挪。')],
+            'scene_2' => [self::dialogue('“柜体锈蚀无保存价值，账上就这么写的。”'), self::narration('小陶刚才说柜体锈蚀无保存价值，她听得心里一沉，手指在桌沿上停了很久，没有接话，也没有抬头。')],
+            'scene_3' => [self::narration('她把文件袋收好，起身去关窗，雨声小了一些，楼下有人在收晾着的衣服，竹竿碰得叮当响。')],
+        ];
+        $errors = ContentExecutionContract::slotQuality($paragraphs, ['scene_1', 'scene_2', 'scene_3'], $plan);
+        $this->assertSame(['scene_1', 'scene_2'], array_keys($errors));
+        $this->assertStringContainsString('scene_1第1段逐字照搬细纲句子「沈禾把信和登记簿复印件并排放在茶几上」', $errors['scene_1'][0]);
+        $this->assertStringContainsString('scene_2第2段叙述把第1段对白的原话先转述了一遍', $errors['scene_2'][0]);
+    }
+
     /** 叙述段较多时按四分之一放宽短段，完整的过渡短句不被误判为一句一段。 */
     public function test_short_narration_allowance_scales(): void
     {
@@ -276,6 +291,26 @@ class ContentDraftBudgetTest extends TestCase
         $this->assertCount(1, $issues);
         $this->assertSame(['type' => 'echoed_dialogue', 'paragraph' => 1, 'anchor_id' => 'p1', 'dialogue_paragraph' => 2, 'quotes' => ['红笔在库房那']], array_diff_key($issues[0], ['reason' => true]));
         $this->assertSame([], ContentQualityContract::echoedDialogue("母亲在厨房关了火。\n“你先别跟你舅说。”"));
+    }
+
+    /** 一段叙述同时与前后两段对白重合时分别报告，修复指令一次列全。 */
+    public function test_echoed_dialogue_reports_both_neighbors(): void
+    {
+        $body = "“老库房那种铁皮的。”\n她停了一下，说老库房那种铁皮卷柜是分格的，第三格大多放底册和签收单。\n“第三格放底册和签收单。”";
+        $issues = ContentQualityContract::echoedDialogue($body);
+        $this->assertSame([[2, 1], [2, 3]], array_map(fn (array $issue): array => [$issue['paragraph'], $issue['dialogue_paragraph']], $issues));
+    }
+
+    /** 能认出两边说话人且不是同一人时，接话和复述确认不算转述；同一人或认不出说话人时照常报告。 */
+    public function test_echoed_dialogue_skips_replies_between_different_speakers(): void
+    {
+        $exchange = "沈禾没挪开：“你再想想，老库房那种铁皮的。”\n小陶停了一下，说老库房那种铁皮卷柜是分格的，一柜三格，第三格大多放底册和签收单。\n沈禾：“一柜三格，第三格放底册和签收单？”\n小陶：“大概是这样。”";
+        $this->assertSame([], ContentQualityContract::echoedDialogue($exchange));
+        $this->assertSame([], ContentQualityContract::echoedDialogue("母亲说外婆只说库房那边有点事，别多问。\n沈禾声音放轻：“库房那边有点事，是什么事？”", ['沈禾']));
+
+        $same = "小陶说账上写的是柜体锈蚀、无保存价值，那排柜子其实还好好的。\n小陶：“账上写的是柜体锈蚀、无保存价值。”";
+        $this->assertCount(1, ContentQualityContract::echoedDialogue($same));
+        $this->assertSame(['沈禾', '周德茂'], ContentQualityContract::characterNames(['confirmed_setting' => ['characters' => [['name' => '沈禾'], ['name' => '沈禾的外婆（已故）'], ['name' => '周德茂（证人）']]]]));
     }
 
     /** 修订范围只能落在带段号问题的附近，合计不超过约三分之一正文；整章或旧正文的问题不施加位置限制。 */

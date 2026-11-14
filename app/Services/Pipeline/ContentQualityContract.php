@@ -74,34 +74,64 @@ final class ContentQualityContract
     /** 叙述与相邻对白逐字重合达到此字数（去标点），即视为先转述、再直接引语的重复。 */
     public const ECHO_CHARACTERS = 6;
 
+    /** 认不出人名时用于判断说话人的常见称谓。 */
+    private const KINSHIP_NAMES = ['母亲', '父亲', '妈妈', '爸爸', '外婆', '外公', '奶奶', '爷爷', '舅舅', '舅妈', '姨妈', '姑姑', '叔叔', '婶婶', '哥哥', '姐姐', '弟弟', '妹妹', '丈夫', '妻子'];
+
+    /** 冻结设定中的人物名，去掉“（已故）”等括注，跳过“某某的外婆”这类描述性称呼。
+     * @return list<string>
+     */
+    public static function characterNames(array $snapshot): array
+    {
+        $names = [];
+        foreach ($snapshot['confirmed_setting']['characters'] ?? [] as $character) {
+            $name = trim(preg_replace('/[（(].*?[）)]/u', '', (string) ($character['name'] ?? '')));
+            if ($name !== '' && ! str_contains($name, '的') && mb_strlen($name) <= 6) {
+                $names[] = $name;
+            }
+        }
+
+        return array_values(array_unique($names));
+    }
+
     /** 检测叙述段把紧邻对白的原话先转述一遍：叙述与对白分段后模型常见的复述写法，交由修订删去其一。
+     * 一段叙述与前后两段对白的重合分别报告；能认出两边说话人且不是同一人时（一问一答、接话、复述确认）不算转述。
+     *
+     * @param  list<string>  $names  本书人物名，与称谓及正文中“某某：“”形式的说话人一起用于识别说话人
      * @return list<array<string, mixed>>
      */
-    public static function echoedDialogue(string $body): array
+    public static function echoedDialogue(string $body, array $names = []): array
     {
         $strip = fn (string $text): string => preg_replace('/[\s\p{P}\p{S}]/u', '', $text);
         $lines = explode("\n", $body);
+        $names = self::speakerNames($lines, $names);
         $issues = [];
         foreach ($lines as $index => $line) {
             if (preg_match_all('/“([^”]+)”/u', $line, $quotes) === 0) {
                 continue;
             }
+            $speaker = self::dialogueSpeaker($line, $names);
             foreach ([$index - 1, $index + 1] as $neighbor) {
-                // 只比对不含人物原话的叙述段，同一处重合只报一次。
-                if (! isset($lines[$neighbor]) || isset($issues[$neighbor]) || preg_match('/“[^”]*[，。！？…；：][^”]*”/u', $lines[$neighbor]) === 1) {
+                // 只比对不含人物原话的叙述段。
+                if (! isset($lines[$neighbor]) || preg_match('/“[^”]*[，。！？…；：][^”]*”/u', $lines[$neighbor]) === 1) {
                     continue;
                 }
-                $narration = $strip(preg_replace('/“[^”]*”/u', '', $lines[$neighbor]));
+                $narration = preg_replace('/“[^”]*”/u', '', $lines[$neighbor]);
+                $stripped = $strip($narration);
                 foreach ($quotes[1] as $quote) {
                     $quote = $strip($quote);
                     for ($offset = 0; $offset + self::ECHO_CHARACTERS <= mb_strlen($quote); $offset++) {
                         $fragment = mb_substr($quote, $offset, self::ECHO_CHARACTERS);
-                        if (str_contains($narration, $fragment)) {
-                            $issues[$neighbor] = ['type' => 'echoed_dialogue', 'paragraph' => $neighbor + 1, 'anchor_id' => 'p'.($neighbor + 1), 'dialogue_paragraph' => $index + 1, 'quotes' => [$fragment],
-                                'reason' => '第'.($neighbor + 1).'段叙述把第'.($index + 1).'段对白的原话先转述了一遍（「'.$fragment.'」），删去叙述里的转述，只保留直接对白，叙述改写说话时的动作和反应'];
-
+                        if (! str_contains($stripped, $fragment)) {
+                            continue;
+                        }
+                        $reporters = $speaker === null ? [] : self::reportedBy($narration, $fragment, $names, $strip);
+                        if ($reporters !== [] && ! in_array($speaker, $reporters, true)) {
                             continue 3;
                         }
+                        $issues[sprintf('%06d-%06d', $neighbor, $index)] = ['type' => 'echoed_dialogue', 'paragraph' => $neighbor + 1, 'anchor_id' => 'p'.($neighbor + 1), 'dialogue_paragraph' => $index + 1, 'quotes' => [$fragment],
+                            'reason' => '第'.($neighbor + 1).'段叙述把第'.($index + 1).'段对白的原话先转述了一遍（「'.$fragment.'」），删去叙述里的转述，只保留直接对白，叙述改写说话时的动作和反应'];
+
+                        continue 3;
                     }
                 }
             }
@@ -109,6 +139,75 @@ final class ContentQualityContract
         ksort($issues);
 
         return array_values($issues);
+    }
+
+    /** 可识别的说话人：本书人物名、常见称谓，以及正文中以“某某：“”开头的两三字称呼；长名优先匹配。
+     * @param  list<string>  $lines
+     * @param  list<string>  $names
+     * @return list<string>
+     */
+    private static function speakerNames(array $lines, array $names): array
+    {
+        $names = [...$names, ...self::KINSHIP_NAMES];
+        foreach ($lines as $line) {
+            if (preg_match('/^\s*(\p{Han}{2,3})[：:]“/u', $line, $match) === 1) {
+                $names[] = $match[1];
+            }
+        }
+        $names = array_values(array_unique($names));
+        usort($names, fn (string $a, string $b): int => mb_strlen($b) <=> mb_strlen($a));
+
+        return $names;
+    }
+
+    /** 文本中出现的人名，按出现位置排列；同一位置取最长的名字。
+     * @param  list<string>  $names
+     * @return list<string>
+     */
+    private static function namesIn(string $text, array $names): array
+    {
+        $found = [];
+        foreach ($names as $name) {
+            $offset = 0;
+            while (($position = mb_strpos($text, $name, $offset)) !== false) {
+                $found[$position] ??= $name;
+                $offset = $position + 1;
+            }
+        }
+        ksort($found);
+
+        return array_values($found);
+    }
+
+    /** 对白段的说话人：引号前的说明取最靠近引号的人名，没有时取引号后说明里的第一个人名；认不出时返回 null。
+     * @param  list<string>  $names
+     */
+    private static function dialogueSpeaker(string $line, array $names): ?string
+    {
+        $before = self::namesIn(mb_substr($line, 0, (int) mb_strpos($line, '“')), $names);
+        if ($before !== []) {
+            return end($before);
+        }
+        $after = self::namesIn(mb_substr($line, (int) mb_strrpos($line, '”') + 1), $names);
+
+        return $after[0] ?? null;
+    }
+
+    /** 叙述里重合文字所在句子中、重合文字之前出现的人名，即可能的转述者。
+     * @param  list<string>  $names
+     * @return list<string>
+     */
+    private static function reportedBy(string $narration, string $fragment, array $names, callable $strip): array
+    {
+        foreach (preg_split('/[。！？；]/u', $narration) as $sentence) {
+            $sentence = $strip($sentence);
+            $position = mb_strpos($sentence, $fragment);
+            if ($position !== false) {
+                return self::namesIn(mb_substr($sentence, 0, $position), $names);
+            }
+        }
+
+        return [];
     }
 
     /** 检测已确认的写作说明模式及篇幅问题，不静默删除文本。
