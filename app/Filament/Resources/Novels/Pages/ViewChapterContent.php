@@ -404,7 +404,7 @@ class ViewChapterContent extends Page implements HasTable
             'reading_failed' => '全文核对未通过；意见已保存，继续修订须显式操作且受原预算约束',
             'dispatch_failed' => '队列投递失败，尚未发送模型请求，可显式继续',
             'invalid_contract' => '冻结来源或正文摘要变化，拒绝继续',
-            default => '尚无停止原因，运行步骤见下方',
+            default => (string) $this->run()?->stop_reason,
         };
     }
 
@@ -650,7 +650,8 @@ class ViewChapterContent extends Page implements HasTable
                             }),
                             TextEntry::make('reused_fine')->hiddenLabel()->color('gray')->size('sm')->state(fn (): string => $this->fineSourceLabel()),
                         ])->verticallyAlignCenter()->extraAttributes(['style' => 'flex-wrap: wrap']),
-                        TextEntry::make('stop')->label('停止原因与下一步')->weight('medium')->state(fn (): string => $this->stopLabel()),
+                        // 运行中或排队时还没有停止原因，状态标签和当前步骤已说明进度，不显示空的停止原因。
+                        TextEntry::make('stop')->label('停止原因与下一步')->weight('medium')->visible(fn (): bool => filled($this->run()?->stop_reason))->state(fn (): string => $this->stopLabel()),
                     ]),
                     EmbeddedTable::make(),
                     Section::make('请求与费用记录')->key('content-attempts')->collapsible()->collapsed()->compact()

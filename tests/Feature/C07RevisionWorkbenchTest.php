@@ -15,6 +15,16 @@ use Livewire\Livewire;
 /** 复用真实执行器及HTTP夹具，核验定点修订、再次评审和服务端轮次边界。 */
 class C07RevisionWorkbenchTest extends B04ExecutionTest
 {
+    /** 运行排队或进行中时没有停止原因，不显示空的“停止原因与下一步”；停下后才显示。 */
+    public function test_stop_reason_hidden_while_run_is_active(): void
+    {
+        $run = $this->start();
+        $this->assertNull($run->fresh()->stop_reason);
+        Livewire::test(ViewChapterContent::class, ['record' => $run->chapter->novel_id])->assertDontSee('停止原因与下一步')->assertDontSee('尚无停止原因');
+        $this->drain();
+        Livewire::test(ViewChapterContent::class, ['record' => $run->chapter->novel_id])->assertSee('停止原因与下一步');
+    }
+
     /** 剩余额度只够两次时，弹窗默认上限仍按本轮最多三次请求预留，直接提交不会被额度拦下。 */
     public function test_workbench_revision_default_limit_covers_three_requests(): void
     {
