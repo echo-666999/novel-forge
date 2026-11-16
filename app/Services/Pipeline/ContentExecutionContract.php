@@ -495,9 +495,19 @@ final class ContentExecutionContract
         $kinds = [];
         $shortAt = [];
         foreach ($paragraphs as $index => $paragraph) {
-            ContentSchema::keys($paragraph, ['kind', 'text']);
-            ContentSchema::text($paragraph['text']);
             $position = $label.'第'.($index + 1).'段';
+            // 模型偶尔把段落写成纯字符串：段落类型可由分段规则无损判定（能作叙述段即叙述段，否则按对白段严格复验），不必为此补发请求。
+            if (is_string($paragraph)) {
+                $paragraph = ['kind' => self::narrationProblem($paragraph) === null ? 'narration' : 'dialogue', 'text' => $paragraph];
+                $paragraphs[$index] = $paragraph;
+            }
+            // 结构错误写明位置与正确格式，格式补发时模型才知道该改什么。
+            try {
+                ContentSchema::keys($paragraph, ['kind', 'text']);
+            } catch (InvalidArgumentException) {
+                throw new InvalidArgumentException($position.'必须是只含kind与text两个字段的对象，例如{"kind":"narration","text":"……"}');
+            }
+            ContentSchema::text($paragraph['text']);
             if (preg_match('/[\s#*_`~>]/u', $paragraph['text']) === 1) {
                 $errors[] = $position.'不得含换行、其他空白或Markdown';
             }

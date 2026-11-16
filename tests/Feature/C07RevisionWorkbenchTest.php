@@ -2,19 +2,178 @@
 
 namespace Tests\Feature;
 
+use App\Enums\StageStatus;
+use App\Filament\Resources\Novels\NovelResource;
 use App\Filament\Resources\Novels\Pages\ViewChapterContent;
 use App\Models\ChapterGenerationRun;
 use App\Models\ChapterVersion;
 use App\Models\CostLog;
+use App\Models\NovelStage;
 use App\Models\User;
+use App\Services\Pipeline\ContentExecutionService;
 use App\Services\Pipeline\ContentGenerationService;
+use App\Services\Pipeline\ContentSchema;
 use App\Services\Pipeline\RevisionWorkbench;
+use Filament\Actions\Testing\TestAction;
+use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 use Livewire\Livewire;
 
 /** 复用真实执行器及HTTP夹具，核验定点修订、再次评审和服务端轮次边界。 */
 class C07RevisionWorkbenchTest extends B04ExecutionTest
 {
+    /** 修订两次都因格式停下后，已保存响应按当前规则复验：仍不合格时拒绝且不改状态；合格时采用并继续检查，不重发修订请求。 */
+    public function test_saved_revision_can_be_revalidated_without_new_request(): void
+    {
+        $this->scenario = 'meta_buried';
+        $run = $this->start();
+        $this->drain();
+        $this->assertSame('invalid_schema', $run->fresh()->stop_reason);
+        $this->assertSame('revise', $run->fresh()->next_step);
+        $page = Livewire::test(ViewChapterContent::class, ['record' => $run->chapter->novel_id])->assertActionVisible('revalidateRevision');
+        try {
+            app(ContentGenerationService::class)->revalidateRevision($run->id, User::firstOrFail(), '复验');
+            $this->fail('仍不合格的已保存响应不能采用');
+        } catch (InvalidArgumentException $exception) {
+            $this->assertStringContainsString('已保存的修订响应仍未通过当前校验', $exception->getMessage());
+        }
+        $this->assertSame('paused', $run->fresh()->status);
+
+        // 模拟校验规则更新后第一次修订响应已合格：改写保存的响应内容（仅测试夹具）。
+        $source = ChapterVersion::sole();
+        $stages = NovelStage::where('input->run_id', $run->id)->where('input->step', 'revise')->orderBy('id')->get();
+        $first = CostLog::findOrFail($stages[0]->output['data']['cost_log_id']);
+        $response = json_decode($first->response_text, true);
+        $id = $response['ranges'][0]['start_id'];
+        $text = str_replace('此段约350字。', '核对原档完成调查。', ContentSchema::anchors($source->body)[$id]['text']).'修订后取得新证据。';
+        $response['ranges'][0]['text'] = [$text];
+        DB::table('cost_logs')->where('id', $first->id)->update(['response_text' => json_encode($response, JSON_UNESCAPED_UNICODE)]);
+        $requests = CostLog::count();
+        $used = $run->fresh()->requests_used;
+
+        $page->callAction('revalidateRevision', ['reason' => '规则更新后复验'])->assertHasNoActionErrors();
+        $this->assertSame('pending', $run->fresh()->status);
+        $this->assertSame(['stage_id' => $stages[0]->id, 'cost_log_id' => $first->id], array_intersect_key(collect($run->fresh()->control_history)->last(), ['stage_id' => 1, 'cost_log_id' => 1]));
+        $this->drain();
+        $run = $run->fresh();
+        $this->assertSame('awaiting_review', $run->stop_reason);
+        // 只多出推进检查一次请求，修订本身未重发，也不计修订次数。
+        $this->assertSame($requests + 1, CostLog::count());
+        $this->assertSame($used + 1, $run->requests_used);
+        $reused = NovelStage::where('input->run_id', $run->id)->where('input->reused_revision->stage_id', $stages[0]->id)->sole();
+        $this->assertSame(StageStatus::Completed, $reused->status);
+        $this->assertSame(2, ChapterVersion::count());
+        $this->assertStringContainsString('修订后取得新证据。', ChapterVersion::latest('id')->firstOrFail()->body);
+        // 同一响应不能重复登记采用。
+        $this->assertNull(app(ContentExecutionService::class)->revalidatableRevision($run)['entry']);
+    }
+
+    /** 运行中状态标签直接写出正在执行的步骤；“查看完整Prompt”只加载当前运行的请求并能打开。 */
+    public function test_active_step_badge_and_prompt_modal_scoped_to_run(): void
+    {
+        $run = $this->start();
+        Livewire::test(ViewChapterContent::class, ['record' => $run->chapter->novel_id])->assertSee('待处理：章节细纲')->assertDontSee('当前步骤：');
+        $this->drain();
+        $first = $run->fresh();
+        $logs = CostLog::whereIn('novel_stage_id', NovelStage::where('input->run_id', $first->id)->pluck('id'))->pluck('id');
+        $this->assertGreaterThan(0, $logs->count());
+
+        // 另起一次修订运行，弹窗只列新运行自己的请求。
+        app(ContentGenerationService::class)->recordReading($first->id, User::firstOrFail(), true, ['原候选已核对']);
+        $page = Livewire::test(ViewChapterContent::class, ['record' => $first->chapter->novel_id])->assertSee('当前步骤：')
+            ->callAction('reviseIssues', data: ['parent_id' => $first->id, 'version_id' => ChapterVersion::sole()->id, 'issues' => '人物口吻不一致：请把首段对白改为克制的表达。', 'execution_limit' => 40, 'accept_request' => true]);
+        $this->drain();
+        $child = ChapterGenerationRun::latest('id')->firstOrFail();
+        $childLogs = CostLog::whereIn('novel_stage_id', NovelStage::where('input->run_id', $child->id)->pluck('id'))->pluck('id');
+        $html = Livewire::test(ViewChapterContent::class, ['record' => $child->chapter->novel_id])->mountAction(TestAction::make('viewPrompts')->schemaComponent('content-attempts'))
+            ->instance()->getMountedAction()->getModalContent()->render();
+        $this->assertStringContainsString('本运行共 '.$childLogs->count().' 次请求', $html);
+        foreach ($childLogs as $id) {
+            $this->assertStringContainsString('请求 #'.$id.' ', $html);
+        }
+        foreach ($logs as $id) {
+            $this->assertStringNotContainsString('请求 #'.$id.' ', $html);
+        }
+        $this->assertStringContainsString('系统提示', $html);
+    }
+
+    /** 默认两轮用完后仍有入口：须勾选确认才能追加，最多四轮；工作台始终提供人工编辑入口，修订问题预填检查未通过项。 */
+    public function test_rounds_beyond_default_need_confirmation_and_manual_edit_is_reachable(): void
+    {
+        $this->start();
+        $this->drain();
+        $service = app(ContentGenerationService::class);
+        $round = function (bool $extra = false) use ($service): void {
+            $parent = ChapterGenerationRun::latest('id')->firstOrFail();
+            $service->recover($parent->id, User::firstOrFail(), '作者指定问题修订', 3, 500, issues: ['人物口吻不一致：请把首段对白改得克制。'],
+                expectedVersionId: $parent->chapter->fresh()->current_candidate_version_id, extraRound: $extra);
+            $this->drain();
+        };
+        $round();
+        $round();
+        $novelId = ChapterGenerationRun::latest('id')->firstOrFail()->chapter->novel_id;
+        $page = Livewire::test(ViewChapterContent::class, ['record' => $novelId])->assertActionVisible('reviseIssues')->assertActionVisible('manualEdit')
+            ->assertActionHasUrl('manualEdit', NovelResource::getUrl('editor', ['record' => $novelId, 'chapter' => 1]));
+        // 不勾选追加确认会被表单拦下，服务端同样拒绝。
+        $page->callAction('reviseIssues', data: ['issues' => '人物口吻不一致：第三轮。', 'execution_limit' => 500, 'accept_request' => true])->assertHasActionErrors(['extra_round']);
+        try {
+            $round();
+            $this->fail('未确认不能追加第三轮');
+        } catch (InvalidArgumentException $exception) {
+            $this->assertStringContainsString('追加第3轮须明确确认', $exception->getMessage());
+        }
+        $round(true);
+        $this->assertTrue(ChapterGenerationRun::latest('id')->firstOrFail()->config['workbench']['extra_round']);
+        $round(true);
+        Livewire::test(ViewChapterContent::class, ['record' => $novelId])->assertActionHidden('reviseIssues')->assertActionVisible('manualEdit')->assertActionVisible('rewriteChapter');
+        try {
+            $round(true);
+            $this->fail('超过四轮不能继续定点修订');
+        } catch (InvalidArgumentException $exception) {
+            $this->assertStringContainsString('修订已达到4轮上限', $exception->getMessage());
+        }
+
+        // 轮次用完后仍可整章重写：新运行不带工作台标记、从正文生成起步，生成新候选并检查。
+        $versions = ChapterVersion::count();
+        Livewire::test(ViewChapterContent::class, ['record' => $novelId])
+            ->callAction('rewriteChapter', ['request_limit' => 4, 'execution_limit' => 500, 'accept_request' => true])->assertHasNoActionErrors();
+        $rewrite = ChapterGenerationRun::latest('id')->firstOrFail();
+        $this->assertNull(data_get($rewrite->config, 'workbench'));
+        $this->assertSame('draft', $rewrite->config['initial_step']);
+        $this->drain();
+        $this->assertSame($versions + 1, ChapterVersion::count());
+        $this->assertSame(4, app(RevisionWorkbench::class)->rounds($rewrite->chapter_id));
+    }
+
+    /** 历史版本列表显示各版推进检查结论，旧版本可作为人工编辑起点。 */
+    public function test_version_table_shows_check_verdict_and_edit_from_version(): void
+    {
+        $parent = $this->start();
+        $this->drain();
+        $first = ChapterVersion::sole();
+        app(ContentGenerationService::class)->recover($parent->id, User::firstOrFail(), '作者指定问题修订', 3, 500, issues: ['人物口吻不一致：请把首段对白改得克制。'], expectedVersionId: $first->id);
+        $this->drain();
+        $novelId = $parent->chapter->novel_id;
+        Livewire::test(ViewChapterContent::class, ['record' => $novelId])
+            ->assertTableColumnStateSet('check_verdict', '通过', $first)
+            ->assertTableActionVisible('editFromVersion', $first)
+            ->assertTableActionHidden('editFromVersion', ChapterVersion::latest('id')->firstOrFail())
+            ->assertTableActionHasUrl('editFromVersion', NovelResource::getUrl('editor', ['record' => $novelId, 'chapter' => 1, 'from_version' => $first->id]), $first);
+    }
+
+    /** 修订问题预填当前版本推进检查的前后矛盾与本地重复线索。 */
+    public function test_revise_issues_prefill_failed_check_items(): void
+    {
+        $run = $this->start();
+        $this->drain();
+        $chapter = $run->chapter->fresh();
+        $version = ChapterVersion::findOrFail($chapter->current_candidate_version_id);
+        $chapter->update(['progression_result' => [...$chapter->progression_result, 'version_id' => $version->id,
+            'continuity_issues' => [['type' => 'repeated_action', 'reason' => '小陶两次接单离开，动作重演。', 'evidence_ids' => ['p1']]]]]);
+        Livewire::test(ViewChapterContent::class, ['record' => $chapter->novel_id])->mountAction('reviseIssues')
+            ->assertActionDataSet(fn (array $data): bool => str_contains($data['issues'], '前后重复或时序矛盾：小陶两次接单离开，动作重演。'));
+    }
+
     /** 运行排队或进行中时没有停止原因，不显示空的“停止原因与下一步”；停下后才显示。 */
     public function test_stop_reason_hidden_while_run_is_active(): void
     {
@@ -74,7 +233,7 @@ class C07RevisionWorkbenchTest extends B04ExecutionTest
         Livewire::test(ViewChapterContent::class, ['record' => $parent->chapter->novel_id])->assertSee($issue)->assertSee('1 / 2');
     }
 
-    /** 两轮后拒绝第三轮和旧恢复入口；拒绝不创建运行或请求。 */
+    /** 两轮后未经确认的第三轮和旧恢复入口都被拒绝；拒绝不创建运行或请求。 */
     public function test_workbench_round_limit_cannot_be_reset_by_recovery(): void
     {
         $run = $this->start();
@@ -94,7 +253,8 @@ class C07RevisionWorkbenchTest extends B04ExecutionTest
                     expectedVersionId: $run->fresh()->chapter->current_candidate_version_id);
                 $this->fail('达到轮次上限仍创建了运行');
             } catch (InvalidArgumentException $exception) {
-                $this->assertStringContainsString('人工', $exception->getMessage());
+                // 工作台入口要求明确确认追加轮次；旧恢复入口提示改用指定问题或人工编辑。
+                $this->assertStringContainsString($workbench ? '追加第3轮须明确确认' : '人工编辑正文', $exception->getMessage());
             }
         }
         $this->assertSame($count, CostLog::count());

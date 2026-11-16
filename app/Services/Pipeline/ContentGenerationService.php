@@ -133,12 +133,12 @@ final class ContentGenerationService
     /** 旧产物只能通过此入口转为新协议；工作台问题冻结在新运行，旧授权绝不自动续用。
      * @param  list<string>|null  $issues  作者明确指定的问题，空值沿用原恢复入口。
      */
-    public function recover(int $parentId, User $author, string $reason, ?int $requestLimit = null, ?int $executionLimit = null, bool $confirmUnknown = false, bool $rewrite = false, ?string $model = null, ?array $issues = null, ?int $expectedVersionId = null, ?int $submissionReviewId = null, bool $replan = false): ChapterGenerationRun
+    public function recover(int $parentId, User $author, string $reason, ?int $requestLimit = null, ?int $executionLimit = null, bool $confirmUnknown = false, bool $rewrite = false, ?string $model = null, ?array $issues = null, ?int $expectedVersionId = null, ?int $submissionReviewId = null, bool $replan = false, bool $extraRound = false): ChapterGenerationRun
     {
         $this->outsideTransaction();
         ContentSchema::text($reason);
         $reference = ChapterGenerationRun::findOrFail($parentId);
-        [$run, $created] = DB::transaction(function () use ($reference, $author, $reason, $requestLimit, $executionLimit, $confirmUnknown, $rewrite, $model, $issues, $expectedVersionId, $submissionReviewId, $replan): array {
+        [$run, $created] = DB::transaction(function () use ($reference, $author, $reason, $requestLimit, $executionLimit, $confirmUnknown, $rewrite, $model, $issues, $expectedVersionId, $submissionReviewId, $replan, $extraRound): array {
             $novel = Novel::lockForUpdate()->findOrFail($reference->chapter->novel_id);
             $parent = ChapterGenerationRun::lockForUpdate()->findOrFail($reference->id);
             $review = $submissionReviewId === null ? null : ChapterReview::findOrFail($submissionReviewId);
@@ -152,9 +152,9 @@ final class ContentGenerationService
                     throw new InvalidArgumentException('提交评审修订来源已变化');
                 }
             }
-            // 工作台只能提交绑定版本的问题清单；旧恢复入口不能绕过工作台轮次门禁。
-            if ($issues === null && isset($parent->config['workbench'])) {
-                throw new InvalidArgumentException('工作台修订必须从指定问题入口继续，达到上限转人工');
+            // 工作台的定点修订只能提交绑定版本的问题清单，旧恢复入口不能绕过轮次门禁；整章重写是独立的新候选，作者可明确授权。
+            if ($issues === null && isset($parent->config['workbench']) && ! $rewrite) {
+                throw new InvalidArgumentException('工作台修订必须从“针对指定问题修订”继续，或选择整章重写、人工编辑正文');
             }
             if ($existing = ChapterGenerationRun::where('parent_run_id', $parent->id)->first()) {
                 if ($issues !== null && (! app(BookAuthorship::class)->allows($novel->id, $author, $existing->config['author_id'])
@@ -170,7 +170,7 @@ final class ContentGenerationService
             if (! in_array($parent->status, ['paused', 'error', 'completed'], true) || ($parent->stop_reason === 'b04_accepted' && $issues === null && $review === null && ! $authorRewrite) || $novel->status !== NovelStatus::Paused) {
                 throw new InvalidArgumentException('当前运行不能恢复或验收已经完成');
             }
-            $workbench = $issues === null ? null : app(RevisionWorkbench::class)->freeze($parent, $author, $expectedVersionId ?? 0, $issues);
+            $workbench = $issues === null ? null : app(RevisionWorkbench::class)->freeze($parent, $author, $expectedVersionId ?? 0, $issues, $extraRound);
             if ($workbench !== null && $rewrite) {
                 throw new InvalidArgumentException('工作台仅允许定点修订，不能整章重写');
             }
@@ -414,6 +414,43 @@ final class ContentGenerationService
             $this->authorizeExecution($novel, $run->request_limit - $run->requests_used, $executionLimit, $run, $reason);
             $run->update(['status' => 'pending', 'stop_reason' => null, 'invocation_id' => (string) Str::uuid7(),
                 'control_history' => [...$run->control_history, ['action' => 'continue', 'author_id' => $authorId, 'reason' => $reason, 'at' => now()->toIso8601String()]]]);
+            $novel->update(['status' => NovelStatus::Pending, 'pause_requested' => false]);
+
+            return $run;
+        });
+        app(ContentExecutionService::class)->dispatch($run);
+
+        return $run->refresh();
+    }
+
+    /** 修订因响应格式停止时，按当前校验规则重新检查本运行已保存的修订响应；通过则登记采用并继续推进检查，不重发修订请求。 */
+    public function revalidateRevision(int $id, User $author, string $reason): ChapterGenerationRun
+    {
+        $this->outsideTransaction();
+        ContentSchema::text($reason);
+        $run = DB::transaction(function () use ($id, $author, $reason): ChapterGenerationRun {
+            $reference = ChapterGenerationRun::findOrFail($id);
+            $novel = Novel::lockForUpdate()->findOrFail($reference->chapter->novel_id);
+            $run = ChapterGenerationRun::lockForUpdate()->findOrFail($id);
+            $this->assertFrozenSources($run);
+            if (($run->config['version'] ?? null) !== ContentExecutionContract::VERSION || $run->status !== 'paused' || $run->stop_reason !== 'invalid_schema'
+                || $run->next_step !== 'revise' || $novel->status !== NovelStatus::Paused || $run->chapter->formal_version_id !== null) {
+                throw new InvalidArgumentException('只有因修订响应格式停止的当前协议运行可以重新校验已保存响应');
+            }
+            if (! app(BookAuthorship::class)->allows($novel->id, $author, $run->config['author_id'])) {
+                throw new InvalidArgumentException('只能由本书作者重新校验');
+            }
+            $this->assertIdle($novel, true);
+            // 采用已保存响应不计请求；之后的推进检查仍需一次请求与执行额度。
+            if ($run->requests_used >= $run->request_limit || $novel->execution_count >= $novel->max_execution_count) {
+                throw new InvalidArgumentException('采用后还需一次推进检查，但本运行请求额度或小说执行次数已用完');
+            }
+            $found = app(ContentExecutionService::class)->revalidatableRevision($run);
+            if ($found['entry'] === null) {
+                throw new InvalidArgumentException('已保存的修订响应仍未通过当前校验：'.$found['error']);
+            }
+            $run->update(['status' => 'pending', 'stop_reason' => null, 'invocation_id' => (string) Str::uuid7(),
+                'control_history' => [...$run->control_history, ['action' => 'revalidate_revision', ...$found['entry'], 'author_id' => $author->id, 'reason' => $reason, 'at' => now()->toIso8601String()]]]);
             $novel->update(['status' => NovelStatus::Pending, 'pause_requested' => false]);
 
             return $run;

@@ -283,6 +283,27 @@ class ContentDraftBudgetTest extends TestCase
         ContentExecutionContract::revisionText(['ranges' => [[...$range, 'text' => [self::narration('她对着电话说：“妈，这不是随手锉的。”母亲沉默了。一柜三格，第三格放底册；账上却写柜体锈蚀、无保存价值。前者像在指路，后者像有人拿布把路标盖住了，她越看越觉得这两页纸说的根本不是同一只柜子。')]]]], false);
     }
 
+    /** 模型把段落写成纯字符串时按分段规则判定类型并照常复验，不因缺少kind作废整次修订。 */
+    public function test_revision_text_accepts_plain_string_paragraphs(): void
+    {
+        $narration = '她把手机换到另一只耳朵，听见那头锅铲停了，抽油烟机还在低低地响。';
+        $range = ['start_id' => 'p1', 'end_id' => 'p2', 'reason' => '修', 'addresses' => ['f1'], 'text' => [$narration, '“你先别跟你舅说。”母亲压低了声音。']];
+        $this->assertSame($narration."\n“你先别跟你舅说。”母亲压低了声音。", ContentExecutionContract::revisionText(['ranges' => [$range]], true)['ranges'][0]['text']);
+
+        // 纯字符串同样受对白规则约束：一段里三处引语仍被拒绝。
+        try {
+            ContentExecutionContract::revisionText(['ranges' => [[...$range, 'text' => ['“走。”“去哪？”“库房。”']]]], false);
+            $this->fail('多人发言挤在一段应被拒绝');
+        } catch (InvalidArgumentException $exception) {
+            $this->assertStringContainsString('第1处修订第1段有3处引语', $exception->getMessage());
+        }
+
+        // 其他非对象段落给出位置与正确格式，补发时模型可据此改正。
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('第1处修订第2段必须是只含kind与text两个字段的对象');
+        ContentExecutionContract::revisionText(['ranges' => [[...$range, 'text' => [$narration, ['text' => $narration]]]]], false);
+    }
+
     /** 叙述把相邻对白的原话先转述一遍时按叙述段报告；只共用人名物名等短词不算重复。 */
     public function test_echoed_dialogue_is_reported_on_the_narration_paragraph(): void
     {

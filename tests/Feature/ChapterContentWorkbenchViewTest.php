@@ -222,7 +222,7 @@ class ChapterContentWorkbenchViewTest extends TestCase
             ->assertSee('仅观察')
             ->assertSee('线索1 · 重复原文')
             ->assertSee('须人工复核')
-            ->assertSee('模型通过不能视为全文验收通过')
+            ->assertSee('模型检查通过不等于全文验收通过')->assertSee('针对指定问题修订')
             ->assertSee('第2段：');
     }
 
@@ -330,7 +330,8 @@ class ChapterContentWorkbenchViewTest extends TestCase
         $run = $this->createRun();
         $run->update(['requests_used' => 2, 'request_limit' => 5]);
 
-        $html = Livewire::test(ViewChapterContent::class, ['record' => $run->chapter->novel_id])->assertSee('当前步骤：')
+        // 排队中的运行在状态标签里直接写出步骤。
+        $html = Livewire::test(ViewChapterContent::class, ['record' => $run->chapter->novel_id])->assertSee('待处理：正文生成')
             ->assertSee('请求与费用记录')->assertSee('本轮已领用 2 / 5 次 · 提交准备 0 / 2 次')->html();
         // 请求字段只出现在记录区块之后。
         $this->assertGreaterThan(strpos($html, '请求与费用记录'), strpos($html, '已领用 / 请求上限'));

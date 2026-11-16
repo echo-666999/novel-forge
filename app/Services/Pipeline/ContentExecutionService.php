@@ -405,7 +405,86 @@ final class ContentExecutionService
             $context['context_source'] = ['content_run_id' => $run->id, 'input_hash' => $run->input_hash, 'chapter_number' => $run->chapter->number];
         }
 
+        // 作者登记重新采用的已保存修订响应：原样作为本步响应，仍走完整校验，不再发送请求。
+        $reusedRevision = $run->next_step === 'revise' ? $this->pendingRevisionReuse($run) : null;
+        if ($reusedRevision !== null) {
+            $saved = ContentSchema::decode(CostLog::where('novel_id', $run->chapter->novel_id)->findOrFail($reusedRevision['cost_log_id'])->response_text);
+            if (PlanningJson::hash($saved) !== $reusedRevision['response_hash']) {
+                throw new InvalidArgumentException('已保存修订响应已变化');
+            }
+            $context['reused_revision'] = $reusedRevision;
+
+            return ['payload' => $payload, 'context' => $context, 'base' => $saved];
+        }
+
         return ['payload' => $payload, 'context' => $context, 'base' => $recovery['draft']['response'] ?? null];
+    }
+
+    /** 修订响应的完整本地校验，执行器与“重新校验已保存修订”共用，规则一致。
+     * @param  array<string, mixed>  $response
+     * @param  array<string, mixed>  $request
+     * @param  list<array<string, mixed>>  $droppedRanges
+     * @return array{title: string, body: string}
+     */
+    private function revisionBody(array $response, ChapterVersion $source, array $request, array &$droppedRanges): array
+    {
+        // 没有问题编号的范围不是授权修订，丢弃并留档；其余范围仍按原契约严格校验。
+        [$response, $droppedRanges] = ContentExecutionContract::authorizedRanges($response);
+        // 范围只能落在所处理问题的附近，合计不超过约三分之一正文，防止修一句改半章。
+        ContentExecutionContract::revisionScope($response, $request['context']['anchors'], $request['context']['findings']);
+        // 替换文本与正文同样按段落列表校验分段规则，避免修订把对白重新塞回叙述段。
+        $response = ContentExecutionContract::revisionText($response, $request['context']['budget']['complete_paragraphs'] ?? false);
+
+        return ContentSchema::body(['title' => $source->title, 'body' => ContentContinuationContract::revise($response, $source->body, $request['context']['findings'])]);
+    }
+
+    /** 本运行内可按当前规则重新采用的已保存修订响应：从新到旧逐个复验，返回第一个通过的登记信息；都未通过时返回最近的失败原因。
+     * 只考虑本运行已付费且供应商成功返回的修订请求，已登记采用过的响应不再重复采用。
+     *
+     * @return array{entry: ?array{stage_id: int, cost_log_id: int, response_hash: string}, error: ?string}
+     */
+    public function revalidatableRevision(ChapterGenerationRun $run): array
+    {
+        $source = $this->candidate($run);
+        if ($source === null || $run->next_step !== 'revise') {
+            return ['entry' => null, 'error' => '当前运行没有待修订的候选正文'];
+        }
+        $used = array_column(array_filter($run->control_history ?? [], fn (array $item): bool => ($item['action'] ?? null) === 'revalidate_revision'), 'stage_id');
+        $request = $this->request($run, $source);
+        $error = null;
+        $stages = NovelStage::where('novel_id', $run->chapter->novel_id)->where('input->run_id', $run->id)->where('input->step', 'revise')
+            ->where('status', StageStatus::Failed->value)->orderByDesc('id')->get();
+        foreach ($stages as $stage) {
+            if (in_array($stage->id, $used, true) || isset($stage->input['reused_revision'])) {
+                continue;
+            }
+            $log = CostLog::where('novel_stage_id', $stage->id)->whereKey(data_get($stage->output, 'data.cost_log_id') ?? 0)->where('status', 'succeeded')->first();
+            if ($log === null) {
+                continue;
+            }
+            try {
+                $response = ContentSchema::decode($log->response_text);
+                $dropped = [];
+                $this->revisionBody($response, $source, $request, $dropped);
+
+                return ['entry' => ['stage_id' => $stage->id, 'cost_log_id' => $log->id, 'response_hash' => PlanningJson::hash($response)], 'error' => null];
+            } catch (InvalidArgumentException $exception) {
+                $error ??= $exception->getMessage();
+            }
+        }
+
+        return ['entry' => null, 'error' => $error ?? '本运行没有可重新校验的已保存修订响应'];
+    }
+
+    /** 已登记重新采用、但尚未被执行器消费的修订响应。 */
+    private function pendingRevisionReuse(ChapterGenerationRun $run): ?array
+    {
+        $entry = collect($run->control_history ?? [])->last(fn (array $item): bool => ($item['action'] ?? null) === 'revalidate_revision');
+        if ($entry === null || NovelStage::where('novel_id', $run->chapter->novel_id)->where('input->run_id', $run->id)->where('input->reused_revision->stage_id', $entry['stage_id'])->exists()) {
+            return null;
+        }
+
+        return ['stage_id' => $entry['stage_id'], 'cost_log_id' => $entry['cost_log_id'], 'response_hash' => $entry['response_hash']];
     }
 
     /** 修复依据的失败草稿：先取恢复运行冻结的草稿，再按本运行内继续修复的正文请求依次更新；只读不可变产物，不修改运行配置。
@@ -571,7 +650,7 @@ final class ContentExecutionService
 
                 return null;
             }
-            $reuse = isset($request['context']['reused_draft']);
+            $reuse = isset($request['context']['reused_draft']) || isset($request['context']['reused_revision']);
             // 修订格式补发须在新建阶段之前判定，否则会被当成第二次修订，也不另计修订次数。
             $formatRetry = $run->next_step === 'revise' && $this->revisionRetry($run) !== null;
             if (! $reuse && ($run->requests_used >= $run->request_limit || $novel->execution_count >= $novel->max_execution_count)) {
@@ -580,7 +659,7 @@ final class ContentExecutionService
                 return null;
             }
             if ($novel->stages()->where('status', 'running')->exists() || CostLog::where('novel_id', $novel->id)->where('status', 'pending')->exists()
-                || ($run->next_step === 'revise' && ! ($formatRetry ? $this->hasRepairQuota($run, $novel) : $this->canRevise($run)))) {
+                || ($run->next_step === 'revise' && ! $reuse && ! ($formatRetry ? $this->hasRepairQuota($run, $novel) : $this->canRevise($run)))) {
                 $this->stop($run, $novel, 'retry_limit');
 
                 return null;
@@ -593,9 +672,10 @@ final class ContentExecutionService
                     'input_hash' => $run->input_hash, 'version_id' => $version?->id, 'body_hash' => $version?->body_hash, 'request_ordinal' => $run->requests_used + 1,
                     // C04组装前来源摘要与供应商实际用户提示摘要分别保存。
                     (isset($request['context']['context_policy']) ? 'source_payload_hash' : 'payload_hash') => PlanningJson::hash($request['payload']),
-                    ...($reuse ? ['reused_draft' => $request['context']['reused_draft']] : [])], 'started_at' => now()]);
+                    ...(isset($request['context']['reused_draft']) ? ['reused_draft' => $request['context']['reused_draft']] : []),
+                    ...(isset($request['context']['reused_revision']) ? ['reused_revision' => $request['context']['reused_revision']] : [])], 'started_at' => now()]);
             // 采用已合格的保存草稿不发送请求，不占用运行请求额度和小说执行次数。
-            $run->update(['status' => 'running', 'requests_used' => $run->requests_used + ($reuse ? 0 : 1), 'retry_count' => $run->retry_count + ($step === 'revise' && ! $formatRetry ? 1 : 0)]);
+            $run->update(['status' => 'running', 'requests_used' => $run->requests_used + ($reuse ? 0 : 1), 'retry_count' => $run->retry_count + ($step === 'revise' && ! $formatRetry && ! $reuse ? 1 : 0)]);
             $novel->update(['status' => NovelStatus::Running, 'current_stage' => $stageType, 'execution_count' => $novel->execution_count + ($reuse ? 0 : 1)]);
             $run->chapter->update(['status' => $step === 'check' ? ChapterStatus::Checking : ChapterStatus::Generating]);
 
@@ -614,6 +694,7 @@ final class ContentExecutionService
         $repairedDraft = null;
         $droppedRanges = [];
         $reusedDraft = $request['context']['reused_draft'] ?? null;
+        $reusedRevision = $request['context']['reused_revision'] ?? null;
         try {
             $tokens = isset($request['context']['draft_repair_slot']) ? ($run->config['repair_max_output_tokens'] ?? $run->config['max_output_tokens']) : $run->config['max_output_tokens'];
             // 首次正文的推理容量只来自新运行冻结配置，单段修复仍使用独立预算。
@@ -626,7 +707,7 @@ final class ContentExecutionService
             if ($step === 'check') {
                 $tokens = $run->config['check_max_output_tokens'] ?? $tokens;
             }
-            if (isset($request['context']['reused_draft'])) {
+            if (isset($request['context']['reused_draft']) || isset($request['context']['reused_revision'])) {
                 // 冻结在运行配置中的合格草稿原样采用，费用记录仍在原请求，不另行调用模型。
                 $response = $request['base'];
             } else {
@@ -645,16 +726,7 @@ final class ContentExecutionService
             $data = match ($step) {
                 'fine' => ContentExecutionContract::fine($response, array_column($run->snapshot['source_chapter']['progression_points'], 'id'), $run->snapshot['novel']['chapter_length_policy']),
                 'draft' => $this->draftBody($run, $response, $request['context']['full_draft_budget'] ?? $request['context']['budget']),
-                'revise' => (function () use ($response, $source, $request, &$droppedRanges): array {
-                    // 没有问题编号的范围不是授权修订，丢弃并留档；其余范围仍按原契约严格校验。
-                    [$response, $droppedRanges] = ContentExecutionContract::authorizedRanges($response);
-                    // 范围只能落在所处理问题的附近，合计不超过约三分之一正文，防止修一句改半章。
-                    ContentExecutionContract::revisionScope($response, $request['context']['anchors'], $request['context']['findings']);
-                    // 替换文本与正文同样按段落列表校验分段规则，避免修订把对白重新塞回叙述段。
-                    $response = ContentExecutionContract::revisionText($response, $request['context']['budget']['complete_paragraphs'] ?? false);
-
-                    return ContentSchema::body(['title' => $source->title, 'body' => ContentContinuationContract::revise($response, $source->body, $request['context']['findings'])]);
-                })(),
+                'revise' => $this->revisionBody($response, $source, $request, $droppedRanges),
                 'check' => ContentContinuationContract::check($response, $source->body, array_column($run->snapshot['source_chapter']['progression_points'], 'id'), $request['context']['rules'], $request['context']['findings']),
             };
             if ($step === 'fine') {
@@ -674,12 +746,13 @@ final class ContentExecutionService
             };
             $error = $exception->category === 'context_capacity' || $budget ? $exception->getMessage() : null;
         } catch (Throwable $exception) {
-            $failure = $log?->status === 'succeeded' ? 'invalid_schema' : (CostLog::where('novel_stage_id', $stage->id)->exists() ? 'unknown' : 'audit_failed');
+            // 采用已保存响应时没有新请求：复验失败同样归为响应结构无效。
+            $failure = $log?->status === 'succeeded' || $reusedDraft !== null || $reusedRevision !== null ? 'invalid_schema' : (CostLog::where('novel_stage_id', $stage->id)->exists() ? 'unknown' : 'audit_failed');
             $error = $exception instanceof InvalidArgumentException ? $exception->getMessage() : '本地处理异常，保留证据后显式恢复';
         }
         try {
             $repairSlot = $request['context']['draft_repair_slot'] ?? null;
-            $next = DB::transaction(function () use ($id, $token, $stage, $source, $step, $data, $failure, $error, $log, $started, $repairedDraft, $droppedRanges, $reusedDraft, $repairSlot): bool {
+            $next = DB::transaction(function () use ($id, $token, $stage, $source, $step, $data, $failure, $error, $log, $started, $repairedDraft, $droppedRanges, $reusedDraft, $reusedRevision, $repairSlot): bool {
                 $reference = ChapterGenerationRun::findOrFail($id);
                 $novel = Novel::lockForUpdate()->findOrFail($reference->chapter->novel_id);
                 $run = ChapterGenerationRun::lockForUpdate()->findOrFail($id);
@@ -703,6 +776,9 @@ final class ContentExecutionService
                 }
                 if ($reusedDraft !== null) {
                     $output['reused_draft'] = $reusedDraft;
+                }
+                if ($reusedRevision !== null) {
+                    $output['reused_revision'] = $reusedRevision;
                 }
                 if ($repairedDraft !== null) {
                     $output['repaired_draft'] = ['response' => $repairedDraft, 'hash' => PlanningJson::hash($repairedDraft), 'source_input_hash' => $run->input_hash];

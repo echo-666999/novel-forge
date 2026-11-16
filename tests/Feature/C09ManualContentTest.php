@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Enums\NovelStatus;
 use App\Filament\Resources\Novels\Pages\EditChapterDraft;
 use App\Models\ChapterGenerationRun;
+use App\Models\ChapterProgressionCheck;
 use App\Models\ChapterVersion;
 use App\Models\CostLog;
 use App\Models\NovelSettingConfirmation;
@@ -99,6 +100,108 @@ class C09ManualContentTest extends TestCase
         $this->assertSame(2, ChapterVersion::count());
         $this->assertSame(0, CostLog::count());
         Http::assertNothingSent();
+    }
+
+    /** 历史版本可作为人工编辑起点：从工作台链接或编辑页动作载入其正文，发布为新候选，不直接改候选指针、不调用模型。 */
+    public function test_history_version_loads_as_editing_start(): void
+    {
+        [$novel, $actor, $source] = $this->source();
+        $body = str_replace('。', '，她停了一下。', B04ContentTest::body());
+        $older = ChapterVersion::factory()->create(['run_id' => $source->run_id, 'chapter_id' => $source->chapter_id, 'version' => $source->version + 1, 'title' => '旧版章名',
+            'body' => $body, 'body_hash' => hash('sha256', $body), 'character_count' => ContentSchema::count($body)]);
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        $this->actingAs($actor);
+
+        Livewire::withQueryParams(['chapter' => 1, 'from_version' => $older->id])->test(EditChapterDraft::class, ['record' => $novel->id])
+            ->assertSet('data.body', EditChapterDraft::displayBody($older->body))->assertSet('data.title', '旧版章名');
+        $this->assertSame($source->id, $source->chapter->fresh()->current_candidate_version_id);
+
+        Livewire::test(EditChapterDraft::class, ['record' => $novel->id])
+            ->set('data.body', $source->body.'她记下日期。')->call('saveDraft')
+            ->callAction('loadVersion', ['version_id' => $older->id])->assertHasNoActionErrors()->assertSet('data.body', EditChapterDraft::displayBody($older->body))
+            ->callAction('publish', ['reason' => '退回旧版本作为编辑起点'])->assertHasNoActionErrors();
+        $latest = ChapterVersion::latest('id')->firstOrFail();
+        $this->assertSame($older->body, $latest->body);
+        $this->assertSame($latest->id, $source->chapter->fresh()->current_candidate_version_id);
+        $this->assertSame(0, CostLog::count());
+        Http::assertNothingSent();
+    }
+
+    /** 编辑框按推进检查问题与本地重复原文标记需要调整的片段；输入仍自动保存工作草稿。 */
+    public function test_editor_marks_issues_and_autosaves(): void
+    {
+        [$novel, $actor, $source] = $this->source();
+        $lines = explode("\n", $source->body);
+        $repeated = '窗台上的湿度计仍停在偏高的刻度';
+        $lines[0] .= $repeated.'。';
+        $lines[1] .= $repeated.'。';
+        $body = implode("\n", $lines);
+        $source = ChapterVersion::factory()->create(['run_id' => $source->run_id, 'chapter_id' => $source->chapter_id, 'version' => $source->version + 1,
+            'body' => $body, 'body_hash' => hash('sha256', $body), 'character_count' => ContentSchema::count($body)]);
+        $source->chapter->update(['current_candidate_version_id' => $source->id]);
+        $quote = mb_substr($lines[2], 0, 10);
+        $result = ['verdict' => 'insufficient', 'continuity_issues' => [['type' => 'repeated_action', 'reason' => '同一动作重演。', 'evidence' => [['quote' => $quote, 'paragraph' => 3]]]]];
+        $check = ChapterProgressionCheck::factory()->create(['chapter_id' => $source->chapter_id, 'version_id' => $source->id, 'body_hash' => $source->body_hash, 'verdict' => 'insufficient', 'result' => $result]);
+        $source->chapter->update(['progression_result' => ['check_id' => $check->id, 'version_id' => $source->id, 'body_hash' => $source->body_hash, ...$result]]);
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        $this->actingAs($actor);
+
+        $page = Livewire::test(EditChapterDraft::class, ['record' => $novel->id]);
+        $marks = $page->instance()->issueMarks();
+        $this->assertContains(['kind' => 'check', 'label' => '前后重复或时序矛盾：同一动作重演。', 'quote' => $quote], $marks);
+        // 重复片段延伸到两处完全相同的整段，并去掉首尾标点。
+        $this->assertContains(['kind' => 'repeat', 'label' => '重复原文', 'quote' => $repeated], $marks);
+        $page->assertSee('推进检查指出的问题')->assertSee('本地检出的重复原文');
+
+        // 输入经 afterStateUpdated 自动保存工作草稿，不建立候选。
+        $revision = $page->get('revision');
+        $page->set('data.body', $body.'她记下日期。');
+        $this->assertSame($revision + 1, $page->get('revision'));
+        $this->assertSame(2, ChapterVersion::count());
+    }
+
+    /** 编辑框按段缩进、段间空行显示，保存时还原为每段一行，往返不改变正文。 */
+    public function test_editor_formats_paragraphs_and_restores_storage_format(): void
+    {
+        $body = "第一段。\n“第二段。”她说。\n第三段。";
+        $display = EditChapterDraft::displayBody($body);
+        $this->assertSame("　　第一段。\n\n　　“第二段。”她说。\n\n　　第三段。", $display);
+        $this->assertSame($body, EditChapterDraft::storedBody($display));
+        $this->assertSame($body, EditChapterDraft::storedBody("  第一段。 \n\n\n　　“第二段。”她说。\r\n第三段。\n"));
+    }
+
+    /** 载入历史版本后，推进检查问题改用该版本自己的检查记录，不再显示当前候选的问题。 */
+    public function test_marks_follow_loaded_version_check(): void
+    {
+        [$novel, $actor, $source] = $this->source();
+        $body = str_replace('。', '，她停了一下。', B04ContentTest::body());
+        $older = ChapterVersion::factory()->create(['run_id' => $source->run_id, 'chapter_id' => $source->chapter_id, 'version' => $source->version + 1,
+            'body' => $body, 'body_hash' => hash('sha256', $body), 'character_count' => ContentSchema::count($body)]);
+        // 引文取两版不同的段尾：旧版带“她停了一下”，当前版的原段尾在旧版中已不存在。
+        $olderQuote = mb_substr(explode("\n", $older->body)[1], -12);
+        $currentQuote = mb_substr(explode("\n", $source->body)[0], -6);
+        foreach ([[$older, $olderQuote, '旧版问题。'], [$source, $currentQuote, '当前版问题。']] as [$version, $quote, $reason]) {
+            ChapterProgressionCheck::factory()->create(['chapter_id' => $version->chapter_id, 'version_id' => $version->id, 'body_hash' => $version->body_hash, 'verdict' => 'insufficient',
+                'result' => ['verdict' => 'insufficient', 'continuity_issues' => [['type' => 'repeated_action', 'reason' => $reason, 'evidence' => [['quote' => $quote]]]]]]);
+        }
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        $this->actingAs($actor);
+
+        $current = Livewire::test(EditChapterDraft::class, ['record' => $novel->id])->instance()->markSource();
+        $this->assertSame($source->version, $current['version']);
+        $this->assertSame(['前后重复或时序矛盾：当前版问题。'], array_column(array_filter($current['marks'], fn (array $mark): bool => $mark['kind'] === 'check'), 'label'));
+
+        $loaded = Livewire::withQueryParams(['chapter' => 1, 'from_version' => $older->id])->test(EditChapterDraft::class, ['record' => $novel->id]);
+        $marked = $loaded->instance()->markSource();
+        $this->assertSame($older->version, $marked['version']);
+        $this->assertSame(['前后重复或时序矛盾：旧版问题。'], array_column(array_filter($marked['marks'], fn (array $mark): bool => $mark['kind'] === 'check'), 'label'));
+        $loaded->assertSee('推进检查问题来自版本 '.$older->version);
+
+        // 改动后仍按引文匹配找到旧版；与当前候选正文完全一致时直接用当前候选，即使旧版问题的引文也在其中。
+        $loaded->set('data.body', EditChapterDraft::displayBody($older->body.'她记下日期。'));
+        $this->assertSame($older->version, $loaded->instance()->markSource()['version']);
+        $loaded->set('data.body', EditChapterDraft::displayBody($source->body));
+        $this->assertSame($source->version, $loaded->instance()->markSource()['version']);
     }
 
     /** 正式版本不可进入编辑，工作草稿不会绕开提交边界。 */
