@@ -1050,7 +1050,9 @@ class ViewChapterContent extends Page implements HasTable
                 TextInput::make('parent_id')->label('冻结运行编号')->default(fn (): ?int => $this->run()?->id)->readOnly()->required(),
                 TextInput::make('version_id')->label('冻结正文版本')->default(fn (): ?int => $this->candidate()?->id)->readOnly()->required(),
                 Textarea::make('issues')->label('指定问题（每行一条，最多10条）')->helperText('例如：人物口吻不一致，请引用具体对白并说明人物应有的表达方式。')->required()->maxLength(10000),
-                TextInput::make('execution_limit')->label('确认小说累计执行上限')->integer()->required()->minValue(1)->maxValue(2147483647)->default(fn (): int => max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + 2)),
+                // 本轮最多三次请求（修订、格式补发、复评），默认上限须容纳全部三次。
+                TextInput::make('execution_limit')->label('确认小说累计执行上限')->integer()->required()->minValue(1)->maxValue(2147483647)->default(fn (): int => max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + 3))
+                    ->helperText(fn (): string => '已用 '.$this->getRecord()->execution_count.' / 上限 '.$this->getRecord()->max_execution_count.'；本轮最多 3 次请求，上限至少为 '.($this->getRecord()->execution_count + 3).'。'),
                 Checkbox::make('accept_request')->label('授权本轮修订与复评及对应费用')->accepted(),
             ])->action(function (array $data): void {
                 // 服务层再次校验版本与轮次，防止过期弹窗修订另一份正文。

@@ -15,6 +15,23 @@ use Livewire\Livewire;
 /** 复用真实执行器及HTTP夹具，核验定点修订、再次评审和服务端轮次边界。 */
 class C07RevisionWorkbenchTest extends B04ExecutionTest
 {
+    /** 剩余额度只够两次时，弹窗默认上限仍按本轮最多三次请求预留，直接提交不会被额度拦下。 */
+    public function test_workbench_revision_default_limit_covers_three_requests(): void
+    {
+        $parent = $this->start();
+        $this->drain();
+        $source = ChapterVersion::sole();
+        app(ContentGenerationService::class)->recordReading($parent->id, User::firstOrFail(), true, ['原候选已核对']);
+        $novel = $parent->chapter->novel->fresh();
+        $novel->update(['max_execution_count' => $novel->execution_count + 2]);
+        Livewire::test(ViewChapterContent::class, ['record' => $novel->id])
+            ->mountAction('reviseIssues')->assertActionDataSet(['execution_limit' => $novel->execution_count + 3])
+            ->setActionData(['issues' => '人物口吻不一致：请把首段对白改为克制的表达。', 'accept_request' => true])
+            ->callMountedAction()->assertHasNoActionErrors();
+        $this->assertSame($novel->execution_count + 3, $novel->fresh()->max_execution_count);
+        $this->assertNotSame($parent->id, ChapterGenerationRun::latest('id')->firstOrFail()->id);
+    }
+
     /** 后台提出口吻问题后生成新版本，源正文保留，实际两份请求均携带该问题。 */
     public function test_workbench_ui_revises_then_independently_reviews(): void
     {

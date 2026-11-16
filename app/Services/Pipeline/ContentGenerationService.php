@@ -517,7 +517,7 @@ final class ContentGenerationService
     {
         $limit = $requested ?? $novel->max_execution_count;
         if ($needed < 1 || $limit < $novel->max_execution_count || $limit < $novel->execution_count + $needed || $limit > 2147483647) {
-            throw new InvalidArgumentException('小说剩余总额度不足，须明确确认新总上限');
+            throw new InvalidArgumentException('小说剩余总额度不足：本次最多需要 '.$needed.' 次请求，已用 '.$novel->execution_count.' / 上限 '.$novel->max_execution_count.'，请把本小说执行总上限至少调到 '.max($novel->max_execution_count, $novel->execution_count + $needed).'。');
         }
         if ($limit !== $novel->max_execution_count) {
             $run->update(['control_history' => [...$run->control_history, ['action' => 'execution_limit', 'old' => $novel->max_execution_count, 'new' => $limit, 'reason' => $reason, 'at' => now()->toIso8601String()]]]);
