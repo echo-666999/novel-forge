@@ -870,7 +870,7 @@ class ViewChapterContent extends Page implements HasTable
             return 3;
         }
 
-        return (($this->run()?->config['enable_fine_outline'] ?? false) && $this->run()?->plan_data === null ? 3 : 2) + 2 * min(1, app(GeneralSettings::class)->max_retries_per_chapter);
+        return (($this->run()?->config['enable_fine_outline'] ?? false) && $this->run()?->plan_data === null ? 3 : 2) + (app(GeneralSettings::class)->auto_revise_on_check_failure ? 2 : 0);
     }
 
     /** 提交评审驳回且尚未按这份评审建修订运行时，当前候选可按评审意见修订；修订运行失败后改用“恢复本章候选”；自动生产覆盖的章节由恢复台处理。 */

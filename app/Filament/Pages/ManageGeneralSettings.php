@@ -51,6 +51,8 @@ class ManageGeneralSettings extends SettingsPage
                             ->numeric()
                             ->step('any')
                             ->minValue(0)
+                            ->maxValue(2)
+                            ->helperText('0～2。数值越低输出越稳定，越高越多变但更易偏离要求。用于设定、大纲、细纲、正文和推进检查，在新建小说或新运行时冻结；评审、事件提取等固定为 0；GPT-6.1 Sol/Terra 会忽略此项。建议 0.3～1.0。')
                             ->required(),
                         TextInput::make('max_tokens_per_chapter')
                             ->label('正文输出 Token 上限默认值')
@@ -64,11 +66,10 @@ class ManageGeneralSettings extends SettingsPage
                     ->columns(2)
                     ->columnSpanFull()
                     ->schema([
-                        TextInput::make('max_retries_per_chapter')
-                            ->label('每章最大重试次数')
-                            ->integer()
-                            ->minValue(0)
-                            ->required(),
+                        Toggle::make('auto_revise_on_check_failure')
+                            ->label('推进检查不通过时自动修订一次')
+                            ->helperText('开启时，推进点或章末钩子不足会在同一运行内定点修订并复查一次，每章请求上限增加 2 次；关闭时检查不通过即停下等你处理，也不能新建修订类恢复运行。在新运行创建时冻结。')
+                            ->inline(false),
                         TextInput::make('max_execution_count')
                             ->label('新书执行次数上限')
                             ->integer()

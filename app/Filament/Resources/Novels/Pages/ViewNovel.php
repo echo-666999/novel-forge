@@ -67,7 +67,7 @@ class ViewNovel extends ViewRecord
     {
         $plan = $this->getRecord()->outlinePlans()->where('status', 'completed')->latest('id')->first();
 
-        return (data_get($plan?->config, 'enable_fine_outline', true) ? 3 : 2) + 2 * min(1, app(GeneralSettings::class)->max_retries_per_chapter);
+        return (data_get($plan?->config, 'enable_fine_outline', true) ? 3 : 2) + (app(GeneralSettings::class)->auto_revise_on_check_failure ? 2 : 0);
     }
 
     /** 动作只调用应用服务，禁止直接编辑运行字段或已有产物。

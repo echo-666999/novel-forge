@@ -17,7 +17,8 @@ class GeneralSettings extends BaseSettings
     /** 生成正文弹窗中“本次正文输出Token上限”的默认值。 */
     public int $max_tokens_per_chapter = 8192;
 
-    public int $max_retries_per_chapter = 3;
+    /** 推进检查不通过时，在同一运行内自动定点修订并复查一次（占用 2 次请求）。 */
+    public bool $auto_revise_on_check_failure = true;
 
     /** 新书创建时的执行次数上限。 */
     public int $max_execution_count = 100;

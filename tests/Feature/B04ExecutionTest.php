@@ -250,12 +250,12 @@ class B04ExecutionTest extends TestCase
         return [['once', 'awaiting_review'], ['insufficient', 'retry_limit']];
     }
 
-    /** 设置为零和较小授权预算都不能被默认的一次修订覆盖。 */
+    /** 关闭自动修订和较小授权预算都不能被默认的一次修订覆盖。 */
     #[DataProvider('limitedCases')]
-    public function test_explicit_limits_are_honored(int $configured, int $requested, int $expectedCap): void
+    public function test_explicit_limits_are_honored(bool $configured, int $requested, int $expectedCap): void
     {
         $settings = app(GeneralSettings::class);
-        $settings->max_retries_per_chapter = $configured;
+        $settings->auto_revise_on_check_failure = $configured;
         $settings->save();
         $this->scenario = 'insufficient';
         $run = $this->start(requests: $requested);
@@ -263,14 +263,14 @@ class B04ExecutionTest extends TestCase
         $this->assertSame('retry_limit', $run->fresh()->stop_reason);
         $this->assertSame($expectedCap, $run->request_limit);
         $this->assertSame(0, $run->fresh()->retry_count);
-        $this->assertSame($configured, app(GeneralSettings::class)->max_retries_per_chapter);
+        $this->assertSame($configured, app(GeneralSettings::class)->auto_revise_on_check_failure);
         Http::assertSentCount(3);
     }
 
     /** 原设置不改写，较小预算主动放弃修订。 */
     public static function limitedCases(): array
     {
-        return [[0, 3, 3], [3, 3, 3]];
+        return [[false, 3, 3], [true, 3, 3]];
     }
 
     /** 写作说明在首次默认路径即进入质量门禁，不必先走旧恢复链。 */

@@ -36,7 +36,7 @@ class ManageGeneralSettingsTest extends TestCase
             'default_model' => 'test-model',
             'temperature' => 0.25,
             'max_tokens_per_chapter' => 4000,
-            'max_retries_per_chapter' => 0,
+            'auto_revise_on_check_failure' => false,
             'max_execution_count' => 8,
             'enable_fine_outline' => false,
             'default_target_chapters' => 30,
@@ -98,11 +98,10 @@ class ManageGeneralSettingsTest extends TestCase
             'empty model' => ['default_model', ''],
             'non-numeric temperature' => ['temperature', 'invalid'],
             'negative temperature' => ['temperature', -0.1],
+            'temperature above two' => ['temperature', 2.5],
             'zero token budget' => ['max_tokens_per_chapter', 0],
             'fractional token budget' => ['max_tokens_per_chapter', 1.5],
             'token budget above modal cap' => ['max_tokens_per_chapter', 8193],
-            'negative retry count' => ['max_retries_per_chapter', -1],
-            'fractional retry count' => ['max_retries_per_chapter', 1.5],
             'zero execution count' => ['max_execution_count', 0],
             'fractional execution count' => ['max_execution_count', 1.5],
             'zero default chapters' => ['default_target_chapters', 0],
@@ -130,12 +129,28 @@ class ManageGeneralSettingsTest extends TestCase
         // 初始化迁移会补回已废弃的键，后续清理迁移负责再次移除。
         (require database_path('settings/2026_11_16_120000_clean_up_general_settings.php'))->up();
         (require database_path('settings/2026_11_16_130000_add_operational_settings.php'))->up();
+        (require database_path('settings/2026_11_16_140000_convert_retry_setting_to_switch.php'))->up();
 
         app()->forgetInstance(GeneralSettings::class);
         $settings = app(GeneralSettings::class);
         $this->assertSame('existing-model', $settings->default_model);
         $this->assertSame(0.7, $settings->temperature);
         $this->assertSame(18, DB::table('settings')->where('group', 'general')->count());
+    }
+
+    /** 原重试次数按 0 与非 0 转为开关，行为不变；回滚还原为次数。 */
+    public function test_retry_count_converts_to_switch(): void
+    {
+        $this->assertTrue(app(GeneralSettings::class)->auto_revise_on_check_failure);
+        $migration = require database_path('settings/2026_11_16_140000_convert_retry_setting_to_switch.php');
+        $migration->down();
+        $this->assertSame(json_encode(3), DB::table('settings')->where('group', 'general')->where('name', 'max_retries_per_chapter')->value('payload'));
+        DB::table('settings')->where('group', 'general')->where('name', 'max_retries_per_chapter')->update(['payload' => json_encode(0)]);
+        $migration->up();
+
+        app()->forgetInstance(GeneralSettings::class);
+        $this->assertFalse(app(GeneralSettings::class)->auto_revise_on_check_failure);
+        $this->assertFalse(DB::table('settings')->where('group', 'general')->where('name', 'max_retries_per_chapter')->exists());
     }
 
     /** 清理迁移删除从未使用的设置；仍是旧初始值的项改为可用默认值，管理员改过的值保留。 */

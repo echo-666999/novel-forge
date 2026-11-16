@@ -55,7 +55,7 @@ final class ContentGenerationService
             }
             $this->assertIdle($novel, false);
             $settings = app(GeneralSettings::class);
-            $config = $this->configuration($modelOverride ?? $settings->default_model, $settings->temperature, $fine, $maxOutputTokens, $settings->max_retries_per_chapter, $author->id, $reason);
+            $config = $this->configuration($modelOverride ?? $settings->default_model, $settings->temperature, $fine, $maxOutputTokens, ($settings->auto_revise_on_check_failure ? 1 : 0), $author->id, $reason);
             $base = $fine ? 3 : 2;
             $limit = $this->limit($requestLimit, $base, $config['max_retries']);
             $snapshot = ['novel' => $novel->planningInput(),
@@ -231,7 +231,7 @@ final class ContentGenerationService
                 throw new InvalidArgumentException('源正文不足两段，无法保留范围外原文，请明确选择整章重写');
             }
             $settings = app(GeneralSettings::class);
-            $config = $this->configuration($model ?? $parent->config['model'], $parent->config['temperature'], $fine, 8192, $settings->max_retries_per_chapter, $author->id, $reason);
+            $config = $this->configuration($model ?? $parent->config['model'], $parent->config['temperature'], $fine, 8192, ($settings->auto_revise_on_check_failure ? 1 : 0), $author->id, $reason);
             $config = $this->withModelCapabilities($config);
             // 已有验收分支的运行沿用原按段修复行为，与所选模型无关。
             $config['slot_repair'] = $config['slot_repair'] || isset($parent->snapshot['acceptance_branch']);
