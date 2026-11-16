@@ -61,6 +61,19 @@ final class ManualContentDrafts
         });
     }
 
+    /** 作者放弃基于旧候选的工作草稿，之后以当前候选为编辑起点；只删本账号草稿，不改任何候选。 */
+    public function discard(int $novelId, int $versionId, User $actor, int $revision): void
+    {
+        DB::transaction(function () use ($novelId, $versionId, $actor, $revision): void {
+            Novel::lockForUpdate()->findOrFail($novelId);
+            $version = $this->source($novelId, $versionId, $actor);
+            $deleted = DB::table('manual_content_drafts')->where(['chapter_id' => $version->chapter_id, 'actor_id' => $actor->id, 'revision' => $revision])->delete();
+            if ($deleted !== 1) {
+                throw ValidationException::withMessages(['editor' => '工作草稿已变化，请重新打开后再处理。']);
+            }
+        });
+    }
+
     /** 乐观锁防止两个浏览器标签互相覆盖工作正文；空正文仍可自动保存。 */
     public function save(int $novelId, int $versionId, User $actor, string $title, string $body, int $expectedRevision): int
     {

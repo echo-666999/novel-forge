@@ -957,12 +957,12 @@ class ViewChapterContent extends Page implements HasTable
     /** 根据保留产物显示预算，服务仍会重新校验选择的策略和全局修订设置。 */
     private function recoveryCap(bool $rewrite = false): int
     {
-        // 已有候选时默认定点修订：修订、格式不合格时补发一次、推进检查；整章重写按生成的完整额度，便于不合格时在运行内修复。
+        // 已有候选时默认定点修订：修订、格式不合格时补发一次、推进检查；整章重写按生成的完整额度另留一次格式补发，补发后仍能在运行内自动修订。
         if (! $rewrite && $this->run()?->chapter->current_candidate_version_id !== null) {
             return 3;
         }
 
-        return (($this->run()?->config['enable_fine_outline'] ?? false) && $this->run()?->plan_data === null ? 3 : 2) + (app(GeneralSettings::class)->auto_revise_on_check_failure ? 2 : 0);
+        return (($this->run()?->config['enable_fine_outline'] ?? false) && $this->run()?->plan_data === null ? 3 : 2) + (app(GeneralSettings::class)->auto_revise_on_check_failure ? 2 : 0) + 1;
     }
 
     /** 提交评审驳回且尚未按这份评审建修订运行时，当前候选可按评审意见修订；修订运行失败后改用“恢复本章候选”；自动生产覆盖的章节由恢复台处理。 */
@@ -991,7 +991,7 @@ class ViewChapterContent extends Page implements HasTable
                         $set('execution_limit', max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + $this->recoveryCap((bool) $state)));
                     }),
                 TextInput::make('model')->label('仅本次修订使用的模型')->required()->default(fn (): ?string => data_get($this->run()?->config, 'model')),
-                TextInput::make('request_limit')->label('本次请求总上限')->integer()->minValue(2)->maxValue(5)->default(fn (): int => $this->recoveryCap())->required(),
+                TextInput::make('request_limit')->label('本次请求总上限')->integer()->minValue(2)->maxValue(6)->default(fn (): int => $this->recoveryCap())->required(),
                 TextInput::make('execution_limit')->label('确认本小说执行总上限')->integer()->minValue(1)->maxValue(2147483647)->default(fn (): int => max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + $this->recoveryCap()))->required(),
                 Textarea::make('reason')->label('修订原因')->default('根据独立提交评审修订当前候选')->required(),
                 Checkbox::make('confirm_unknown')->label('若存在未知调用，我已核查并确认独立新请求可能产生额外费用；旧费用保持未知'),
@@ -1250,7 +1250,7 @@ class ViewChapterContent extends Page implements HasTable
                             $set('execution_limit', max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + $this->recoveryCap((bool) $state)));
                         }),
                     TextInput::make('model')->label('仅本次恢复使用的模型')->required()->default(fn (): ?string => data_get($this->run()?->config, 'model')),
-                    TextInput::make('request_limit')->label('本次请求总上限')->integer()->minValue(2)->maxValue(5)->default(fn (): int => $this->recoveryCap())->required(),
+                    TextInput::make('request_limit')->label('本次请求总上限')->integer()->minValue(2)->maxValue(6)->default(fn (): int => $this->recoveryCap())->required(),
                     TextInput::make('execution_limit')->label('确认本小说执行总上限')->integer()->minValue(1)->maxValue(2147483647)->default(fn (): int => max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + $this->recoveryCap()))->required(),
                     Textarea::make('reason')->label('恢复原因与待解决问题')->required(),
                     Checkbox::make('confirm_unknown')->label('若存在未知调用，我已核查并确认独立新请求可能产生额外费用；旧费用保持未知'),
@@ -1268,7 +1268,7 @@ class ViewChapterContent extends Page implements HasTable
                 ->modalDescription('定点修订每次只能替换问题附近的几段，跨越多段的重复或时序问题容易越修越乱。整章重写按本章冻结的细纲和最新前文重新生成完整正文，再做独立推进检查；不合格时在本运行额度内修复。旧版本与费用全部保留，不占用修订轮次。')
                 ->schema([
                     TextInput::make('model')->label('仅本次重写使用的模型')->required()->default(fn (): ?string => data_get($this->run()?->config, 'model')),
-                    TextInput::make('request_limit')->label('本次请求总上限')->integer()->minValue(2)->maxValue(5)->default(fn (): int => $this->recoveryCap(true))->required(),
+                    TextInput::make('request_limit')->label('本次请求总上限')->integer()->minValue(2)->maxValue(6)->default(fn (): int => $this->recoveryCap(true))->required(),
                     TextInput::make('execution_limit')->label('确认本小说执行总上限')->integer()->minValue(1)->maxValue(2147483647)->default(fn (): int => max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + $this->recoveryCap(true)))->required()
                         ->helperText(fn (): string => '已用 '.$this->getRecord()->execution_count.' / 上限 '.$this->getRecord()->max_execution_count.'。'),
                     Textarea::make('reason')->label('重写原因')->default('定点修订多轮未解决跨段重复与时序问题，整章重写')->required(),

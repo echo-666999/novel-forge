@@ -86,7 +86,7 @@ class EditChapterDraft extends Page
             $this->revision = $draft['revision'];
             $this->stale = $draft['stale'];
             $this->form->fill(['title' => $draft['title'], 'body' => self::displayBody($draft['body'])]);
-            $this->message = $this->stale ? '候选已更新：当前显示保留的旧工作草稿，请核对后明确合并。' : '编辑停止输入后自动保存工作草稿；不会自动检查或正式提交。';
+            $this->message = $this->stale ? '候选已更新：当前显示保留的旧工作草稿（基于较早的候选）。请核对后选择“确认合并旧工作草稿”或“丢弃旧草稿，载入当前候选”。' : '编辑停止输入后自动保存工作草稿；不会自动检查或正式提交。';
             $this->rememberData();
             // 从工作台“以此版本人工编辑”进入时，载入指定历史版本作为编辑起点。
             if (! $this->stale && request()->integer('from_version') > 0) {
@@ -302,6 +302,11 @@ class EditChapterDraft extends Page
                 $this->stale = false;
                 $this->saveDraft();
             }),
+            Action::make('discardDraft')->label('丢弃旧草稿，载入当前候选')->color('gray')->visible(fn (): bool => $this->stale)->requiresConfirmation()
+                ->modalDescription('删除基于旧候选的工作草稿，编辑区改为当前候选的标题和正文；旧草稿不可恢复，候选与历史版本不受影响。')->action(function (): void {
+                    app(ManualContentDrafts::class)->discard($this->getRecord()->id, $this->versionId, Filament::auth()->user(), $this->revision);
+                    $this->redirect(NovelResource::getUrl('editor', ['record' => $this->getRecord(), 'chapter' => $this->chapterNumber]));
+                }),
             Action::make('publish')->label('保存为新候选')->visible(fn (): bool => $this->versionId !== null && ! $this->stale)
                 ->schema([Textarea::make('reason')->label('人工修改原因')->required()])->action(function (array $data): void {
                     $this->saveDraft();

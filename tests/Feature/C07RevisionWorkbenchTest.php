@@ -136,8 +136,10 @@ class C07RevisionWorkbenchTest extends B04ExecutionTest
         // 轮次用完后仍可整章重写：新运行不带工作台标记、从正文生成起步，生成新候选并检查。
         $versions = ChapterVersion::count();
         Livewire::test(ViewChapterContent::class, ['record' => $novelId])
-            ->callAction('rewriteChapter', ['request_limit' => 4, 'execution_limit' => 500, 'accept_request' => true])->assertHasNoActionErrors();
+            ->callAction('rewriteChapter', ['request_limit' => 5, 'execution_limit' => 500, 'accept_request' => true])->assertHasNoActionErrors();
         $rewrite = ChapterGenerationRun::latest('id')->firstOrFail();
+        // 整章重写多留一次格式补发，补发后仍够自动修订并复查。
+        $this->assertSame(5, $rewrite->request_limit);
         $this->assertNull(data_get($rewrite->config, 'workbench'));
         $this->assertSame('draft', $rewrite->config['initial_step']);
         $this->drain();

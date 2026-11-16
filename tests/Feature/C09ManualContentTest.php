@@ -6,6 +6,8 @@ use App\Enums\NovelStatus;
 use App\Filament\Resources\Novels\Pages\EditChapterDraft;
 use App\Models\ChapterGenerationRun;
 use App\Models\ChapterProgressionCheck;
+use App\Models\ChapterReview;
+use App\Models\ChapterSubmissionRun;
 use App\Models\ChapterVersion;
 use App\Models\CostLog;
 use App\Models\NovelSettingConfirmation;
@@ -22,6 +24,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Validation\ValidationException;
+use InvalidArgumentException;
 use Livewire\Livewire;
 use Tests\TestCase;
 
@@ -100,6 +103,60 @@ class C09ManualContentTest extends TestCase
         $this->assertSame(2, ChapterVersion::count());
         $this->assertSame(0, CostLog::count());
         Http::assertNothingSent();
+    }
+
+    /** 草稿发布为新候选后即删除；之后出现更新候选时，编辑页从当前候选起步而不是旧草稿。 */
+    public function test_publish_clears_working_draft(): void
+    {
+        [$novel, $actor, $source] = $this->source();
+        $drafts = app(ManualContentDrafts::class);
+        $revision = $drafts->save($novel->id, $source->id, $actor, $source->title, $source->body.'她记下日期。', 0);
+        $version = app(ContentGenerationService::class)->saveManualCandidate($novel->id, $source->id, $actor, $revision, '清理草稿验收');
+
+        $this->assertSame(0, DB::table('manual_content_drafts')->count());
+        $opened = $drafts->open($novel->id, $version->id, $actor);
+        $this->assertFalse($opened['stale']);
+        $this->assertSame($version->body, $opened['body']);
+        $this->assertSame(0, $opened['revision']);
+    }
+
+    /** 基于旧候选的草稿可直接丢弃，编辑区改为当前候选正文。 */
+    public function test_stale_draft_can_be_discarded(): void
+    {
+        [$novel, $actor, $source] = $this->source();
+        $older = ChapterVersion::factory()->create(['run_id' => $source->run_id, 'chapter_id' => $source->chapter_id, 'version' => $source->version + 1]);
+        app(ManualContentDrafts::class)->save($novel->id, $source->id, $actor, '旧草稿', '旧草稿正文', 0);
+        DB::table('manual_content_drafts')->update(['base_version_id' => $older->id]);
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        $this->actingAs($actor);
+
+        Livewire::test(EditChapterDraft::class, ['record' => $novel->id])
+            ->assertSet('stale', true)->assertSet('data.body', EditChapterDraft::displayBody('旧草稿正文'))
+            ->assertActionVisible('discardDraft')->callAction('discardDraft')->assertHasNoActionErrors();
+        $this->assertSame(0, DB::table('manual_content_drafts')->count());
+        Livewire::test(EditChapterDraft::class, ['record' => $novel->id])
+            ->assertSet('stale', false)->assertSet('data.body', EditChapterDraft::displayBody($source->body));
+    }
+
+    /** 已被提交评审驳回的正文不能原样重新保存为候选，草稿保留供继续修改。 */
+    public function test_body_rejected_by_review_cannot_be_republished(): void
+    {
+        [$novel, $actor, $source] = $this->source();
+        $body = str_replace('。', '，她停了一下。', $source->body);
+        $rejected = ChapterVersion::factory()->create(['run_id' => $source->run_id, 'chapter_id' => $source->chapter_id, 'version' => $source->version + 1,
+            'body' => $body, 'body_hash' => hash('sha256', $body), 'character_count' => ContentSchema::count($body)]);
+        $submission = ChapterSubmissionRun::factory()->create(['version_id' => $rejected->id, 'status' => 'failed', 'stop_reason' => 'REVIEW_NOT_PASSED']);
+        $review = ChapterReview::factory()->create(['submission_run_id' => $submission->id, 'verdict' => 'needs_revision']);
+        $revision = app(ManualContentDrafts::class)->save($novel->id, $source->id, $actor, $source->title, $body, 0);
+
+        try {
+            app(ContentGenerationService::class)->saveManualCandidate($novel->id, $source->id, $actor, $revision, '原样重提');
+            $this->fail('已驳回正文不能原样重提');
+        } catch (InvalidArgumentException $exception) {
+            $this->assertStringContainsString('版本 '.$rejected->version.' 完全相同，该版本已被提交评审 #'.$review->id.' 驳回', $exception->getMessage());
+        }
+        $this->assertSame(1, DB::table('manual_content_drafts')->count());
+        $this->assertSame($source->id, $source->chapter->fresh()->current_candidate_version_id);
     }
 
     /** 历史版本可作为人工编辑起点：从工作台链接或编辑页动作载入其正文，发布为新候选，不直接改候选指针、不调用模型。 */

@@ -358,6 +358,14 @@ final class ContentGenerationService
             if ($draft->title === $source->title && $draft->body === $source->body) {
                 throw new InvalidArgumentException('正文和标题没有改变，无需创建相同候选');
             }
+            // 已被提交评审驳回的正文原样重提只会再次驳回，须先按评审意见修改。
+            $bodyHash = hash('sha256', $draft->body);
+            $rejected = ChapterVersion::where('chapter_id', $source->chapter_id)->where('body_hash', $bodyHash)
+                ->whereIn('id', ChapterReview::where('verdict', 'needs_revision')->select('version_id'))->orderByDesc('version')->first();
+            if ($rejected !== null) {
+                $reviewId = ChapterReview::where('version_id', $rejected->id)->where('verdict', 'needs_revision')->latest('id')->value('id');
+                throw new InvalidArgumentException('正文与版本 '.$rejected->version.' 完全相同，该版本已被提交评审 #'.$reviewId.' 驳回；请先按评审意见修改后再保存，工作草稿已保留');
+            }
             $snapshot = $parent->snapshot;
             $snapshot['recovery'] = ['parent_run_id' => $parent->id, 'parent_input_hash' => $parent->input_hash, 'parent_status' => $parent->status,
                 'parent_stop_reason' => $parent->stop_reason, 'source_version_id' => $source->id, 'source_body_hash' => $source->body_hash,
@@ -378,7 +386,8 @@ final class ContentGenerationService
                 'version' => (int) ChapterVersion::where('chapter_id', $source->chapter_id)->max('version') + 1, 'title' => $draft->title, 'body' => $draft->body,
                 'body_hash' => $config['manual_edit']['body_hash'], 'character_count' => ContentSchema::count($draft->body), 'count_version' => ContentSchema::COUNT_VERSION, 'created_at' => now()]);
             $source->chapter->update(['current_candidate_version_id' => $version->id, 'title' => $version->title, 'progression_result' => null, 'status' => ChapterStatus::Checking]);
-            DB::table('manual_content_drafts')->where('id', $draft->id)->update(['base_version_id' => $version->id, 'revision' => $draftRevision + 1, 'updated_at' => now()]);
+            // 草稿已成为新候选，删除后下次打开以当前候选为起点，不会在出现更新候选后误把旧草稿合并回来。
+            DB::table('manual_content_drafts')->where('id', $draft->id)->delete();
             $this->assertFrozenSources($run->fresh());
 
             return $version;
@@ -525,11 +534,11 @@ final class ContentGenerationService
         return json_decode(json_encode($config, JSON_THROW_ON_ERROR), true, flags: JSON_THROW_ON_ERROR);
     }
 
-    /** 硬上限不能通过表单或CLI增大；允许明确选择更小预算。 */
+    /** 硬上限不能通过表单或CLI增大；允许明确选择更小预算。默认按“生成 + 自动修订复查”预留，作者可多授权一次，供正文格式不合格时运行内补发后仍能自动修订。 */
     private function limit(?int $requested, int $base, int $retries): int
     {
-        $maximum = $base + 2 * $retries;
-        $limit = $requested ?? $maximum;
+        $maximum = $base + 2 * $retries + 1;
+        $limit = $requested ?? $maximum - 1;
         if ($limit < $base || $limit > $maximum) {
             throw new InvalidArgumentException('请求额度超出本次有限生成范围');
         }
