@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\PreservesJsonFloats;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use LogicException;
@@ -10,6 +11,8 @@ use LogicException;
 #[Fillable(['novel_id', 'actor_id', 'kind', 'end_chapter', 'snapshot', 'snapshot_hash', 'status', 'created_at'])]
 class AcceptanceBatch extends Model
 {
+    use PreservesJsonFloats;
+
     /** 不维护可变更新时间。 */
     public $timestamps = false;
 

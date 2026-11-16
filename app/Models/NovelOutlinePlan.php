@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\PreservesJsonFloats;
 use Database\Factories\NovelOutlinePlanFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -16,6 +17,8 @@ class NovelOutlinePlan extends Model
 {
     /** @use HasFactory<NovelOutlinePlanFactory> */
     use HasFactory;
+
+    use PreservesJsonFloats;
 
     /** 启动后冻结输入与模型配置，继续操作只能更新游标、令牌和运行状态。 */
     protected static function booted(): void

@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\PreservesJsonFloats;
 use Database\Factories\CostLogFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -14,6 +15,8 @@ class CostLog extends Model
 {
     /** @use HasFactory<CostLogFactory> 工厂仅创建测试明细，不触发模型调用。 */
     use HasFactory;
+
+    use PreservesJsonFloats;
 
     /** 使用定点金额、结构化快照和不可变时间，避免浮点费用累加。
      * @return array<string, string>

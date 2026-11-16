@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\PreservesJsonFloats;
 use App\Services\Pipeline\PlanningJson;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -13,6 +14,8 @@ use Ramsey\Uuid\Uuid;
 #[Fillable(['novel_id', 'author_id', 'start_chapter', 'predecessor_id', 'chapter_limit', 'policy', 'policy_hash', 'commit_key', 'status', 'step', 'artifacts', 'history', 'error', 'lease_token', 'lease_expires_at'])]
 class ProductionRun extends Model
 {
+    use PreservesJsonFloats;
+
     /** 续写授权单次最多章数，控制一次授权的费用风险。 */
     public const MAX_RANGE = 10;
 

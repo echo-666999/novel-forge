@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\PreservesJsonFloats;
 use Database\Factories\FormalRevisionChapterFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -15,6 +16,8 @@ class FormalRevisionChapter extends Model
 {
     /** @use HasFactory<FormalRevisionChapterFactory> */
     use HasFactory;
+
+    use PreservesJsonFloats;
 
     /** 来源身份不可修改，记录不可删除。 */
     protected static function booted(): void

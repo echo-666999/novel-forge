@@ -77,7 +77,8 @@ final class ContextRetrieval
                 continue;
             }
             $perChapter[$chapter] = ($perChapter[$chapter] ?? 0) + 1;
-            $passages[] = ['chapter' => $chapter, 'version_id' => (int) $row->version_id, 'start_offset' => (int) $row->start_offset, 'score' => round((float) $row->score, 4),
+            // 分数只用于展示；保存为定长字符串，避免 1.0 之类的小数经 JSONB 往返变成整数而使运行输入摘要不一致。
+            $passages[] = ['chapter' => $chapter, 'version_id' => (int) $row->version_id, 'start_offset' => (int) $row->start_offset, 'score' => number_format((float) $row->score, 4, '.', ''),
                 'matched_terms' => array_values(array_filter($terms, fn (string $term): bool => str_contains($row->body, $term))), 'quote' => $row->body];
         }
         if ($passages === []) {

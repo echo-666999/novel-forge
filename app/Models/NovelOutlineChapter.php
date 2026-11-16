@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\PreservesJsonFloats;
 use Database\Factories\NovelOutlineChapterFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -15,6 +16,8 @@ class NovelOutlineChapter extends Model
 {
     /** @use HasFactory<NovelOutlineChapterFactory> */
     use HasFactory;
+
+    use PreservesJsonFloats;
 
     public $timestamps = false;
 

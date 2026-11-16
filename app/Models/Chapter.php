@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\ChapterStatus;
+use App\Models\Concerns\PreservesJsonFloats;
 use Database\Factories\ChapterFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -17,6 +18,8 @@ class Chapter extends Model
      * @use HasFactory<ChapterFactory>
      */
     use HasFactory;
+
+    use PreservesJsonFloats;
 
     /** 未刷新数据库前也可读取一致的初始运行状态。
      * @var array<string, mixed>

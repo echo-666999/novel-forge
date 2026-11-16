@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\PreservesJsonFloats;
 use Database\Factories\StoryEntityFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -16,6 +17,8 @@ class StoryEntity extends Model
      * @use HasFactory<StoryEntityFactory>
      */
     use HasFactory;
+
+    use PreservesJsonFloats;
 
     public $timestamps = false;
 

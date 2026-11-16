@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\PreservesJsonFloats;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use LogicException;
@@ -10,6 +11,8 @@ use LogicException;
 #[Fillable(['uuid', 'novel_id', 'actor_id', 'parent_id', 'format', 'end_chapter', 'snapshot', 'snapshot_hash', 'status', 'byte_size', 'error', 'history', 'created_at', 'started_at', 'completed_at', 'expires_at', 'deleted_at'])]
 class NovelExport extends Model
 {
+    use PreservesJsonFloats;
+
     /** 时间字段由生命周期服务明确维护。 */
     public $timestamps = false;
 

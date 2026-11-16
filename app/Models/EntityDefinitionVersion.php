@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\PreservesJsonFloats;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use LogicException;
@@ -10,6 +11,8 @@ use LogicException;
 #[Fillable(['novel_id', 'entity_id', 'parent_id', 'status', 'definition', 'content_hash', 'effective_from', 'reason', 'actor_id', 'created_at'])]
 class EntityDefinitionVersion extends Model
 {
+    use PreservesJsonFloats;
+
     /** 版本只有创建时间。 */
     public $timestamps = false;
 

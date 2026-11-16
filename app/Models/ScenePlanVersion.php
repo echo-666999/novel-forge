@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\PreservesJsonFloats;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use LogicException;
@@ -10,6 +11,8 @@ use LogicException;
 #[Fillable(['novel_id', 'outline_chapter_id', 'parent_id', 'status', 'scenes', 'source_hash', 'content_hash', 'reason', 'actor_id', 'created_at'])]
 class ScenePlanVersion extends Model
 {
+    use PreservesJsonFloats;
+
     /** 历史版本不设置更新时间。 */
     public $timestamps = false;
 

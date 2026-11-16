@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\PreservesJsonFloats;
 use Database\Factories\CanonicalBaselineFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -16,6 +17,8 @@ class CanonicalBaseline extends Model
 {
     /** @use HasFactory<CanonicalBaselineFactory> */
     use HasFactory;
+
+    use PreservesJsonFloats;
 
     /** 基线是正式历史的一部分，不能删除。 */
     protected static function booted(): void

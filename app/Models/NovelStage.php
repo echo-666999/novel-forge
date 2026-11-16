@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Enums\Stage;
 use App\Enums\StageStatus;
+use App\Models\Concerns\PreservesJsonFloats;
 use Database\Factories\NovelStageFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -18,6 +19,8 @@ class NovelStage extends Model
      * @use HasFactory<NovelStageFactory>
      */
     use HasFactory;
+
+    use PreservesJsonFloats;
 
     /** 未刷新数据库前也可读取一致的初始运行状态。
      * @var array<string, mixed>

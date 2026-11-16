@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\PreservesJsonFloats;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -13,6 +14,8 @@ class StoryStructureVersion extends Model
 {
     /** 隔离测试工厂。 */
     use HasFactory;
+
+    use PreservesJsonFloats;
 
     /** 版本仅记录创建时间。 */
     public $timestamps = false;

@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\PreservesJsonFloats;
 use Database\Factories\ContextManifestFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -16,6 +17,8 @@ class ContextManifest extends Model
      * @use HasFactory<ContextManifestFactory>
      */
     use HasFactory;
+
+    use PreservesJsonFloats;
 
     /** 清单只有创建时间，不存在覆盖更新时间。 */
     public $timestamps = false;

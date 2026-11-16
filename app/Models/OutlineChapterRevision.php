@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\PreservesJsonFloats;
 use Database\Factories\OutlineChapterRevisionFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -15,6 +16,8 @@ class OutlineChapterRevision extends Model
 {
     /** @use HasFactory<OutlineChapterRevisionFactory> */
     use HasFactory;
+
+    use PreservesJsonFloats;
 
     /** 修订历史只保存创建时间。 */
     public $timestamps = false;

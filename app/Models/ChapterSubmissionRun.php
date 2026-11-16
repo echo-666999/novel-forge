@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\PreservesJsonFloats;
 use Database\Factories\ChapterSubmissionRunFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -17,6 +18,8 @@ class ChapterSubmissionRun extends Model
      * @use HasFactory<ChapterSubmissionRunFactory>
      */
     use HasFactory;
+
+    use PreservesJsonFloats;
 
     /** 禁止覆盖历史；可变运行只允许状态和消费计数演进。 */
     protected static function booted(): void

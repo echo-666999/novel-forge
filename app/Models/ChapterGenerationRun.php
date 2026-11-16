@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\PreservesJsonFloats;
 use Database\Factories\ChapterGenerationRunFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -17,6 +18,8 @@ class ChapterGenerationRun extends Model
      * @use HasFactory<ChapterGenerationRunFactory>
      */
     use HasFactory;
+
+    use PreservesJsonFloats;
 
     /** 保护冻结来源和历史产物。 */
     protected static function booted(): void

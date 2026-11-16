@@ -283,6 +283,7 @@ class HybridSearchTest extends TestCase
 
         $memory = $retrieval->context($novel, 3, $prior, ContextRetrieval::planTexts(['title' => '密信', 'objective' => '林澈打开铁皮柜里的密信']));
         $this->assertSame(ContextRetrieval::VERSION, $memory['version']);
+        $this->assertIsString($memory['passages'][0]['score']);
         $this->assertSame([1, 2], $memory['coverage']['indexed_chapters']);
         $this->assertContains(2, array_column($memory['passages'], 'chapter'));
         $this->assertContains('铁皮柜', $memory['passages'][array_search(2, array_column($memory['passages'], 'chapter'), true)]['matched_terms']);
@@ -306,5 +307,20 @@ class HybridSearchTest extends TestCase
         $memory['passages'][0]['quote'] .= '伪造';
         $this->assertFalse(ContextRetrieval::verify($memory, $prior));
         Http::assertNothingSent();
+    }
+
+    /** 整数值小数（温度 1.0、检索得分 1.0）经 JSONB 往返保持类型，运行输入摘要可复验。 */
+    public function test_zero_fraction_floats_survive_jsonb_round_trip(): void
+    {
+        [$novel] = $this->source();
+        $chapter = Chapter::where('novel_id', $novel->id)->where('number', 1)->sole();
+        $snapshot = ['long_term_memory' => ['passages' => [['score' => 1.0]]], 'ratio' => 0.0];
+        $config = ['temperature' => 1.0];
+        $run = ChapterGenerationRun::factory()->create(['chapter_id' => $chapter->id, 'snapshot' => $snapshot, 'config' => $config,
+            'input_hash' => PlanningJson::hash([$snapshot, $config])]);
+
+        $fresh = ChapterGenerationRun::findOrFail($run->id);
+        $this->assertSame(1.0, $fresh->config['temperature']);
+        $this->assertSame($fresh->input_hash, PlanningJson::hash([$fresh->snapshot, $fresh->config]));
     }
 }

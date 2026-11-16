@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\PreservesJsonFloats;
 use App\Services\Pipeline\PlanningJson;
 use Database\Factories\NovelSettingConfirmationFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
@@ -16,6 +17,8 @@ class NovelSettingConfirmation extends Model
 {
     /** @use HasFactory<NovelSettingConfirmationFactory> */
     use HasFactory;
+
+    use PreservesJsonFloats;
 
     public $timestamps = false;
 

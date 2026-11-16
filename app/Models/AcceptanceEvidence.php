@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\PreservesJsonFloats;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use LogicException;
@@ -10,6 +11,8 @@ use LogicException;
 #[Fillable(['batch_id', 'actor_id', 'kind', 'case_key', 'payload', 'payload_hash', 'created_at'])]
 class AcceptanceEvidence extends Model
 {
+    use PreservesJsonFloats;
+
     /** 禁用可变更新时间。 */
     public $timestamps = false;
 
