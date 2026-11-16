@@ -10,6 +10,7 @@ use App\Models\User;
 use App\Providers\AppServiceProvider;
 use App\Services\Pipeline\FormalChapterExport;
 use App\Services\Pipeline\NovelExportLifecycle;
+use App\Settings\GeneralSettings;
 use Filament\Facades\Filament;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Foundation\DevCommands;
@@ -58,7 +59,12 @@ class C09ExportLifecycleTest extends TestCase
         $actor = User::factory()->create();
         $service = app(NovelExportLifecycle::class);
         $expected = app(FormalChapterExport::class)->build($novel->id, 10, 'md');
+        // 保留天数取自通用设置，在任务创建时冻结进快照。
+        $settings = app(GeneralSettings::class);
+        $settings->export_retention_days = 30;
+        $settings->save();
         $record = $service->request($novel->id, $actor, 10, 'md');
+        $this->assertSame(30, $record->snapshot['retention_days']);
         Queue::assertPushed(BuildNovelExport::class, fn ($job): bool => $job->exportId === $record->id && $job->queue === 'novel-exports' && $job->connection === 'database');
         $this->assertSame('queued', $record->status);
         $this->assertCount(0, Storage::disk('local')->allFiles());
@@ -68,6 +74,7 @@ class C09ExportLifecycleTest extends TestCase
         $service->build($record->id);
         $this->assertSame($history, $record->fresh()->history);
         $this->assertSame('ready', $record->fresh()->status);
+        $this->assertTrue($record->fresh()->expires_at->between(now()->addDays(29), now()->addDays(31)));
         $this->assertSame($expected['content'], $service->download($novel->id, $record->id, $actor)['content']);
         $this->assertSame(10, $novel->fresh()->chapters_done);
         Http::assertNothingSent();

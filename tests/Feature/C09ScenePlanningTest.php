@@ -100,8 +100,27 @@ class C09ScenePlanningTest extends TestCase
         $this->actingAs(User::factory()->create());
         $novel = B04ContentTest::readyNovel();
         $outline = NovelOutlineChapter::firstOrFail();
-        Livewire::test(ScenePlans::class, ['record' => $novel->id])->callTableAction('edit', $outline, ['expected_id' => null, 'scenes' => $this->scenes($outline), 'reason' => '新增场景', 'freeze' => true, 'acknowledged' => true])->assertHasNoTableActionErrors()->assertNotified('场景规划新版本已保存');
+        Livewire::test(ScenePlans::class, ['record' => $novel->id])->callAction('create', ['outline_chapter_id' => $outline->id, 'scenes' => $this->scenes($outline), 'reason' => '新增场景', 'freeze' => true, 'acknowledged' => true])->assertHasNoActionErrors()->assertNotified('场景规划新版本已保存');
         $this->assertSame('frozen', ScenePlanVersion::firstOrFail()->status);
+    }
+
+    /** 列表说明每行是一章大纲，状态用中文标明是否进入生成，而不是显示内部状态码。 */
+    public function test_page_explains_optional_scene_status(): void
+    {
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        $this->actingAs(User::factory()->create());
+        $novel = B04ContentTest::readyNovel();
+        $outline = NovelOutlineChapter::firstOrFail();
+        // 没有任何场景规划时默认列表为空，不再重复列出全部章节大纲。
+        $page = Livewire::test(ScenePlans::class, ['record' => $novel->id])->assertSee('尚无场景规划')->assertCanNotSeeTableRecords([$outline])->assertActionVisible('create');
+        $page->filterTable('scene_plan', null)->assertCanSeeTableRecords([$outline])->assertSee('未规划（可选）');
+        $page->filterTable('scene_plan', 'planned')->callAction('create', ['outline_chapter_id' => $outline->id, 'scenes' => $this->scenes($outline), 'reason' => '新增场景', 'freeze' => false, 'acknowledged' => true])->assertHasNoActionErrors();
+        $page->assertCanSeeTableRecords([$outline])->assertSee('草稿（未冻结，不进入生成）')->assertDontSee('draft')->assertDontSee($outline->objective)
+            ->assertSee(count($this->scenes($outline)).' 个')->assertSee(count($outline->progression_points).' / '.count($outline->progression_points));
+        // 已有版本的章节不再出现在新建选项里，继续在列表中编辑。
+        $page->callTableAction('edit', $outline, ['expected_id' => ScenePlanVersion::firstOrFail()->id, 'scenes' => $this->scenes($outline), 'reason' => '修改场景', 'freeze' => false, 'acknowledged' => true])->assertHasNoTableActionErrors();
+        $this->assertSame(2, ScenePlanVersion::count());
+        $page->filterTable('scene_plan', 'none')->assertCanNotSeeTableRecords([$outline]);
     }
 
     /** 拆分和合并均建立完整新列表，旧场景内容保留。 */

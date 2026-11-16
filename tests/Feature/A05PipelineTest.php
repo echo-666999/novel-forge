@@ -273,6 +273,10 @@ class A05PipelineTest extends TestCase
     public function test_command_exit_codes_and_synthetic_record_boundary(): void
     {
         $this->artisan('app:verify-novel-pipeline', ['--max-execution-count' => '6', '--json' => true])->assertExitCode(0)->expectsOutputToContain('completed');
+        // 不传上限时沿用通用设置的新书执行次数上限；设为5次时第六阶段前暂停。
+        $settings = app(GeneralSettings::class);
+        $settings->max_execution_count = 5;
+        $settings->save();
         $this->artisan('app:verify-novel-pipeline', ['--json' => true])->assertExitCode(2)->expectsOutputToContain('execution_limit');
         $this->artisan('app:verify-novel-pipeline', ['--disable-fine-outline' => true])->assertExitCode(0);
         $this->artisan('app:verify-novel-pipeline', ['--max-execution-count' => '0'])->assertExitCode(1);

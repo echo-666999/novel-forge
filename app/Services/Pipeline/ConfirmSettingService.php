@@ -71,6 +71,10 @@ final class ConfirmSettingService
             if ($novel->stages()->where('status', StageStatus::Running->value)->exists() || $novel->outlinePlans()->whereIn('status', ['pending', 'running', 'paused', 'error'])->exists()) {
                 throw ValidationException::withMessages(['setting' => '已有运行或未结束的大纲计划，不能替换确认版本。']);
             }
+            // 已完成的大纲同样绑定原确认记录，新版本不会被任何后续请求使用。
+            if ($novel->outlinePlans()->exists()) {
+                throw ValidationException::withMessages(['setting' => '大纲已按原确认版本生成，新确认版本不会进入大纲或正文，不能再保存。']);
+            }
             $decisions = [];
             $remaining = [];
             foreach ($stage->output['data']['setting']['open_questions'] as $index => $question) {

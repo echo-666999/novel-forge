@@ -26,6 +26,9 @@ class NovelForm
     ];
 
     /** 三种生产方式；“逐章确认”是默认推荐。 */
+    /** 预算币种选项，通用设置的默认币种共用。 */
+    public const CURRENCIES = ['CNY' => '人民币（CNY）', 'USD' => '美元（USD）'];
+
     public const MODES = [
         'manual' => '逐章确认（推荐）：先生成设定，等你确认后再生成大纲，之后每一章都由你批准提交',
         'auto_first' => '自动生成并正式提交第1章：自动决定设定问题、采纳通过校验的新实体',
@@ -51,16 +54,17 @@ class NovelForm
                         ->placeholder(self::BRIEF_HINTS[$key]))->values()->all()),
             ]),
             Step::make('篇幅')->columns(3)->schema([
-                self::integerField('target_chapters', '目标章数', 10)->suffix('章'),
-                self::integerField('chapter_length_policy.min_characters', '每章字数下限', 2500)->suffix('字'),
-                self::integerField('chapter_length_policy.max_characters', '每章字数上限', 3500)->suffix('字')
+                // 预填值来自通用设置的“新书默认值”。
+                self::integerField('target_chapters', '目标章数', app(GeneralSettings::class)->default_target_chapters)->suffix('章'),
+                self::integerField('chapter_length_policy.min_characters', '每章字数下限', app(GeneralSettings::class)->default_min_characters)->suffix('字'),
+                self::integerField('chapter_length_policy.max_characters', '每章字数上限', app(GeneralSettings::class)->default_max_characters)->suffix('字')
                     ->gte('chapter_length_policy.min_characters'),
                 TextInput::make('budget_amount')->label('本书金额预算（可选）')->regex('/\A\d{1,12}(?:\.\d{1,8})?\z/')->live(onBlur: true)
                     ->helperText('设了预算后，每次请求前按单价上限预留，余额不足时在发送前停下。需要先在“模型单价”登记所用模型的单价。')->columnSpan(2),
-                Select::make('budget_currency')->label('币种')->options(['CNY' => '人民币（CNY）', 'USD' => '美元（USD）'])->default('CNY')->native(false)->requiredWith('budget_amount'),
+                Select::make('budget_currency')->label('币种')->options(self::CURRENCIES)->default(fn (): string => app(GeneralSettings::class)->default_budget_currency)->native(false)->requiredWith('budget_amount'),
             ]),
             Step::make('生产方式')->schema([
-                Radio::make('production_mode')->label('生产方式')->options(self::MODES)->default('manual')->required()->live(),
+                Radio::make('production_mode')->label('生产方式')->options(self::MODES)->default(fn (): string => app(GeneralSettings::class)->default_production_mode)->required()->live(),
                 Select::make('automatic_model')->label('模型（可选）')->options(ModelProfiles::options())->native(false)
                     ->placeholder(fn (): string => '使用通用设置的默认模型：'.app(GeneralSettings::class)->default_model)
                     ->helperText('只对这本书生效，不修改全局设置。'),

@@ -4,6 +4,7 @@ namespace App\Services\Search;
 
 use App\Models\ChapterVersion;
 use App\Models\Novel;
+use App\Settings\GeneralSettings;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
@@ -12,11 +13,8 @@ final class ContextRetrieval
 {
     public const VERSION = 'c05-context-retrieval-v1';
 
-    /** 最多放入上下文的原文片段数。 */
-    public const PASSAGES = 6;
-
-    /** 同一章最多取几段，避免一章占满全部名额。 */
-    public const PER_CHAPTER = 2;
+    /** 片段数的可配置上限；实际取值来自通用设置。 */
+    public const MAX_PASSAGES = 12;
 
     /** 最多使用的检索词数，长词优先。 */
     public const TERMS = 60;
@@ -35,9 +33,13 @@ final class ContextRetrieval
     public function context(Novel $novel, int $number, array $prior, array $texts): ?array
     {
         $versions = array_column($prior['chapters'] ?? [], 'version_id', 'number');
-        if ($number < 2 || $versions === []) {
+        $settings = app(GeneralSettings::class);
+        if ($number < 2 || $versions === [] || ! $settings->context_retrieval_enabled) {
             return null;
         }
+        // 片段数在运行创建时读取，结果随快照冻结，之后修改设置不影响已有运行。
+        $limit = max(1, min(self::MAX_PASSAGES, $settings->context_retrieval_passages));
+        $perChapterLimit = max(1, min($limit, $settings->context_retrieval_per_chapter));
         try {
             app(ChapterSearchIndex::class)->assertDatabase();
         } catch (RuntimeException) {
@@ -61,12 +63,12 @@ final class ContextRetrieval
         $query = implode(' | ', $terms);
         $rows = (clone $scope)->whereRaw("search_vector @@ to_tsquery('public.nf_zh_cn'::regconfig, ?)", [$query])
             ->selectRaw("id, chapter_number, version_id, start_offset, body, chunk_hash, ts_rank_cd(search_vector, to_tsquery('public.nf_zh_cn'::regconfig, ?)) as score", [$query])
-            ->orderByDesc('score')->orderBy('id')->limit(self::PASSAGES * 5)->get();
+            ->orderByDesc('score')->orderBy('id')->limit($limit * 5)->get();
         $passages = [];
         $perChapter = [];
         foreach ($rows as $row) {
             $chapter = (int) $row->chapter_number;
-            if (count($passages) === self::PASSAGES || ($perChapter[$chapter] ?? 0) === self::PER_CHAPTER || ($versions[$chapter] ?? null) !== (int) $row->version_id) {
+            if (count($passages) === $limit || ($perChapter[$chapter] ?? 0) === $perChapterLimit || ($versions[$chapter] ?? null) !== (int) $row->version_id) {
                 continue;
             }
             // 投影必须与冻结版本原文逐字一致，不一致的块不进入上下文。

@@ -3,6 +3,7 @@
 namespace App\Providers\Filament;
 
 use App\Filament\Auth\EditProfile;
+use App\Filament\Pages\ProductionOverview;
 use Filament\Http\Middleware\Authenticate;
 use Filament\Http\Middleware\AuthenticateSession;
 use Filament\Http\Middleware\DisableBladeIconComponents;
@@ -10,6 +11,7 @@ use Filament\Http\Middleware\DispatchServingFilamentEvent;
 use Filament\Panel;
 use Filament\PanelProvider;
 use Filament\Support\Colors\Color;
+use Filament\Tables\View\TablesRenderHook;
 use Filament\View\PanelsRenderHook;
 use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
 use Illuminate\Cookie\Middleware\EncryptCookies;
@@ -54,6 +56,8 @@ class AdminPanelProvider extends PanelProvider
             ])
             // 单本小说子导航的“更多”分组默认收起。
             ->renderHook(PanelsRenderHook::PAGE_SUB_NAVIGATION_SIDEBAR_AFTER, fn (): string => view('filament.resources.novels.partials.sub-navigation-more')->render())
+            // 首页“最近的书”表格：标题与搜索、筛选工具栏同排，窄屏自动换行。
+            ->renderHook(TablesRenderHook::HEADER_BEFORE, fn (): string => view('filament.partials.inline-table-toolbar')->render(), scopes: ProductionOverview::class)
             // ->sidebarWidth('sm')
             ->maxContentWidth('full')
             ->authMiddleware([

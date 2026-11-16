@@ -355,8 +355,23 @@ class C01SequenceTest extends TestCase
                 $this->assertSame(1, ProductionRun::where('novel_id', $run->novel_id)->count());
             }
         }
+        // 单次章数上限与每章预留执行次数来自通用设置。
+        $settings = app(GeneralSettings::class);
+        $settings->continuation_max_chapters = 1;
+        $settings->save();
+        try {
+            $service->extend($run->novel_id, $author, 2, null, '超过设置的单次上限', false);
+            $this->fail('超过设置的单次章数应被拒绝');
+        } catch (\InvalidArgumentException $exception) {
+            $this->assertSame('单次续写授权为1至1章', $exception->getMessage());
+        }
+        $settings->continuation_max_chapters = 10;
+        $settings->continuation_executions_per_chapter = 50;
+        $settings->save();
+        $used = Novel::findOrFail($run->novel_id)->execution_count;
         $next = $service->extend($run->novel_id, $author, 2, 'gpt-6.1-terra', '续写最后两章', false);
         $this->assertSame('gpt-6.1-terra', $next->frozenModel());
+        $this->assertGreaterThanOrEqual($used + 100, Novel::findOrFail($run->novel_id)->max_execution_count);
         $this->expectException(\InvalidArgumentException::class);
         $service->extend($run->novel_id, $author, 1, null, '在途运行不能重复授权', false);
     }
@@ -489,6 +504,11 @@ class C01SequenceTest extends TestCase
         $this->assertContains($this->progressHeadline($novel), ['第1章：可以正式提交', '第1章：等你批准新实体并正式提交']);
         Livewire::test(ViewChapterContent::class, ['record' => $novel->id])->callAction('commitChapter', ['approved_entities' => [], 'reason' => '作者批准第1章', 'acknowledge' => true])->assertHasNoActionErrors();
         $this->assertSame(1, $novel->fresh()->chapters_done);
+        // 执行次数用完时标题追加需追加上限，说明给出调高入口；调高后恢复原标题。
+        $novel->update(['max_execution_count' => $novel->fresh()->execution_count]);
+        $this->assertSame('已正式提交1/10章，可以继续写（执行次数已用完，需追加上限）', $this->progressHeadline($novel));
+        $this->assertStringContainsString('先调高本书执行总上限', app(NovelProgressQuery::class)->for($novel->fresh())['detail']);
+        $novel->update(['max_execution_count' => $novel->fresh()->execution_count + 20]);
         $this->assertSame('已正式提交1/10章，可以继续写', $this->progressHeadline($novel));
         Livewire::test(ViewNovel::class, ['record' => $novel->id])->assertActionVisible('generateNextChapter')->assertActionVisible('extendProduction')
             ->assertSee('原始要求与覆盖')->assertSee('成品验收')->assertDontSee('B04');

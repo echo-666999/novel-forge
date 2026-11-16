@@ -16,6 +16,7 @@ use App\Services\Ai\AiTextGenerationService;
 use App\Services\Ai\ModelProfiles;
 use App\Services\Ai\TextRequestOptions;
 use App\Services\Search\EmbeddingService;
+use App\Settings\GeneralSettings;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -48,7 +49,7 @@ final class ProductionRunService
         $novel = app(CreateNovelService::class)->createAndStart([...$input, 'generation_mode' => 'setting_real'], false, $model)->novel;
         $run = DB::transaction(function () use ($novel, $author, $chapterLimit): ProductionRun {
             // 总执行额度覆盖所有规划批次及授权章节，单个模型步骤仍有独立上限。
-            $novel->update(['max_execution_count' => max($novel->max_execution_count, (int) ceil($novel->target_chapters / 10) + 20 * $chapterLimit)]);
+            $novel->update(['max_execution_count' => max($novel->max_execution_count, (int) ceil($novel->target_chapters / 10) + app(GeneralSettings::class)->continuation_executions_per_chapter * $chapterLimit)]);
 
             return ProductionRun::create(['novel_id' => $novel->id, 'author_id' => $author->id, 'start_chapter' => 1, 'chapter_limit' => $chapterLimit, 'policy' => ProductionRun::policy($chapterLimit === 10 ? 3 : 2),
                 'policy_hash' => PlanningJson::hash(ProductionRun::policy($chapterLimit === 10 ? 3 : 2)), 'commit_key' => (string) Str::uuid7(), 'status' => 'pending', 'step' => 'setting',
@@ -61,12 +62,19 @@ final class ProductionRunService
         return $run->refresh();
     }
 
+    /** 单次续写最多授权章数：通用设置值，不超过运行模型允许的范围。 */
+    public static function continuationLimit(): int
+    {
+        return max(1, min(ProductionRun::MAX_RANGE, app(GeneralSettings::class)->continuation_max_chapters));
+    }
+
     /** 续写授权：从下一章起最多授权十章，冻结范围与模型。要求前序运行全部完成、大纲覆盖范围且没有在途章节。 */
     public function extend(int $novelId, User $author, int $count, ?string $model, string $reason, bool $dispatch = true): ProductionRun
     {
         ContentSchema::text($reason);
-        if ($count < 1 || $count > ProductionRun::MAX_RANGE) {
-            throw new InvalidArgumentException('单次续写授权为1至'.ProductionRun::MAX_RANGE.'章');
+        $maxChapters = self::continuationLimit();
+        if ($count < 1 || $count > $maxChapters) {
+            throw new InvalidArgumentException('单次续写授权为1至'.$maxChapters.'章');
         }
         if ($model !== null && ! array_key_exists($model, ModelProfiles::options())) {
             throw new InvalidArgumentException('模型不在可选模型列表中');
@@ -93,7 +101,7 @@ final class ProductionRunService
             }
             $predecessor = ProductionRun::latestFor($novel->id);
             // 执行额度按章预留，与十章授权的计算方式一致；不降低已有额度。
-            $novel->update(['max_execution_count' => max($novel->max_execution_count, $novel->execution_count + 20 * $count)]);
+            $novel->update(['max_execution_count' => max($novel->max_execution_count, $novel->execution_count + app(GeneralSettings::class)->continuation_executions_per_chapter * $count)]);
             $policy = ProductionRun::rangePolicy($start, $end, $model);
 
             return ProductionRun::create(['novel_id' => $novel->id, 'author_id' => $author->id, 'start_chapter' => $start, 'chapter_limit' => $end, 'predecessor_id' => $predecessor?->id,

@@ -20,6 +20,7 @@ use App\Services\Search\ChapterSearchIndex;
 use App\Services\Search\ContextRetrieval;
 use App\Services\Search\EmbeddingService;
 use App\Services\Search\HybridSearch;
+use App\Settings\GeneralSettings;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Http\Client\Factory;
@@ -291,6 +292,16 @@ class HybridSearchTest extends TestCase
         $this->assertNotContains(2, array_column($retrieval->context($novel, 2, ['chapters' => [$prior['chapters'][0]]], ['铁皮柜里的密信'])['passages'] ?? [], 'chapter'));
         $other = ['chapters' => [$prior['chapters'][0], ['number' => 2, 'version_id' => $version->id + 1000]]];
         $this->assertNotContains(2, array_column($retrieval->context($novel, 3, $other, ['铁皮柜里的密信'])['passages'] ?? [], 'chapter'));
+
+        // 片段数与开关来自通用设置：每章最多一段时只取一段，关闭后不检索。
+        $settings = app(GeneralSettings::class);
+        $settings->context_retrieval_passages = 1;
+        $settings->context_retrieval_per_chapter = 1;
+        $settings->save();
+        $this->assertCount(1, $retrieval->context($novel, 3, $prior, ContextRetrieval::planTexts(['objective' => '林澈打开铁皮柜里的密信']))['passages']);
+        $settings->context_retrieval_enabled = false;
+        $settings->save();
+        $this->assertNull($retrieval->context($novel, 3, $prior, ContextRetrieval::planTexts(['objective' => '林澈打开铁皮柜里的密信'])));
 
         $memory['passages'][0]['quote'] .= '伪造';
         $this->assertFalse(ContextRetrieval::verify($memory, $prior));

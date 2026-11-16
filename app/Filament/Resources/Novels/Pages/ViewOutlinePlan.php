@@ -7,6 +7,7 @@ use App\Models\CostLog;
 use App\Models\NovelOutlineChapter;
 use App\Models\NovelOutlinePlan;
 use App\Models\NovelStage;
+use App\Services\Pipeline\FieldDiff;
 use App\Services\Pipeline\OutlineRevisions;
 use Filament\Actions\Action;
 use Filament\Facades\Filament;
@@ -15,7 +16,6 @@ use Filament\Forms\Components\Repeater;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
-use Filament\Infolists\Components\RepeatableEntry;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\Concerns\InteractsWithRecord;
@@ -28,6 +28,7 @@ use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Concerns\InteractsWithTable;
 use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Table;
+use Illuminate\Contracts\View\View;
 use UnitEnum;
 
 /** 按小说隔离、按章分页阅读大纲候选和完整推进点，不编辑成功产物。 */
@@ -89,7 +90,8 @@ class ViewOutlinePlan extends Page implements HasTable
                         ->state(fn (): string => $this->plan()?->status === 'completed' ? '全部完成' : ($this->plan()?->next_chapter === null ? '尚未开始' : '下批从第'.$this->plan()->next_chapter.'章起')),
                 ])->extraAttributes(['style' => 'flex-wrap: wrap']),
                 TextEntry::make('stop_reason')->hiddenLabel()->weight('medium')->color('warning')
-                    ->visible(fn (): bool => filled($this->plan()?->stop_reason))
+                    // 大纲已完成时停止码只是流程交接标记，状态标签已说明“全部完成”，不再作为停止原因提示。
+                    ->visible(fn (): bool => filled($this->plan()?->stop_reason) && $this->plan()?->status !== 'completed')
                     ->state(fn (): string => '停止原因：'.match ($this->plan()?->stop_reason) {
                         'user_paused' => '作者已暂停，成功批次保留，可显式继续', 'execution_limit' => '执行额度耗尽，请显式调整后继续', 'batch_failed' => '本批失败，前面成功章节已保留', 'queue_interrupted' => '任务中断，先核查未知费用', 'dispatch_unconfirmed' => '投递未确认，请先核查状态', 'awaiting_next_stage' => '大纲完成，等待后续阶段', default => (string) $this->plan()?->stop_reason
                     }),
@@ -122,21 +124,8 @@ class ViewOutlinePlan extends Page implements HasTable
                     ->color(fn (string $state): string => $state === '原章纲' ? 'gray' : 'warning'),
             ])->recordActions([
                 Action::make('readChapter')->label('查看推进点')->modalHeading(fn (NovelOutlineChapter $record): string => '第'.$record->chapter_number.'章 · '.$record->title)
-                    ->fillForm(fn (NovelOutlineChapter $record): array => [...$record->toArray(), ...$this->effective($record)])->modalSubmitAction(false)->modalCancelActionLabel('关闭')
-                    ->schema([
-                        TextEntry::make('revision_note')->hiddenLabel()->state(fn (NovelOutlineChapter $record): string => ($latest = app(OutlineRevisions::class)->latest($record->id)) === null
-                            ? '当前为大纲生成时的原章纲。' : '当前显示作者修订 #'.$latest->id.'（'.$latest->reason.'）。新运行按此冻结；已开始的旧运行仍按原快照。'),
-                        TextEntry::make('summary')->label('摘要'), TextEntry::make('objective')->label('目标'),
-                        TextEntry::make('conflict')->label('冲突'), TextEntry::make('hook')->label('章末钩子'),
-                        RepeatableEntry::make('progression_points')->label('必须完成的情节推进点')->schema([
-                            TextEntry::make('id')->label('推进点编号'), TextEntry::make('change_type')->label('变化类型')->formatStateUsing(fn (string $state): string => match ($state) {
-                                'information' => '信息', 'decision' => '决定', 'relationship' => '关系', 'resource' => '资源', 'position' => '位置', 'risk' => '风险', default => '未知'
-                            }),
-                            TextEntry::make('subject')->label('主体'), TextEntry::make('before')->label('变化前状态'),
-                            TextEntry::make('action')->label('具体行动'), TextEntry::make('after')->label('变化后状态'),
-                            TextEntry::make('verification')->label('正文完成条件'),
-                        ]),
-                    ]),
+                    ->modalWidth('3xl')->modalAutofocus(false)->modalSubmitAction(false)->modalCancelActionLabel('关闭')
+                    ->modalContent(fn (NovelOutlineChapter $record): View => view('filament.resources.novels.pages.outline-chapter-points', $this->pointsViewData($record))),
                 Action::make('reviseOutline')->label('修订章纲')->icon('heroicon-o-pencil-square')
                     ->visible(fn (NovelOutlineChapter $record): bool => $record->chapter_number > $this->getRecord()->chapters_done)
                     ->modalHeading(fn (NovelOutlineChapter $record): string => '修订第'.$record->chapter_number.'章章纲 · '.$record->title)
@@ -180,6 +169,27 @@ class ViewOutlinePlan extends Page implements HasTable
 
         return [...$content, 'progression_points' => array_values($content['progression_points'])];
     }
+
+    /** “查看推进点”弹窗数据：当前生效章纲（有修订取最新修订）与推进点的中文展示。
+     * @return array{revision: ?array{id: int, reason: string}, summary: ?string, objective: ?string, conflict: ?string, hook: ?string, points: list<array<string, ?string>>}
+     */
+    private function pointsViewData(NovelOutlineChapter $record): array
+    {
+        $latest = app(OutlineRevisions::class)->latest($record->id);
+        $content = $this->effective($record);
+        $points = array_map(fn (mixed $point): array => [
+            'id' => FieldDiff::text(data_get($point, 'id')), 'type' => self::CHANGE_TYPES[data_get($point, 'change_type')] ?? FieldDiff::text(data_get($point, 'change_type')),
+            'subject' => FieldDiff::text(data_get($point, 'subject')), 'before' => FieldDiff::text(data_get($point, 'before')), 'action' => FieldDiff::text(data_get($point, 'action')),
+            'after' => FieldDiff::text(data_get($point, 'after')), 'verification' => FieldDiff::text(data_get($point, 'verification')),
+        ], $content['progression_points']);
+
+        return ['revision' => $latest === null ? null : ['id' => $latest->id, 'reason' => (string) $latest->reason],
+            'summary' => FieldDiff::text($content['summary'] ?? null), 'objective' => FieldDiff::text($content['objective'] ?? null),
+            'conflict' => FieldDiff::text($content['conflict'] ?? null), 'hook' => FieldDiff::text($content['hook'] ?? null), 'points' => $points];
+    }
+
+    /** 推进点变化类型的中文名，与修订表单一致。 */
+    private const CHANGE_TYPES = ['information' => '信息', 'decision' => '决定', 'relationship' => '关系', 'resource' => '资源', 'position' => '位置', 'risk' => '风险'];
 
     /** 提供只读刷新和返回小说的入口。
      * @return list<Action>

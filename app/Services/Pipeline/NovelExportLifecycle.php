@@ -6,6 +6,7 @@ use App\Jobs\BuildNovelExport;
 use App\Models\Novel;
 use App\Models\NovelExport;
 use App\Models\User;
+use App\Settings\GeneralSettings;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -27,7 +28,7 @@ final class NovelExportLifecycle
             $novel = Novel::lockForUpdate()->findOrFail($novelId);
             $file = app(FormalChapterExport::class)->build($novelId, $end, $format);
             $snapshot = ['novel_id' => $novelId, 'book_title' => $novel->title, 'end_chapter' => $end, 'format' => $format,
-                'manifest' => $file['manifest'], 'filename' => $file['filename'], 'mime' => $file['mime'], 'content_hash' => hash('sha256', $file['content']), 'retention_days' => 7];
+                'manifest' => $file['manifest'], 'filename' => $file['filename'], 'mime' => $file['mime'], 'content_hash' => hash('sha256', $file['content']), 'retention_days' => app(GeneralSettings::class)->export_retention_days];
 
             return $this->create($actor, $snapshot);
         });
@@ -175,12 +176,12 @@ final class NovelExportLifecycle
         $count = 0;
         foreach (NovelExport::whereNull('deleted_at')->where(function ($query): void {
             $query->where(fn ($ready) => $ready->where('status', 'ready')->where('expires_at', '<=', now()))
-                ->orWhere(fn ($failed) => $failed->where('status', 'failed')->where('created_at', '<=', now()->subDays(7)));
+                ->orWhere(fn ($failed) => $failed->where('status', 'failed')->where('created_at', '<=', now()->subDays(app(GeneralSettings::class)->export_failed_retention_days)));
         })->pluck('id') as $id) {
             DB::transaction(function () use ($id, &$count): void {
                 $record = NovelExport::lockForUpdate()->findOrFail($id);
                 if ($record->deleted_at === null && (($record->status === 'ready' && $record->expires_at?->isPast())
-                    || ($record->status === 'failed' && $record->created_at->lt(now()->subDays(7))))) {
+                    || ($record->status === 'failed' && $record->created_at->lt(now()->subDays(app(GeneralSettings::class)->export_failed_retention_days))))) {
                     $this->clearFile($record, 'expired', null);
                     $count++;
                 }
@@ -234,7 +235,7 @@ final class NovelExportLifecycle
     {
         if ($record->snapshot_hash !== PlanningJson::hash($record->snapshot) || $record->snapshot['novel_id'] !== $record->novel_id
             || $record->snapshot['format'] !== $record->format || $record->snapshot['end_chapter'] !== $record->end_chapter
-            || count($record->snapshot['manifest']) !== $record->end_chapter || ($record->snapshot['retention_days'] ?? null) !== 7) {
+            || count($record->snapshot['manifest']) !== $record->end_chapter || ! is_int($record->snapshot['retention_days'] ?? null) || $record->snapshot['retention_days'] < 1 || $record->snapshot['retention_days'] > 365) {
             throw ValidationException::withMessages(['export' => '冻结导出清单已损坏。']);
         }
     }

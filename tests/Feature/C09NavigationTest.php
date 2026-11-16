@@ -70,7 +70,10 @@ class C09NavigationTest extends TestCase
         // UI01～UI32 覆盖清单已从系统健康页移除，后台不再展示开发验收清单。
         $this->get(SystemHealth::getUrl())->assertOk()->assertDontSee('UI01')->assertDontSee('UI32');
         $novel = Novel::factory()->create();
-        $this->get(ProductionOverview::getUrl())->assertOk()->assertSee('打开工作台')->assertSee(NovelResource::getUrl('chapters', ['record' => $novel]), false);
+        // “最近的书”标题与搜索、筛选同排：表格带专用类，样式只在首页注入。
+        $this->get(ProductionOverview::getUrl())->assertOk()->assertSee('打开工作台')->assertSee(NovelResource::getUrl('chapters', ['record' => $novel]), false)
+            ->assertSee('nf-ta-inline-toolbar', false)->assertSee('.nf-ta-inline-toolbar .fi-ta-header-ctn', false);
+        $this->get(NovelResource::getUrl('index'))->assertOk()->assertDontSee('.nf-ta-inline-toolbar .fi-ta-header-ctn', false);
     }
 
     /** 按原始C09范围核对32项导航映射，合用页面也必须指向可访问的实际入口。 */

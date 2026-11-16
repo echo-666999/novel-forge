@@ -89,7 +89,8 @@ class ProductionOverview extends Dashboard implements HasTable
     /** 最近的书：状态、正式章数和常用入口。 */
     public function table(Table $table): Table
     {
-        return $table->query(Novel::query()->whereNull('archived_at'))->heading('最近的书')->defaultSort('updated_at', 'desc')->columns([
+        // 标题与搜索、筛选工具栏同排显示，样式见面板的表格页眉渲染钩子。
+        return $table->query(Novel::query()->whereNull('archived_at'))->heading('最近的书')->extraAttributes(['class' => 'nf-ta-inline-toolbar'])->defaultSort('updated_at', 'desc')->columns([
             TextColumn::make('title')->label('书名')->searchable(),
             TextColumn::make('chapters_done')->label('正式章数')->badge()->color('gray')->formatStateUsing(fn (Novel $record): string => $record->chapters_done.' / '.$record->target_chapters.' 章'),
             TextColumn::make('status')->label('运行状态')->badge()->formatStateUsing(fn ($state, Novel $record): string => NovelResource::statusLabel($state, $record))

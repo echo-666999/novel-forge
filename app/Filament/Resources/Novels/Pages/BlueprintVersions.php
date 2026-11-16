@@ -116,7 +116,9 @@ class BlueprintVersions extends Page implements HasTable
     {
         return [
             Action::make('confirm')->label('审阅并保存确认版本')
-                ->visible(fn (): bool => $this->getRecord()->generation_mode->value === 'setting_real' && $this->getRecord()->stages()->where('stage', 'setting')->where('status', 'completed')->exists())
+                // 大纲一旦建立就绑定当时的确认记录，新确认版本既不能重启大纲，也不会进入正文，因此不再显示入口。
+                ->visible(fn (): bool => $this->getRecord()->generation_mode->value === 'setting_real' && ! $this->getRecord()->outlinePlans()->exists()
+                    && $this->getRecord()->stages()->where('stage', 'setting')->where('status', 'completed')->exists())
                 ->fillForm(fn (): array => app(ConfirmSettingService::class)->draft($this->getRecord()))
                 ->schema([
                     TextEntry::make('coverage')->label('要求覆盖待办')->state(function (): string {
@@ -130,7 +132,8 @@ class BlueprintVersions extends Page implements HasTable
                     app(ConfirmSettingService::class)->confirm($this->getRecord(), Filament::auth()->user(), $data);
                     Notification::make()->success()->title('确认版本已保存，既有运行来源保持不变')->send();
                 }),
-            Action::make('requirements')->label('覆盖矩阵')->url(fn (): string => NovelResource::getUrl('requirements', ['record' => $this->getRecord()])),
+            // 覆盖待办只服务于确认版本；大纲建立后确认入口已禁用，矩阵改从左侧导航“原始要求与覆盖”进入。
+            Action::make('requirements')->label('覆盖矩阵')->visible(fn (): bool => ! $this->getRecord()->outlinePlans()->exists())->url(fn (): string => NovelResource::getUrl('requirements', ['record' => $this->getRecord()])),
             Action::make('back')->label('返回小说')->url(fn (): string => NovelResource::getUrl('view', ['record' => $this->getRecord()])),
         ];
     }

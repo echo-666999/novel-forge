@@ -10,6 +10,7 @@ use App\Models\Chapter;
 use App\Models\ChapterVersion;
 use App\Models\CostLog;
 use App\Models\Novel;
+use App\Models\NovelSettingConfirmation;
 use App\Models\NovelStage;
 use App\Services\Ai\NovelCostSummary;
 use App\Services\Pipeline\CreateNovelService;
@@ -32,8 +33,8 @@ class NovelInfolist
     {
         return $schema
             ->components([
-                // 进度卡片：在哪一步、为什么停、下一步做什么；有在途任务时每5秒刷新。
-                Section::make('当前进度')->columnSpanFull()
+                // 进度卡片：在哪一步、为什么停、下一步做什么；只保留需要关注的标签，有在途任务时每5秒刷新。
+                Section::make('当前进度')->compact()->columnSpanFull()
                     ->extraAttributes(fn (Novel $record): array => app(NovelProgressQuery::class)->for($record)['running'] ? ['wire:poll.5s' => ''] : [])
                     ->schema([
                         Flex::make([
@@ -44,6 +45,11 @@ class NovelInfolist
                                 ->state(fn (Novel $record): string => '已完成 '.$record->chapters_done.' / '.$record->target_chapters.' 章'),
                             TextEntry::make('length_overview')->hiddenLabel()->badge()->grow(false)->color('gray')
                                 ->state(fn (Novel $record): string => filled($record->chapter_length_policy['min_characters'] ?? null) ? '每章 '.$record->chapter_length_policy['min_characters'].'～'.$record->chapter_length_policy['max_characters'].' 字' : '每章字数未设置'),
+                            // 执行次数快用完时生成会停下，提前提醒；平时只在底部记录里显示。
+                            TextEntry::make('execution_overview')->hiddenLabel()->badge()->grow(false)
+                                ->visible(fn (Novel $record): bool => self::executionsLeft($record) <= self::EXECUTION_WARNING)
+                                ->state(fn (Novel $record): string => self::executionsLeft($record) === 0 ? '执行次数已用完（'.$record->execution_count.' / '.$record->max_execution_count.'）' : '执行次数仅剩 '.self::executionsLeft($record).' 次（'.$record->execution_count.' / '.$record->max_execution_count.'）')
+                                ->color(fn (Novel $record): string => self::executionsLeft($record) === 0 ? 'danger' : 'warning'),
                             // 请求与费用默认收起，顶部只在需要处理时出现提醒标签。
                             TextEntry::make('budget_overview')->hiddenLabel()->badge()->grow(false)
                                 ->visible(fn (Novel $record): bool => in_array(app(NovelBudget::class)->summary($record)['state'], ['exhausted', 'warning'], true))
@@ -55,16 +61,17 @@ class NovelInfolist
                                 ->tooltip('未登记单价或尚未结算，不代表免费；点击查看费用明细')
                                 ->url(fn (Novel $record): string => NovelResource::getUrl('costs', ['record' => $record, 'tableFilters' => ['billing_status' => ['value' => 'unknown']]])),
                         ])->extraAttributes(['style' => 'flex-wrap: wrap']),
-                        TextEntry::make('progress_headline')->hiddenLabel()->weight('bold')->size('lg')->state(fn (Novel $record): string => app(NovelProgressQuery::class)->for($record)['headline']),
+                        TextEntry::make('progress_headline')->hiddenLabel()->weight('bold')->size('lg')->color('primary')->state(fn (Novel $record): string => app(NovelProgressQuery::class)->for($record)['headline']),
                         TextEntry::make('progress_detail')->hiddenLabel()->state(fn (Novel $record): string => app(NovelProgressQuery::class)->for($record)['detail']),
                         TextEntry::make('progress_link')->hiddenLabel()->visible(fn (Novel $record): bool => app(NovelProgressQuery::class)->for($record)['url'] !== null)
                             ->state('打开处理页面 →')->weight('bold')->color('primary')->url(fn (Novel $record): ?string => app(NovelProgressQuery::class)->for($record)['url']),
-                        TextEntry::make('progress_steps')->hiddenLabel()->color('gray')->size('sm')->state(fn (Novel $record): string => app(NovelProgressQuery::class)->stepBar(app(NovelProgressQuery::class)->for($record)['step'])),
-                        TextEntry::make('activity')->hiddenLabel()->color('gray')->size('sm')
-                            ->state(fn (Novel $record): string => '当前阶段：'.($record->current_stage?->label() ?? '尚未开始').' · '.($record->generation_mode === GenerationMode::SettingReal ? '流水线进度 ' : '模拟进度 ').$record->progress.'% · 创建于 '.$record->created_at->format('Y-m-d H:i').' · 最近活动 '.$record->updated_at->format('Y-m-d H:i')),
+                        // 步骤条与最近活动合为一行弱化显示；阶段名已由步骤条表达，模拟流程才附百分比。
+                        TextEntry::make('progress_steps')->hiddenLabel()->color('gray')->size('sm')
+                            ->state(fn (Novel $record): string => app(NovelProgressQuery::class)->stepBar(app(NovelProgressQuery::class)->for($record)['step'])
+                                .'　·　'.($record->generation_mode === GenerationMode::SettingReal ? '' : '模拟进度 '.$record->progress.'% · ').'最近活动 '.$record->updated_at->format('Y-m-d H:i')),
                     ]),
-                Section::make('近期章节')->columnSpanFull()->visible(fn (Novel $record): bool => $record->chapters()->exists())
-                    ->description('显示最近10章；完整列表见左侧“章节目录”。')
+                Section::make('近期章节')->compact()->columnSpanFull()->visible(fn (Novel $record): bool => $record->chapters()->exists())
+                    ->description('最近 '.self::RECENT_CHAPTERS.' 章；完整列表见左侧“章节目录”。')
                     ->schema([
                         RepeatableEntry::make('recent_chapters')->hiddenLabel()->state(fn (Novel $record): array => self::recentChapters($record))
                             ->table([TableColumn::make('章节'), TableColumn::make('状态'), TableColumn::make('字数'), TableColumn::make('入口')])
@@ -77,25 +84,31 @@ class NovelInfolist
                                 TextEntry::make('url')->url(fn (?string $state): ?string => $state)->color('primary')->formatStateUsing(fn (?string $state): string => str_contains((string) $state, '/reader') ? '阅读' : '去处理'),
                             ]),
                     ]),
-                Section::make('创作信息')->collapsible()->compact()->columnSpanFull()
-                    ->description(fn (Novel $record): string => $record->generation_mode === GenerationMode::SettingReal ? '原始生成结果始终保留为候选；作者确认另存版本，只有显式启动才生成大纲。' : '当前为模拟流程。模拟完成不代表小说作品已生成。')
+                // 作品概要只放写作时最常对照的内容：核心矛盾、主要人物与原始创意；完整设定收进下方。
+                Section::make('作品概要')->collapsible()->compact()->columnSpanFull()
+                    ->description(fn (Novel $record): ?string => $record->generation_mode === GenerationMode::SettingReal ? null : '当前为模拟流程。模拟完成不代表小说作品已生成。')
                     ->schema([
                         Flex::make([
-                            TextEntry::make('title')->hiddenLabel()->weight('bold')->size('lg')->grow(false),
                             TextEntry::make('genre')->hiddenLabel()->badge()->color('gray')->grow(false)->placeholder('题材未填写'),
                             TextEntry::make('generation_mode')->hiddenLabel()->badge()->color('gray')->grow(false)->formatStateUsing(fn (GenerationMode $state): string => $state->label()),
                         ])->verticallyAlignCenter()->extraAttributes(['style' => 'flex-wrap: wrap']),
-                        TextEntry::make('premise_raw')->label('原始创意')->extraAttributes(['style' => 'line-height: 1.8']),
+                        TextEntry::make('core_conflict_overview')->label('核心矛盾')->weight('bold')
+                            ->visible(fn (Novel $record): bool => filled(data_get(self::latestConfirmation($record)?->setting, 'core_conflict')))
+                            ->state(fn (Novel $record): ?string => data_get(self::latestConfirmation($record)?->setting, 'core_conflict'))->extraAttributes(['style' => 'line-height: 1.7']),
+                        TextEntry::make('characters_overview')->label('主要人物')
+                            ->visible(fn (Novel $record): bool => self::characterLine($record) !== null)->state(fn (Novel $record): ?string => self::characterLine($record)),
+                        TextEntry::make('premise_raw')->label('原始创意')->color('gray')->extraAttributes(['style' => 'line-height: 1.7']),
+                    ]),
+                Section::make('完整设定与创作要求')->collapsible()->collapsed()->compact()->columnSpanFull()
+                    ->visible(fn (Novel $record): bool => filled($record->creative_brief) || ($record->generation_mode === GenerationMode::SettingReal && self::latestConfirmation($record) !== null))
+                    ->description(fn (Novel $record): string => self::settingBrief($record))
+                    ->schema([
                         TextEntry::make('creative_brief_text')->label('补充创作要求')->visible(fn (Novel $record): bool => filled($record->creative_brief))
                             ->state(fn (Novel $record): array => collect($record->creative_brief ?? [])->map(fn (string $value, string $key): string => (CreateNovelService::BRIEF_FIELDS[$key] ?? $key).'：'.$value)->values()->all())->listWithLineBreaks()->bulleted(),
-                    ]),
-                Section::make('最新确认设定版本')->collapsible()->compact()->columnSpanFull()
-                    ->visible(fn (Novel $record): bool => $record->generation_mode === GenerationMode::SettingReal && $record->settingConfirmations()->exists())
-                    ->description('这里保存作者修订与决定；下方供应商原始候选保留原样。确认不等于已经发送大纲请求。')
-                    ->schema([
                         RepeatableEntry::make('confirmed_versions')->label('确认版本')->hiddenLabel()->contained(false)
-                            ->state(fn (Novel $record): array => $record->settingConfirmations()->latest('id')->limit(1)->get()
-                                ->map(fn ($confirmation): array => [...$confirmation->toArray(), 'meta' => '确认记录 #'.$confirmation->id.' · 用户 #'.$confirmation->confirmed_by.' · '.$confirmation->confirmed_at->format('Y-m-d H:i')])->all())
+                            ->visible(fn (Novel $record): bool => $record->generation_mode === GenerationMode::SettingReal && self::latestConfirmation($record) !== null)
+                            ->state(fn (Novel $record): array => array_map(fn ($confirmation): array => [...$confirmation->toArray(), 'meta' => '最新确认设定 · 确认记录 #'.$confirmation->id.' · '.$confirmation->confirmed_at->format('Y-m-d H:i').'。这里保存作者修订与决定；供应商原始候选在下方另行保留。'],
+                                array_filter([self::latestConfirmation($record)])))
                             ->schema([
                                 TextEntry::make('meta')->hiddenLabel()->color('gray')->size('sm'),
                                 ...self::settingFields('setting.'),
@@ -135,6 +148,48 @@ class NovelInfolist
             ]);
     }
 
+    /** 近期章节显示条数。 */
+    private const RECENT_CHAPTERS = 5;
+
+    /** 剩余执行次数不超过此值时在顶部提醒。 */
+    private const EXECUTION_WARNING = 5;
+
+    /** 剩余执行次数，不小于0。 */
+    private static function executionsLeft(Novel $novel): int
+    {
+        return max(0, (int) $novel->max_execution_count - (int) $novel->execution_count);
+    }
+
+    /** 最新作者确认设定；模拟流程或尚未确认时为空。 */
+    private static function latestConfirmation(Novel $novel): ?NovelSettingConfirmation
+    {
+        return $novel->generation_mode === GenerationMode::SettingReal ? $novel->settingConfirmations()->latest('id')->first() : null;
+    }
+
+    /** 主要人物压成一行：姓名加身份的第一句。 */
+    private static function characterLine(Novel $novel): ?string
+    {
+        $characters = collect(data_get(self::latestConfirmation($novel)?->setting, 'characters', []))
+            ->filter(fn (mixed $character): bool => filled(data_get($character, 'name')))
+            ->map(fn (mixed $character): string => data_get($character, 'name').(filled($role = preg_split('/[，,；;。]/u', (string) data_get($character, 'role'))[0] ?? null) ? '（'.$role.'）' : ''));
+
+        return $characters->isEmpty() ? null : $characters->implode('、');
+    }
+
+    /** 收起区块的一行摘要，不展开也知道里面有什么。 */
+    private static function settingBrief(Novel $novel): string
+    {
+        $confirmation = self::latestConfirmation($novel);
+        $parts = $confirmation === null ? [] : ['确认记录 #'.$confirmation->id.' · '.$confirmation->confirmed_at->format('Y-m-d H:i'),
+            count(data_get($confirmation->setting, 'characters', [])).' 个人物', count(data_get($confirmation->setting, 'world.rules', [])).' 条世界规则',
+            count(data_get($confirmation->setting, 'preserved_details', [])).' 项保留细节', count($confirmation->decisions ?? []).' 项作者决定'];
+        if (filled($novel->creative_brief)) {
+            $parts[] = count($novel->creative_brief).' 项补充创作要求';
+        }
+
+        return implode(' · ', $parts);
+    }
+
     /** 原始候选与作者确认版本复用中文只读展示，文本始终按默认方式转义。
      * @return list<Component>
      */
@@ -171,12 +226,12 @@ class NovelInfolist
         ];
     }
 
-    /** 最近10章的状态、字数与入口；正式章打开阅读器，未提交章打开正文工作台。
+    /** 最近几章的状态、字数与入口；正式章打开阅读器，未提交章打开正文工作台。
      * @return list<array{heading: string, status: string, characters: string, url: string}>
      */
     private static function recentChapters(Novel $novel): array
     {
-        return $novel->chapters()->orderByDesc('number')->limit(10)->get()->map(function (Chapter $chapter) use ($novel): array {
+        return $novel->chapters()->orderByDesc('number')->limit(self::RECENT_CHAPTERS)->get()->map(function (Chapter $chapter) use ($novel): array {
             $formal = $chapter->formal_version_id !== null;
             $version = ChapterVersion::find($chapter->formal_version_id ?? $chapter->current_candidate_version_id);
 

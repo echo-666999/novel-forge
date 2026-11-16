@@ -233,6 +233,21 @@ class B01NovelCreationTest extends TestCase
         Livewire::test(ListNovels::class)->assertTableActionVisible('archive', $novel)->assertTableActionVisible('copyInput', $novel);
     }
 
+    /** 新建表单的篇幅、币种与生产方式预填值来自通用设置的“新书默认值”。 */
+    public function test_create_form_prefills_new_book_defaults_from_settings(): void
+    {
+        $settings = app(GeneralSettings::class);
+        $settings->default_target_chapters = 30;
+        $settings->default_min_characters = 2000;
+        $settings->default_max_characters = 3000;
+        $settings->default_budget_currency = 'USD';
+        $settings->default_production_mode = 'auto_first';
+        $settings->save();
+
+        Livewire::test(CreateNovel::class)->assertSchemaStateSet(['target_chapters' => 30, 'chapter_length_policy.min_characters' => 2000,
+            'chapter_length_policy.max_characters' => 3000, 'budget_currency' => 'USD', 'production_mode' => 'auto_first']);
+    }
+
     /** 详情页顶部以标签汇总状态、章数与篇幅，请求与费用收进底部记录，近期章节合并章号标题并标注状态。 */
     public function test_details_show_compact_overview_badges_and_recent_chapters(): void
     {
@@ -246,6 +261,21 @@ class B01NovelCreationTest extends TestCase
             ->assertSee('请求与费用记录')->assertSee('真实请求 0 次 · 执行 3 / 10')->assertDontSee('预算、费用与执行次数')->assertDontSee('设定执行记录')
             ->assertSee('第1章 缺口钥匙')->assertSee('生成中')->assertSee('去处理')
             ->assertDontSee('篇幅计划')->assertDontSee('运行状态');
+    }
+
+    /** 执行次数快用完时顶部提醒；近期章节只列最近5章，阶段与创建时间不再单独占行。 */
+    public function test_overview_warns_low_executions_and_keeps_recent_list_short(): void
+    {
+        $novel = Novel::factory()->create(['target_chapters' => 20, 'execution_count' => 64, 'max_execution_count' => 66]);
+        foreach (range(1, 6) as $number) {
+            Chapter::factory()->create(['novel_id' => $novel->id, 'number' => $number, 'title' => '章名'.$number]);
+        }
+
+        Livewire::test(ViewNovel::class, ['record' => $novel->id])->assertSee('执行次数仅剩 2 次（64 / 66）')
+            ->assertSee('第6章 章名6')->assertSee('第2章 章名2')->assertDontSee('第1章 章名1')
+            ->assertSee('作品概要')->assertDontSee('当前阶段：')->assertDontSee('创建于');
+        $novel->update(['execution_count' => 10]);
+        Livewire::test(ViewNovel::class, ['record' => $novel->id])->assertDontSee('执行次数仅剩');
     }
 
     /** 有金额未知的真实请求时顶部出现提醒标签，带筛选直达费用明细；低频操作收进“更多”菜单。 */

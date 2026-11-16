@@ -6,6 +6,7 @@ use App\Enums\GenerationMode;
 use App\Enums\NovelStatus;
 use App\Enums\Stage;
 use App\Enums\StageStatus;
+use App\Filament\Resources\Novels\Pages\BlueprintVersions;
 use App\Filament\Resources\Novels\Pages\ViewNovel;
 use App\Filament\Resources\Novels\Pages\ViewOutlinePlan;
 use App\Jobs\RunOutlineBatchJob;
@@ -151,10 +152,12 @@ class B03OutlineTest extends TestCase
         $this->assertSame(2, $novel->fresh()->execution_count);
         $this->assertSame('33.33', $novel->fresh()->progress);
         $this->assertSame('unknown', CostLog::query()->sole()->billing_status);
-        $page = Livewire::test(ViewOutlinePlan::class, ['record' => $novel->id])->assertSee('大纲候选已完成')->assertSee('请求与费用记录')->assertSee('1 个大纲批次请求')->assertDontSee('确认设定记录编号')->assertCanSeeTableRecords($plan->chapters()->get())->mountTableAction('readChapter', $plan->chapters()->first())->assertActionMounted(TestAction::make('readChapter')->table($plan->chapters()->first()));
-        $modalHtml = $page->instance()->getSchema($page->instance()->getMountedActionSchemaName())->toHtml();
-        $this->assertStringContainsString('正文完成条件', $modalHtml);
+        $page = Livewire::test(ViewOutlinePlan::class, ['record' => $novel->id])->assertSee('大纲候选已完成')->assertDontSee('停止原因')->assertSee('请求与费用记录')->assertSee('1 个大纲批次请求')->assertDontSee('确认设定记录编号')->assertCanSeeTableRecords($plan->chapters()->get())->mountTableAction('readChapter', $plan->chapters()->first())->assertActionMounted(TestAction::make('readChapter')->table($plan->chapters()->first()));
+        // 弹窗以本章目标置顶，推进点按变化流程展示并单列正文完成条件。
+        $modalHtml = $page->instance()->getMountedAction()->getModalContent()->render();
+        $this->assertMatchesRegularExpression('/本章目标.*'.preg_quote(e($plan->chapters()->first()->objective), '/').'.*必须完成的情节推进点.*变化前.*具体行动.*变化后.*正文完成条件/s', $modalHtml);
         $this->assertStringContainsString('取得第1份可验证航线证据', $modalHtml);
+        $this->assertStringContainsString('原章纲', $modalHtml);
         Http::assertSentCount(1);
     }
 
@@ -352,6 +355,16 @@ class B03OutlineTest extends TestCase
         Livewire::test(ViewNovel::class, ['record' => $novel->id])->callAction('generateOutline', ['confirmation_id' => $latest->id, 'accept_request' => true])->assertHasNoActionErrors();
         Queue::assertPushed(RunOutlineBatchJob::class, 1);
         $this->assertSame(1, NovelOutlinePlan::query()->count());
+        // 大纲建立后蓝图页的确认入口隐藏，绕过界面直接保存也会被拒绝。
+        NovelOutlinePlan::query()->update(['status' => 'completed']);
+        Livewire::test(BlueprintVersions::class, ['record' => $novel->id])->assertActionHidden('confirm')->assertActionHidden('requirements');
+        try {
+            app(ConfirmSettingService::class)->confirm($novel, auth()->user(), [...$draft, 'source_hash' => app(ConfirmSettingService::class)->draft($novel)['source_hash']]);
+            $this->fail('大纲建立后不应再保存确认版本');
+        } catch (ValidationException $exception) {
+            $this->assertStringContainsString('大纲已按原确认版本生成', $exception->getMessage());
+        }
+        $this->assertSame(2, $novel->settingConfirmations()->count());
     }
 
     /** 未确认来源不能通过伪造版本编号启动模型。 */

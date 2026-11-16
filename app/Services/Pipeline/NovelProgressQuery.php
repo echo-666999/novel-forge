@@ -24,6 +24,25 @@ final class NovelProgressQuery
      */
     public function for(Novel $novel): array
     {
+        $result = $this->resolve($novel);
+        // 空闲且还要发模型请求时，执行次数用完会让下一步直接被拒绝，标题先说清需要追加上限。
+        $used = (int) $novel->execution_count;
+        $limit = (int) $novel->max_execution_count;
+        if (! $result['running'] && ! $result['manual'] && in_array($result['step'], ['outline', 'production'], true) && $used >= $limit) {
+            $result['headline'] .= '（执行次数已用完，需追加上限）';
+            $result['detail'] = '执行次数 '.$used.' / '.$limit.' 已用完，发出任何模型请求前都要先调高本书执行总上限：可在“生成第N章”弹窗里填写新的总上限，“继续自动生成”会按授权章数自动追加。'.$result['detail'];
+        }
+
+        unset($result['manual']);
+
+        return $result;
+    }
+
+    /** 按流程顺序判断当前所处步骤，不考虑执行次数。
+     * @return array{step: string, headline: string, detail: string, action: ?string, url: ?string, running: bool}
+     */
+    private function resolve(Novel $novel): array
+    {
         if ($novel->generation_mode === GenerationMode::Simulation) {
             return $this->result('idea', '模拟流程（仅用于自检，不生成正文）', '这本书使用模拟流程创建，不会调用模型。需要真实创作时请新建一本书。', running: in_array($novel->status->value, ['pending', 'running'], true));
         }
@@ -100,8 +119,8 @@ final class NovelProgressQuery
         if ($submission !== null) {
             return match ($submission->status) {
                 'pending', 'running' => $this->result('production', $title.'：正在评审与提取事件', isset($submission->config['auto_commit']) ? '评审通过且没有新实体时会自动正式提交，否则会提示你处理。' : '完成后会提示你批准提交。', url: $url, running: true),
-                'awaiting_approval' => $this->result('production', $title.'：等你批准新实体并正式提交', '在正文工作台的“提交”区核对新实体后提交。', url: $url),
-                'ready' => $this->result('production', $title.'：可以正式提交', '在正文工作台点击“正式提交当前章”。', url: $url),
+                'awaiting_approval' => $this->result('production', $title.'：等你批准新实体并正式提交', '在正文工作台的“提交”区核对新实体后提交。', url: $url, manual: true),
+                'ready' => $this->result('production', $title.'：可以正式提交', '在正文工作台点击“正式提交当前章”。', url: $url, manual: true),
                 default => $this->result('production', $title.'：评审或提取未通过', (ProductionFailure::detailLabel($submission->stop_reason) ?? '').'。可在正文工作台查看评审意见并定点修订或重跑。', url: $url),
             };
         }
@@ -109,7 +128,7 @@ final class NovelProgressQuery
             return $this->result('production', $title.'：正在生成正文', '正文、推进检查依次进行，完成后会提示你核对。', url: $url, running: true);
         }
         if ($body->stop_reason === 'awaiting_review') {
-            return $this->result('production', $title.'：等你核对全文', '阅读候选正文，在正文工作台记录全文核对结论。', url: $url);
+            return $this->result('production', $title.'：等你核对全文', '阅读候选正文，在正文工作台记录全文核对结论。', url: $url, manual: true);
         }
         if ($body->stop_reason === 'b04_accepted') {
             return $this->result('production', $title.'：可以准备正式提交', '在正文工作台点击“准备正式提交”，系统会做一次评审和一次事件提取。', url: $url);
@@ -147,8 +166,8 @@ final class NovelProgressQuery
     /** 统一结果结构。
      * @return array{step: string, headline: string, detail: string, action: ?string, url: ?string, running: bool}
      */
-    private function result(string $step, string $headline, string $detail, ?string $action = null, ?string $url = null, bool $running = false): array
+    private function result(string $step, string $headline, string $detail, ?string $action = null, ?string $url = null, bool $running = false, bool $manual = false): array
     {
-        return compact('step', 'headline', 'detail', 'action', 'url', 'running');
+        return compact('step', 'headline', 'detail', 'action', 'url', 'running', 'manual');
     }
 }
