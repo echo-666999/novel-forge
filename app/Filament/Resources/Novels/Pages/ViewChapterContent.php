@@ -534,7 +534,8 @@ class ViewChapterContent extends Page implements HasTable
                                 'committed', 'ready' => 'success', 'failed' => 'danger', 'awaiting_approval' => 'warning', 'pending', 'running' => 'info', default => 'gray',
                             }),
                         ])->verticallyAlignCenter(),
-                        TextEntry::make('submission_reason')->label('停止原因')->state(fn (): ?string => ProductionFailure::detailLabel($this->submission()?->stop_reason))->visible(fn (): bool => $this->submission()?->stop_reason !== null),
+                        // 只有失败才有“停止原因”；已正式提交由右侧状态标签说明，不再显示内部完成码。
+                        TextEntry::make('submission_reason')->label('停止原因')->state(fn (): ?string => ProductionFailure::detailLabel($this->submission()?->stop_reason))->visible(fn (): bool => $this->submission()?->status === 'failed' && $this->submission()?->stop_reason !== null),
                         Section::make('基础评审')->compact()->headerActions([$this->reviewRevisionAction('reviseFromReviewInline')])->schema([
                             TextEntry::make('review_verdict')->hiddenLabel()->badge()->state(fn (): string => $this->submissionView()['review']['verdict'] ?? '尚无记录')
                                 ->color(fn (string $state): string => match ($state) {

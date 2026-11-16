@@ -64,6 +64,7 @@ enum ProductionFailure: string
         'INVALID_RESPONSE' => '评审或提取响应无效', 'UNKNOWN_RESPONSE' => '评审或提取结果未知，可能已计费',
         'budget_exhausted' => '预算不足或未登记单价，已在请求前停止', 'BUDGET_EXHAUSTED' => '预算不足或未登记单价，已在请求前停止',
         'context_capacity' => '上下文超出容量，已在请求前停止', 'CONTEXT_CAPACITY' => '上下文超出容量，已在请求前停止', 'PROVIDER_FAILED' => '模型服务明确返回失败',
+        'REVIEW_INVALID' => '评审结果格式或结论无效', 'EVIDENCE_INVALID' => '评审或提取引用的原文证据无效', 'EVENT_READING_REJECTED' => '作者核对事件提取时未通过', 'CANONICAL_COMMITTED' => '已正式提交',
         'insufficient_balance' => '模型服务账户余额不足（HTTP 402）', 'INSUFFICIENT_BALANCE' => '模型服务账户余额不足（HTTP 402）',
     ];
 

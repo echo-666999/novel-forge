@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Enums\ProductionFailure;
 use App\Filament\Resources\Novels\Pages\ViewChapterContent;
 use App\Filament\Resources\Novels\Pages\ViewNovel;
 use App\Jobs\RunChapterStepJob;
@@ -625,6 +626,18 @@ class ChapterSubmissionTest extends TestCase
         $this->assertSame(0, $successor->requests_used);
         $this->assertSame($before, $run->fresh()->getRawOriginal());
         Http::assertSentCount(4);
+    }
+
+    /** 已正式提交的准备不显示内部完成码“停止原因”；失败原因显示中文说明。 */
+    public function test_committed_submission_hides_stop_reason(): void
+    {
+        [$run, $operator] = self::prepared();
+        self::commit($run, $operator);
+        $this->assertSame('CANONICAL_COMMITTED', $run->fresh()->stop_reason);
+        $this->actingAs($operator);
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        Livewire::test(ViewChapterContent::class, ['record' => $run->novel_id])->assertSee('已正式提交')->assertDontSee('CANONICAL_COMMITTED');
+        $this->assertSame('评审结果格式或结论无效', ProductionFailure::detailLabel('REVIEW_INVALID'));
     }
 
     /** 评审驳回后工作台可按评审意见建修订运行：绑定原评审、默认三次请求（修订、补发、检查），建好后入口消失。 */
