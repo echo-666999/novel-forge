@@ -202,6 +202,45 @@ class C07RevisionWorkbenchTest extends B04ExecutionTest
             ->assertActionDataSet(fn (array $data): bool => str_contains($data['issues'], '前后重复或时序矛盾：小陶两次接单离开，动作重演。'));
     }
 
+    /** 修订问题预填当前候选所有未解决的问题：核心冲突排在最前，未解决的复核项与针对本版本的评审意见都列入；
+     * 已解决或判为合理表达的复核项、针对其他版本的评审不预填。 */
+    public function test_revise_issues_prefill_all_pending_issues(): void
+    {
+        $run = $this->start();
+        $this->drain();
+        $chapter = $run->chapter->fresh();
+        $version = ChapterVersion::findOrFail($chapter->current_candidate_version_id);
+        $chapter->update(['progression_result' => [...$chapter->progression_result, 'version_id' => $version->id,
+            'conflicts' => [['reason' => '规则r1：外婆已故；正文让外婆当面说话。']],
+            'reading_reviews' => [
+                ['id' => 'f1', 'fixed' => false, 'disposition' => 'unresolved', 'reason' => '日期载体仍不统一：p45是打印件，p49又写照片背面。'],
+                ['id' => 'f2', 'fixed' => true, 'disposition' => 'resolved', 'reason' => '裁切画面已区分。'],
+                ['id' => 'f3', 'fixed' => true, 'disposition' => 'benign', 'reason' => '母亲口述属于家庭记忆。'],
+            ]]]);
+        $submission = ChapterSubmissionRun::factory()->create(['version_id' => $version->id, 'status' => 'failed', 'stop_reason' => 'REVIEW_NOT_PASSED']);
+        ChapterReview::factory()->create(['submission_run_id' => $submission->id, 'result' => ['verdict' => 'needs_revision', 'findings' => [
+            ['kind' => 'continuity', 'reason' => '沈禾不可能读到照片背面的日期。', 'evidence' => []],
+        ]]]);
+        $older = $version->replicate()->fill(['version' => $version->version + 1, 'created_at' => now(),
+            'source_stage_id' => NovelStage::where('novel_id', $chapter->novel_id)->whereNotIn('id', ChapterVersion::pluck('source_stage_id'))->firstOrFail()->id]);
+        $older->save();
+        $stale = ChapterSubmissionRun::factory()->create(['version_id' => $older->id, 'status' => 'failed', 'stop_reason' => 'REVIEW_NOT_PASSED']);
+        ChapterReview::factory()->create(['submission_run_id' => $stale->id,
+            'result' => ['verdict' => 'needs_revision', 'findings' => [['kind' => 'continuity', 'reason' => '旧版本的评审问题。', 'evidence' => []]]]]);
+        Livewire::test(ViewChapterContent::class, ['record' => $chapter->novel_id])->mountAction('reviseIssues')
+            ->assertActionDataSet(function (array $data): bool {
+                $lines = explode("\n", $data['issues']);
+                $this->assertSame('核心冲突：规则r1：外婆已故；正文让外婆当面说话。', $lines[0]);
+                $this->assertContains('复核未解决：日期载体仍不统一：p45是打印件，p49又写照片背面。', $lines);
+                $this->assertContains('提交评审意见：沈禾不可能读到照片背面的日期。', $lines);
+                $this->assertStringNotContainsString('裁切画面已区分', $data['issues']);
+                $this->assertStringNotContainsString('家庭记忆', $data['issues']);
+                $this->assertStringNotContainsString('旧版本的评审问题', $data['issues']);
+
+                return true;
+            });
+    }
+
     /** 运行排队或进行中时没有停止原因，不显示空的“停止原因与下一步”；停下后才显示。 */
     public function test_stop_reason_hidden_while_run_is_active(): void
     {

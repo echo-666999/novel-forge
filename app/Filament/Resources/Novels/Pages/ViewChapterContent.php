@@ -24,6 +24,7 @@ use App\Services\Pipeline\ChapterSubmissionService;
 use App\Services\Pipeline\ContentExecutionContract;
 use App\Services\Pipeline\ContentGenerationService;
 use App\Services\Pipeline\ContentPromptAudit;
+use App\Services\Pipeline\ContentQualityContract;
 use App\Services\Pipeline\ContentReadabilityMetrics;
 use App\Services\Pipeline\ContentReadingAudit;
 use App\Services\Pipeline\ContentSchema;
@@ -701,16 +702,30 @@ class ViewChapterContent extends Page implements HasTable
         ]);
     }
 
-    /** “针对指定问题修订”的预填内容：当前版本推进检查未通过的推进点、钩子与前后矛盾，加上本地复核线索；每行一条，最多10条。 */
+    /** “针对指定问题修订”的预填内容：页面上当前候选所有未解决的问题，每行一条，按严重程度取前10条。 */
     private function suggestedIssues(): string
+    {
+        return implode("\n", array_slice($this->pendingIssues(), 0, 10));
+    }
+
+    /** 当前候选所有待解决的问题，按严重程度排序并去重：核心冲突、推进点、章末钩子、连贯性、未解决的复核项、
+     * 针对本版本的提交评审意见、本地正文质量问题，最后是本地重复与时序线索。只收绑定当前候选版本的结论，旧版本的问题不再预填。
+     *
+     * @return list<string>
+     */
+    private function pendingIssues(): array
     {
         $candidate = $this->candidate();
         if ($candidate === null) {
-            return '';
+            return [];
         }
+        $run = $this->run();
         $lines = [];
-        $result = $this->run()?->chapter->progression_result;
+        $result = $run?->chapter->progression_result;
         if (is_array($result) && ($result['version_id'] ?? null) === $candidate->id) {
+            foreach ($result['conflicts'] ?? [] as $conflict) {
+                $lines[] = '核心冲突：'.($conflict['reason'] ?? '');
+            }
             foreach ($result['points'] ?? [] as $point) {
                 if (($point['met'] ?? true) === false) {
                     $lines[] = '推进点'.($point['id'] ?? '').'未完成：'.($point['reason'] ?? '');
@@ -722,6 +737,31 @@ class ViewChapterContent extends Page implements HasTable
             foreach ($result['continuity_issues'] ?? [] as $issue) {
                 $lines[] = '前后重复或时序矛盾：'.($issue['reason'] ?? '');
             }
+            // 复核结论描述的是当前正文仍存在的问题，比冻结时的原风险说明更准确。
+            foreach ($result['reading_reviews'] ?? [] as $review) {
+                if (! ($review['fixed'] ?? false) && ($review['disposition'] ?? 'unresolved') === 'unresolved') {
+                    $lines[] = '复核未解决：'.($review['reason'] ?? '');
+                }
+            }
+        }
+        $review = ChapterReview::where('chapter_id', $candidate->chapter_id)->where('version_id', $candidate->id)->where('verdict', 'needs_revision')->latest('id')->first();
+        foreach ($review?->result['findings'] ?? [] as $finding) {
+            $lines[] = '提交评审意见：'.($finding['reason'] ?? '');
+        }
+        // 本地正文质量检测只对当前协议运行生效，与生成流程的判定一致。
+        if (($run?->config['version'] ?? null) === ContentExecutionContract::VERSION) {
+            $local = [...ContentQualityContract::planCopies($candidate->body, $run->plan_data),
+                ...ContentQualityContract::echoedDialogue($candidate->body, ContentQualityContract::characterNames($run->snapshot)),
+                ...array_filter(ContentQualityContract::issues($candidate->body, ['min_characters' => 0, 'max_characters' => PHP_INT_MAX]), fn (array $issue): bool => $issue['type'] === 'meta_text'),
+                ...ContentReadabilityMetrics::issues(ContentReadabilityMetrics::measure($candidate->body))];
+            foreach ($local as $issue) {
+                $lines[] = match ($issue['type']) {
+                    'echoed_dialogue' => $issue['reason'],
+                    'meta_text' => '第'.$issue['paragraph'].'段混入写作说明「'.implode('」「', $issue['quotes']).'」，须删去',
+                    'plan_copy' => '第'.$issue['paragraph'].'段'.$issue['reason'],
+                    default => '全章'.$issue['reason'],
+                };
+            }
         }
         foreach (ContentReadingAudit::inspect($candidate->body)['issues'] as $issue) {
             $evidence = $issue['evidence'] ?? [];
@@ -730,7 +770,7 @@ class ViewChapterContent extends Page implements HasTable
                 : '可能的时序倒退：'.($issue['reason'] ?? '').implode('；', array_map(fn (array $item): string => '第'.($item['paragraph'] ?? '?').'段“'.($item['quote'] ?? '').'”', $evidence));
         }
 
-        return implode("\n", array_slice(array_values(array_unique(array_map(fn (string $line): string => mb_substr(trim(preg_replace('/\s+/u', ' ', $line)), 0, 1000), $lines))), 0, 10));
+        return array_values(array_unique(array_map(fn (string $line): string => mb_substr(trim(preg_replace('/\s+/u', ' ', $line)), 0, 1000), $lines)));
     }
 
     /** 运行是否在排队或执行中。 */
@@ -1158,7 +1198,8 @@ class ViewChapterContent extends Page implements HasTable
                 TextInput::make('version_id')->label('冻结正文版本')->default(fn (): ?int => $this->candidate()?->id)->readOnly()->required(),
                 // 预填当前版本推进检查未通过的项目与本地复核线索，作者可增删。
                 Textarea::make('issues')->label('指定问题（每行一条，最多10条）')->rows(8)->default(fn (): string => $this->suggestedIssues())
-                    ->helperText('已预填推进检查未通过的项目与本地复核线索，可增删改；例如：人物口吻不一致，请引用具体对白并说明人物应有的表达方式。')->required()->maxLength(10000),
+                    ->helperText(fn (): string => (count($this->pendingIssues()) > 10 ? '当前候选共有'.count($this->pendingIssues()).'条待解决问题，已按严重程度预填前10条，其余可在下一轮处理。' : '已预填当前候选所有待解决的问题。')
+                        .'可增删改；例如：人物口吻不一致，请引用具体对白并说明人物应有的表达方式。')->required()->maxLength(10000),
                 // 本轮最多三次请求（修订、格式补发、复评），默认上限须容纳全部三次。
                 TextInput::make('execution_limit')->label('确认小说累计执行上限')->integer()->required()->minValue(1)->maxValue(2147483647)->default(fn (): int => max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + 3))
                     ->helperText(fn (): string => '已用 '.$this->getRecord()->execution_count.' / 上限 '.$this->getRecord()->max_execution_count.'；本轮最多 3 次请求，上限至少为 '.($this->getRecord()->execution_count + 3).'。'),
