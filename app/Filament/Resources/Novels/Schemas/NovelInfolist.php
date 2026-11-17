@@ -74,13 +74,14 @@ class NovelInfolist
                     ->description('最近 '.self::RECENT_CHAPTERS.' 章；完整列表见左侧“章节目录”。')
                     ->schema([
                         RepeatableEntry::make('recent_chapters')->hiddenLabel()->state(fn (Novel $record): array => self::recentChapters($record))
-                            ->table([TableColumn::make('章节'), TableColumn::make('状态'), TableColumn::make('字数'), TableColumn::make('入口')])
+                            ->table([TableColumn::make('章节'), TableColumn::make('状态'), TableColumn::make('字数'), TableColumn::make('成本'), TableColumn::make('入口')])
                             ->schema([
                                 TextEntry::make('heading')->weight('medium'),
                                 TextEntry::make('status')->badge()->color(fn (string $state): string => match ($state) {
                                     '已正式提交' => 'success', '候选，未提交' => 'warning', default => 'info',
                                 }),
                                 TextEntry::make('characters')->color('gray'),
+                                TextEntry::make('cost')->color('gray')->tooltip('本章全部模型请求开支：生成、检查、修订、评审与提取；只记录，不限制执行。'),
                                 TextEntry::make('url')->url(fn (?string $state): ?string => $state)->color('primary')->formatStateUsing(fn (?string $state): string => str_contains((string) $state, '/reader') ? '阅读' : '去处理'),
                             ]),
                     ]),
@@ -227,16 +228,19 @@ class NovelInfolist
     }
 
     /** 最近几章的状态、字数与入口；正式章打开阅读器，未提交章打开正文工作台。
-     * @return list<array{heading: string, status: string, characters: string, url: string}>
+     * @return list<array{heading: string, status: string, characters: string, cost: string, url: string}>
      */
     private static function recentChapters(Novel $novel): array
     {
-        return $novel->chapters()->orderByDesc('number')->limit(self::RECENT_CHAPTERS)->get()->map(function (Chapter $chapter) use ($novel): array {
+        $costs = app(NovelCostSummary::class)->forChapters($novel->id);
+
+        return $novel->chapters()->orderByDesc('number')->limit(self::RECENT_CHAPTERS)->get()->map(function (Chapter $chapter) use ($novel, $costs): array {
             $formal = $chapter->formal_version_id !== null;
             $version = ChapterVersion::find($chapter->formal_version_id ?? $chapter->current_candidate_version_id);
 
             return ['heading' => (new Chapter(['number' => $chapter->number, 'title' => (string) ($version?->title ?? $chapter->title)]))->numberedTitle(), 'status' => $formal ? '已正式提交' : ($version === null ? '生成中' : '候选，未提交'),
                 'characters' => $version === null ? '-' : mb_strlen(preg_replace('/\s+/u', '', $version->body)).' 字',
+                'cost' => app(NovelCostSummary::class)->cell($costs[$chapter->number] ?? null),
                 'url' => $formal ? NovelResource::getUrl('reader', ['record' => $novel, 'chapter' => $chapter->number]) : NovelResource::getUrl('content', ['record' => $novel, 'chapter' => $chapter->number])];
         })->all();
     }

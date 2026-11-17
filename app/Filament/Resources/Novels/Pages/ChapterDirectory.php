@@ -7,6 +7,7 @@ use App\Filament\Resources\Novels\NovelResource;
 use App\Models\Chapter;
 use App\Models\ChapterVersion;
 use App\Models\Novel;
+use App\Services\Ai\NovelCostSummary;
 use App\Services\Pipeline\AcceptanceComparison;
 use Filament\Actions\Action;
 use Filament\Forms\Components\Hidden;
@@ -101,6 +102,19 @@ class ChapterDirectory extends Page implements HasTable
         return $schema->components([EmbeddedTable::make()]);
     }
 
+    /** 本次请求内缓存的各章成本，避免每行重复汇总。
+     * @var array<int, array<string, mixed>>|null
+     */
+    private ?array $chapterCosts = null;
+
+    /** 各章成本汇总，按章节号索引；只读，不影响执行。
+     * @return array<int, array<string, mixed>>
+     */
+    private function chapterCosts(): array
+    {
+        return $this->chapterCosts ??= app(NovelCostSummary::class)->forChapters($this->getRecord()->id);
+    }
+
     /** 章号排序并提供正式状态筛选，空态有可行动的返回入口；字数取正式稿，未提交时取当前候选。 */
     public function table(Table $table): Table
     {
@@ -124,6 +138,8 @@ class ChapterDirectory extends Page implements HasTable
                         ChapterStatus::Draft, ChapterStatus::Checking => 'warning', ChapterStatus::Generating => 'info', default => 'gray',
                     }),
                 TextColumn::make('body_characters')->label('字数')->formatStateUsing(fn (?int $state): string => number_format((int) $state).' 字')->placeholder('—')->color('gray'),
+                TextColumn::make('cost')->label('成本')->state(fn (Chapter $record): string => app(NovelCostSummary::class)->cell($this->chapterCosts()[$record->number] ?? null))
+                    ->color('gray')->tooltip('本章全部模型请求开支：生成、检查、修订、评审与提取；只记录，不限制执行。')->toggleable(),
                 TextColumn::make('updated_at')->label('最近更新')->since()->dateTimeTooltip()->color('gray')->toggleable(),
             ])->filters([TernaryFilter::make('formal_version_id')->label('已正式提交')->nullable()])
             ->recordActions([Action::make('workbench')->label('正文与提交')->visible(fn (Chapter $record): bool => $record->formal_version_id === null)->url(fn (Chapter $record): string => NovelResource::getUrl('content', ['record' => $this->getRecord(), 'chapter' => $record->number])),

@@ -6,6 +6,7 @@ use App\Enums\NovelStatus;
 use App\Enums\Stage;
 use App\Filament\Resources\Novels\NovelResource;
 use App\Models\Novel;
+use App\Services\Ai\NovelCostSummary;
 use App\Services\Pipeline\NovelArchiveService;
 use App\Services\Pipeline\NovelProgressQuery;
 use Filament\Actions\Action;
@@ -36,6 +37,8 @@ class NovelsTable
                     ->color(fn (NovelStatus $state): string => NovelResource::statusColor($state)),
                 TextColumn::make('chapters_done')->label('正式章数')->sortable()->badge()->color(fn (Novel $record): string => $record->target_chapters > 0 && $record->chapters_done >= $record->target_chapters ? 'success' : 'gray')
                     ->formatStateUsing(fn (Novel $record): string => $record->chapters_done.' / '.$record->target_chapters.' 章'),
+                TextColumn::make('cost')->label('成本')->state(fn (Novel $record): string => app(NovelCostSummary::class)->cell(app(NovelCostSummary::class)->forNovel($record->id)))
+                    ->color('gray')->tooltip('全书全部模型请求开支，含设定、大纲与各章；只显示已算出的金额，只记录，不限制执行。')->toggleable(),
                 TextColumn::make('progress')->label('下一步')->state(fn (Novel $record): string => app(NovelProgressQuery::class)->for($record)['headline'])->wrap()->lineClamp(2),
                 TextColumn::make('current_stage')->label('当前阶段')->placeholder('尚未开始')->toggleable(isToggledHiddenByDefault: true)
                     ->formatStateUsing(fn (?Stage $state): ?string => $state?->label()),

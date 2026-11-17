@@ -2,10 +2,18 @@
 
 namespace Tests\Feature;
 
+use App\Enums\Stage;
+use App\Filament\Resources\Novels\Pages\ChapterDirectory;
+use App\Filament\Resources\Novels\Pages\ListNovels;
 use App\Filament\Resources\Novels\Pages\ViewNovel;
 use App\Filament\Resources\Novels\Pages\ViewNovelCosts;
+use App\Models\Chapter;
+use App\Models\ChapterGenerationRun;
+use App\Models\ChapterSubmissionRun;
+use App\Models\ChapterVersion;
 use App\Models\CostLog;
 use App\Models\Novel;
+use App\Models\NovelOutlineChapter;
 use App\Models\NovelStage;
 use App\Models\User;
 use App\Services\Ai\AiTextGenerationService;
@@ -13,6 +21,7 @@ use App\Services\Ai\NovelCostSummary;
 use App\Services\Pipeline\NovelPipelineService;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Livewire\Livewire;
 use Tests\TestCase;
@@ -36,6 +45,14 @@ class B09CostDisplayTest extends TestCase
         Filament::setCurrentPanel(Filament::getPanel('admin'));
         $this->actingAs(User::factory()->create());
         Http::preventStrayRequests();
+    }
+
+    /** 仅清理内存库夹具，遵循提交历史迁移禁止回滚的保护。 */
+    protected function tearDown(): void
+    {
+        $this->assertSame(':memory:', DB::connection()->getDatabaseName());
+        B04ContentTest::clearFixtures();
+        parent::tearDown();
     }
 
     /** 实际费用优先、估算不重复计入；失败照计，币种隔离，微小金额保持精确。 */
@@ -72,6 +89,35 @@ class B09CostDisplayTest extends TestCase
         $this->assertSame($before, $log->fresh()->getRawOriginal());
         CostLog::factory()->create(['novel_id' => $novel->id, 'mode' => 'real', 'billing_status' => 'estimated', 'currency' => 'USD', 'estimated_cost' => '0.00000000']);
         Livewire::test(ViewNovel::class, ['record' => $novel->id])->assertSee('未结算估算 0.00000000')->assertSee('金额未知 1 次');
+        Http::assertNothingSent();
+    }
+
+    /** 每章成本按生成运行、提交运行与正式稿修订归到章节；设定与大纲请求不归章；近期章节表格显示成本列。 */
+    public function test_chapter_costs_are_attributed_and_shown_in_recent_chapters(): void
+    {
+        $run = ChapterGenerationRun::factory()->create();
+        $novel = $run->chapter->novel;
+        $run->chapter->update(['number' => 1]);
+        $second = Chapter::factory()->create(['novel_id' => $novel->id, 'number' => 2]);
+        $secondRun = ChapterGenerationRun::factory()->create(['outline_chapter_id' => NovelOutlineChapter::factory()->create(['outline_plan_id' => NovelOutlineChapter::findOrFail($run->outline_chapter_id)->outline_plan_id, 'chapter_number' => 2])->id, 'chapter_id' => $second->id]);
+        $submission = ChapterSubmissionRun::factory()->create(['version_id' => ChapterVersion::factory()->create(['run_id' => $secondRun->id])->id]);
+        $base = ['novel_id' => $novel->id, 'mode' => 'real', 'status' => 'succeeded', 'billing_status' => 'estimated', 'currency' => 'USD'];
+        $stage = fn (array $input): int => NovelStage::factory()->create(['novel_id' => $novel->id, 'stage' => Stage::Content, 'input' => $input])->id;
+        CostLog::factory()->create([...$base, 'novel_stage_id' => $stage(['run_id' => $run->id]), 'estimated_cost' => '0.01000000']);
+        CostLog::factory()->create([...$base, 'novel_stage_id' => $stage(['run_id' => $run->id]), 'billing_status' => 'unknown', 'currency' => null]);
+        CostLog::factory()->create([...$base, 'request_parameters' => ['submission_run_id' => $submission->id], 'estimated_cost' => '0.00200000']);
+        CostLog::factory()->create([...$base, 'novel_stage_id' => $stage(['formal_revision_id' => 1, 'chapter_number' => 2]), 'estimated_cost' => '0.00030000']);
+        CostLog::factory()->create([...$base, 'novel_stage_id' => NovelStage::factory()->create(['novel_id' => $novel->id])->id, 'estimated_cost' => '9.00000000']);
+
+        $costs = app(NovelCostSummary::class)->forChapters($novel->id);
+        $this->assertSame([1, 2], array_keys($costs));
+        $this->assertSame('约 USD 0.0100', app(NovelCostSummary::class)->cell($costs[1]));
+        $this->assertSame('约 USD 0.0023', app(NovelCostSummary::class)->cell($costs[2]));
+        $this->assertSame('-', app(NovelCostSummary::class)->cell(null));
+        $this->assertSame('金额未知', app(NovelCostSummary::class)->cell(['real_requests' => 2, 'simulated_requests' => 0, 'unknown_amounts' => 2, 'pending_requests' => 0, 'currencies' => []]));
+        Livewire::test(ViewNovel::class, ['record' => $novel->id])->assertSee('成本')->assertSee('约 USD 0.0100')->assertSee('约 USD 0.0023');
+        Livewire::test(ListNovels::class)->assertSee('成本')->assertSee('约 USD 9.0123');
+        Livewire::test(ChapterDirectory::class, ['record' => $novel->id])->assertSee('成本')->assertSee('约 USD 0.0100')->assertSee('约 USD 0.0023');
         Http::assertNothingSent();
     }
 
