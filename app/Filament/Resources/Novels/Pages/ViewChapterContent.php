@@ -965,7 +965,7 @@ class ViewChapterContent extends Page implements HasTable
         return (($this->run()?->config['enable_fine_outline'] ?? false) && $this->run()?->plan_data === null ? 3 : 2) + (app(GeneralSettings::class)->auto_revise_on_check_failure ? 2 : 0) + 1;
     }
 
-    /** 提交评审驳回且尚未按这份评审建修订运行时，当前候选可按评审意见修订；修订运行失败后改用“恢复本章候选”；自动生产覆盖的章节由恢复台处理。 */
+    /** 提交评审驳回且尚未按这份评审建修订运行时，当前候选可按评审意见修订；修订运行失败后改用“追加额度继续生成”；自动生产覆盖的章节由恢复台处理。 */
     private function canReviseFromReview(): bool
     {
         $submission = $this->submission();
@@ -1273,12 +1273,12 @@ class ViewChapterContent extends Page implements HasTable
                     $this->resolvedRun = null;
                     $this->resolvedFormalVersion = null;
                     $this->getRecord()->refresh();
-                }), Action::make('recoverContent')->label('恢复本章候选')->modalHeading('显式授权有限恢复')
+                }), Action::make('recoverContent')->label('追加额度继续生成')->modalHeading('追加额度，继续生成本章')
                 ->visible(fn (): bool => data_get($this->run()?->config, 'workbench') === null && in_array($this->run()?->status, ['paused', 'error', 'completed'], true) && $this->run()?->stop_reason !== 'b04_accepted' && ! ChapterGenerationRun::where('parent_run_id', $this->run()?->id)->exists())
-                ->modalDescription('旧版本与费用全部保留，新建v14有限运行。范围修订最多调用三次：修订、格式不合格时补发一次、检查；选择重写时按冻结场景生成独立候选。总预算不能无限续用，未知结果须明确确认。')
+                ->modalDescription('新建一个有限运行，从停下的地方继续：缺细纲先补细纲；已有候选正文时在其上定点修订；还没有候选时继续写正文，复用已合格的场景，只修复未通过的部分。勾选整章重写时按冻结细纲重新生成整章候选。旧版本与费用全部保留；本次请求不超过下方上限，未知结果须明确确认。')
                 ->schema([
                     // 整章重写需要为运行内修复留出额度，勾选后请求上限默认值随之调整，仍可手动修改。
-                    Checkbox::make('rewrite')->label('明确授权整章候选重写；不勾选时优先复用现有正文')->live()
+                    Checkbox::make('rewrite')->label('整章重写：不复用现有正文，按冻结细纲重新生成整章候选')->live()
                         ->afterStateUpdated(function (?bool $state, Set $set): void {
                             $set('request_limit', $this->recoveryCap((bool) $state));
                             $set('execution_limit', max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + $this->recoveryCap((bool) $state)));
