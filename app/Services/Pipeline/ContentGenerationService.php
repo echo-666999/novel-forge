@@ -77,6 +77,8 @@ final class ContentGenerationService
             $config = $this->withModelCapabilities($config);
             if ($config['extended_output_tokens'] !== null) {
                 $config['draft_max_output_tokens'] = $config['extended_output_tokens'];
+                // 单场景修复同样需要推理余量：扩写要输出整场正文，8192在推理后常被截断；上限只封顶，费用按实际用量。
+                $config['repair_max_output_tokens'] = $config['extended_output_tokens'];
             }
             if ($chapterNumber > 1) {
                 $snapshot['prior_context'] = app(CanonicalChapterContext::class)->build($novel, $chapterNumber);
@@ -241,6 +243,8 @@ final class ContentGenerationService
                 $config['check_max_output_tokens'] = $config['extended_output_tokens'];
                 // 细纲恢复后仍可能首次生成正文，保持同一扩展正文容量。
                 $config['draft_max_output_tokens'] = $config['extended_output_tokens'];
+                // 恢复运行的单场景修复与新运行一致，不必先截断一次才放宽。
+                $config['repair_max_output_tokens'] = $config['extended_output_tokens'];
             }
             if ($step === 'revise' && $config['max_retries'] === 0) {
                 throw new InvalidArgumentException('设置禁止修订，不能新建修订运行');
@@ -268,12 +272,6 @@ final class ContentGenerationService
             // 冻结前轮响应契约错误，后继请求才能针对真实失败修复，旧响应不改写。
             $failedStage = $novel->stages()->where('input->run_id', $parent->id)->where('status', 'failed')->latest('id')->first();
             $config['recovery_validation_error'] = data_get($failedStage?->output, 'data.validation_error');
-            // 推理与文本共用输出容量；仅单段修复的已知耗尽允许增加推理余量。
-            $failedResponse = CostLog::where('novel_stage_id', $failedStage?->id)->whereKey(data_get($failedStage?->output, 'data.cost_log_id'))->first();
-            if ($config['extended_output_tokens'] !== null
-                && (isset($parent->config['repair_max_output_tokens']) || ($failedResponse?->error_category === 'invalid_response' && $failedResponse->output_tokens === 8192))) {
-                $config['repair_max_output_tokens'] = $config['extended_output_tokens'];
-            }
             // 只携带同一失败阶段的完整正文响应；后继运行冻结副本，旧费用及原始输出不修改。
             if ($step === 'draft' && data_get($failedStage?->output, 'data.step') === 'draft') {
                 $failedLog = CostLog::where('novel_stage_id', $failedStage->id)
@@ -289,17 +287,10 @@ final class ContentGenerationService
                     $parts = $failedLog?->structured_output['paragraphs'] ?? null;
                     // 继承父运行内（含继续修复过程中）最接近预算的单段尝试。
                     $config['recovery_repair'] = app(ContentExecutionService::class)->draftSource($parent)['repair'] ?? null;
-                    if (is_array($parts) && count($parts) === 1) {
-                        $slot = array_key_first($parts);
-                        $previous = $config['recovery_repair']['paragraphs'][$slot] ?? $config['recovery_draft']['response']['paragraphs'][$slot] ?? null;
-                        if (is_array($parts[$slot]) && is_array($previous)) {
-                            $budget = ContentExecutionContract::budget($parent->snapshot['novel']['chapter_length_policy'], $plan, $fine);
-                            $distance = fn (array $paragraphs): int => max($budget['min'] - ContentSchema::count(ContentExecutionContract::slotText($paragraphs)), ContentSchema::count(ContentExecutionContract::slotText($paragraphs)) - $budget['max'], 0);
-                            // 失败仍保留费用原文，但不能用离预算更远的新尝试替换更好的修复输入；字数同样合格时取最近一次分段修正。
-                            if ($distance($parts[$slot]) <= $distance($previous)) {
-                                $config['recovery_repair'] = ['cost_log_id' => $failedLog->id, 'paragraphs' => $parts];
-                            }
-                        }
+                    // 失败仍保留费用原文，但不能用离预算更远的新尝试替换更好的修复输入；单场景与多场景修复按场景分别比较。
+                    if (is_array($parts) && isset($failedStage->output['data']['repair_slot'])) {
+                        $config['recovery_repair'] = ContentExecutionService::closerAttempts($config['recovery_repair'], $config['recovery_draft']['response'] ?? null, $parts,
+                            ContentExecutionContract::budget($parent->snapshot['novel']['chapter_length_policy'], $plan, $fine), $failedLog->id);
                     }
                 } elseif (is_array($failedLog?->structured_output['paragraphs'] ?? null)) {
                     $config['recovery_draft'] = ['cost_log_id' => $failedLog->id, 'response' => $failedLog->structured_output];

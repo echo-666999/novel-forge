@@ -246,29 +246,31 @@ class AcceptanceBranchTest extends B04ExecutionTest
             foreach ($payload['budget']['slots'] as $slot) {
                 $parts[$slot] = B04ContentTest::sceneParagraphs(intdiv($payload['budget']['min'] + $payload['budget']['max'], 2), '甲');
             }
-            if (count($parts) > 1) {
+            if (! isset($payload['draft_repair_slot']) && ! isset($payload['draft_repair_slots'])) {
                 $keys = array_keys($parts);
                 $parts[$keys[0]] = [['kind' => 'narration', 'text' => '短。']];
                 $parts[$keys[1]] = [['kind' => 'narration', 'text' => '短。']];
                 $original = $parts;
             } elseif (++$repairAttempts === 1) {
-                $this->assertStringContainsString('编辑已有小说的一个场景', $log->request_parameters['prompt_audit']['system_prompt']);
+                // 两个场景只是字数不足，合并为一次扩写请求。
+                $this->assertStringContainsString('编辑已有小说的几个场景', $log->request_parameters['prompt_audit']['system_prompt']);
                 $this->assertStringNotContainsString('写完整中文', $log->request_parameters['prompt_audit']['system_prompt']);
                 $this->assertArrayNotHasKey('candidate_roadmap', $payload);
-                $this->assertSame(array_diff_key($original, [$payload['draft_repair_slot'] => true]), $payload['surrounding_paragraphs']);
+                $this->assertSame(array_slice(array_keys($original), 0, 2), $payload['draft_repair_slots']);
+                $this->assertSame(array_diff_key($original, array_flip($payload['draft_repair_slots'])), $payload['surrounding_paragraphs']);
                 $this->assertArrayNotHasKey('previous_failed_draft', $payload);
-                // 篇幅修复要按细纲补写，仍带完整叙述字段，不附照搬清单。
-                $this->assertArrayHasKey('action', $payload['slot_plan'][$payload['draft_repair_slot']]);
-                $this->assertArrayNotHasKey('plan_sentences_to_avoid', $payload);
-                // 第一次单段仍不达标，后继请求必须收到它，不能误当成可提交正文。
+                // 两个场景都仍不达标，后继请求必须收到更接近预算的尝试，不能误当成可提交正文。
                 $parts[array_key_first($parts)] = [['kind' => 'narration', 'text' => '仍然太短。']];
+                $parts[array_key_last($parts)] = [['kind' => 'narration', 'text' => '短。']];
             } elseif ($repairAttempts === 2) {
-                $this->assertSame([['kind' => 'narration', 'text' => '仍然太短。']], $payload['repair_source']['text']);
-                $this->assertSame(5, $payload['repair_measurement']['actual_characters']);
-                $parts[array_key_first($parts)] = [['kind' => 'narration', 'text' => '短。']];
+                $first = $payload['draft_repair_slots'][0];
+                $this->assertSame([['kind' => 'narration', 'text' => '仍然太短。']], $payload['repair_source']['text'][$first]);
+                $this->assertSame(5, $payload['repair_measurement']['actual_characters'][$first]);
+                $parts[$first] = [['kind' => 'narration', 'text' => '短。']];
+                $parts[$payload['draft_repair_slots'][1]] = [['kind' => 'narration', 'text' => '短。']];
             } elseif ($repairAttempts === 3) {
-                // 更差的新尝试不能覆盖此前更接近预算的完整单段。
-                $this->assertSame([['kind' => 'narration', 'text' => '仍然太短。']], $payload['repair_source']['text']);
+                // 更差的新尝试不能覆盖此前更接近预算的完整场景，恢复运行同样继承。
+                $this->assertSame([['kind' => 'narration', 'text' => '仍然太短。']], $payload['repair_source']['text'][$payload['draft_repair_slots'][0]]);
             }
             $response = B02SettingTest::response(json_encode(['title' => '修复测试', 'paragraphs' => $parts], JSON_UNESCAPED_UNICODE));
             $response['model'] = $request['model'];
@@ -290,9 +292,9 @@ class AcceptanceBranchTest extends B04ExecutionTest
         $this->assertSame(2, $repairAttempts);
         $this->assertSame(4, $run->fresh()->requests_used);
         $this->assertNull($run->fresh()->chapter->current_candidate_version_id);
-        // 一次恢复即可：继承最接近预算的单段尝试，修好首个场景后在同一运行内接着修第二个场景。
+        // 一次恢复即可：继承最接近预算的场景尝试，一次合并扩写修好两个场景。
         $run = $drive(app(ContentGenerationService::class)->recover($run->id, User::firstOrFail(), '逐段修复验收'));
-        $this->assertSame(4, $repairAttempts);
+        $this->assertSame(3, $repairAttempts);
         $version = ChapterVersion::findOrFail($run->chapter->current_candidate_version_id);
         $this->assertSame('check', $run->next_step);
         $paragraphs = explode("\n", $version->body);
@@ -413,5 +415,70 @@ class AcceptanceBranchTest extends B04ExecutionTest
         $version = ChapterVersion::findOrFail($run->chapter->fresh()->current_candidate_version_id);
         $this->assertStringNotContainsString('守塔人劝她', $version->body);
         $this->assertSame(array_column($original['scene_2'], 'text'), array_slice(explode("\n", $version->body), 2, 2));
+    }
+
+    /** 多个场景只是字数不足时合并为一次扩写；合格的场景先合入，仍偏短的场景下一次单独补写，额度不再按场景逐个耗尽。 */
+    public function test_short_scenes_are_expanded_in_one_request(): void
+    {
+        $novel = B04ContentTest::readyNovel(true, 50);
+        $novel->update(['chapter_length_policy' => ['min_characters' => 2500, 'max_characters' => 3500], 'generation_config' => [...($novel->generation_config ?? []), 'acceptance_branch' => ['key' => 'test']]]);
+        $run = app(ContentGenerationService::class)->start($novel, User::firstOrFail());
+        $this->assertSame($run->config['extended_output_tokens'], $run->config['repair_max_output_tokens'] ?? null);
+        app(ContentExecutionService::class)->runStep($run->id, $run->invocation_id, app(AiTextGenerationService::class));
+        $repairs = [];
+        Http::swap(new Factory);
+        Http::preventStrayRequests();
+        Http::fake(['*' => function ($request) use (&$repairs) {
+            $log = CostLog::latest('id')->firstOrFail();
+            $payload = json_decode(explode('冻结输入：', $log->request_parameters['prompt_audit']['user_prompt'], 2)[1], true);
+            $middle = intdiv($payload['budget']['min'] + $payload['budget']['max'], 2);
+            $parts = [];
+            foreach ($payload['budget']['slots'] as $slot) {
+                $parts[$slot] = B04ContentTest::sceneParagraphs($middle, '甲');
+            }
+            if (! isset($payload['draft_repair_slot']) && ! isset($payload['draft_repair_slots'])) {
+                // 首稿每个场景都只写了约七成，分段合格。
+                foreach ($parts as $slot => $paragraphs) {
+                    $parts[$slot] = B04ContentTest::sceneParagraphs(intdiv($payload['budget']['min'] * 7, 10), '甲');
+                }
+            } else {
+                $repairs[] = ['payload' => $payload, 'system' => $log->request_parameters['prompt_audit']['system_prompt']];
+                // 合并扩写时第三个场景仍然偏短，留给下一次单独补写。
+                if (count($repairs) === 1) {
+                    $parts['scene_3'] = B04ContentTest::sceneParagraphs(intdiv($payload['budget']['min'] * 8, 10), '甲');
+                }
+            }
+            $response = B02SettingTest::response(json_encode(['title' => '扩写测试', 'paragraphs' => $parts], JSON_UNESCAPED_UNICODE));
+            $response['model'] = $request['model'];
+
+            return Http::response($response);
+        }]);
+        $run->refresh();
+        for ($step = 0; $step < 5 && $run->status === 'pending' && $run->next_step === 'draft'; $step++) {
+            app(ContentExecutionService::class)->runStep($run->id, $run->invocation_id, app(AiTextGenerationService::class));
+            $run->refresh();
+        }
+        $this->assertCount(2, $repairs);
+        $batch = $repairs[0]['payload'];
+        $this->assertSame(['scene_1', 'scene_2', 'scene_3'], $batch['draft_repair_slots']);
+        $this->assertSame('length', $batch['repair_measurement']['direction']);
+        $this->assertSame(['scene_1' => 'expand', 'scene_2' => 'expand', 'scene_3' => 'expand'], $batch['repair_measurement']['directions']);
+        // 扩写要按细纲补足内容：保留完整细纲，不附照搬清单，也不附逐字自检规则。
+        $this->assertArrayHasKey('action', $batch['slot_plan']['scene_1']);
+        $this->assertArrayNotHasKey('plan_sentences_to_avoid', $batch);
+        $this->assertStringContainsString('scene_1原实测', $repairs[0]['system']);
+        $this->assertStringNotContainsString('程序会逐字检查', $repairs[0]['system']);
+        // 第二次只补仍偏短的第三个场景，前两个场景已合入。
+        $this->assertSame('scene_3', $repairs[1]['payload']['draft_repair_slot']);
+        $this->assertArrayNotHasKey('draft_repair_slots', $repairs[1]['payload']);
+        $this->assertSame('expand', $repairs[1]['payload']['repair_measurement']['direction']);
+        $this->assertSame(['scene_1', 'scene_2'], array_keys($repairs[1]['payload']['surrounding_paragraphs']));
+        $merged = NovelStage::where('input->run_id', $run->id)->where('input->step', 'draft')->orderBy('id')->get()[1];
+        $this->assertSame(ContentExecutionService::IN_RUN_REPAIR, $merged->output['data']['outcome']);
+        $this->assertStringContainsString('scene_3实际', $merged->output['data']['validation_error']);
+        // 细纲、首稿、合并扩写、单场景补写共四次请求后生成候选。
+        $this->assertSame(4, $run->requests_used);
+        $this->assertSame('check', $run->next_step);
+        $this->assertNotNull($run->chapter->fresh()->current_candidate_version_id);
     }
 }

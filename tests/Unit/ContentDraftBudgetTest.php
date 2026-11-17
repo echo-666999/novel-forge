@@ -509,4 +509,50 @@ class ContentDraftBudgetTest extends TestCase
             $this->assertStringNotContainsString('scene_1', $exception->getMessage());
         }
     }
+
+    /** 多场景修复逐场景合入：合格的场景替换进原稿，未达标的保留原文；一个都不合格时整次无效，错误沿用正文前缀以便继续修复。 */
+    public function test_merge_passing_repairs_keeps_progress(): void
+    {
+        $budget = ['slots' => ['p1', 'p2', 'p3'], 'min' => 3, 'max' => 4, 'complete_paragraphs' => true];
+        $draft = ['title' => '标题', 'paragraphs' => ['p1' => [self::narration('走。')], 'p2' => [self::narration('停。')], 'p3' => [self::narration('灯亮了。')]]];
+        $result = ContentExecutionContract::mergePassingRepairs($draft, ['title' => '标题', 'paragraphs' => ['p1' => [self::narration('她走了。')], 'p2' => [self::narration('停。')]]], $budget, ['p1', 'p2']);
+        $this->assertSame([self::narration('她走了。')], $result['paragraphs']['p1']);
+        $this->assertSame($draft['paragraphs']['p2'], $result['paragraphs']['p2']);
+        $this->assertSame($draft['paragraphs']['p3'], $result['paragraphs']['p3']);
+        try {
+            ContentExecutionContract::mergePassingRepairs($draft, ['title' => '标题', 'paragraphs' => ['p1' => [self::narration('走。')], 'p2' => [self::narration('停。')]]], $budget, ['p1', 'p2']);
+            $this->fail('全部不合格时应当无效');
+        } catch (InvalidArgumentException $exception) {
+            $this->assertSame('正文场景预算或格式无效：p1实际2字，要求3至4字；p2实际2字，要求3至4字', $exception->getMessage());
+        }
+        $this->expectExceptionMessage('单场景修复不得改变标题');
+        ContentExecutionContract::mergePassingRepairs($draft, ['title' => '新标题', 'paragraphs' => ['p1' => [self::narration('她走了。')], 'p2' => [self::narration('他停了。')]]], $budget, ['p1', 'p2']);
+    }
+
+    /** 不计字数时只看分段规则：偏短但分段合格的场景可合并扩写，没有引语的对白段等分段错误不算。 */
+    public function test_format_valid_ignores_length(): void
+    {
+        $this->assertTrue(ContentExecutionContract::formatValid([self::narration('走。')], ['complete_paragraphs' => true]));
+        $this->assertFalse(ContentExecutionContract::formatValid([self::dialogue('她点点头，转身走了。')], []));
+        $this->assertFalse(ContentExecutionContract::formatValid('一段纯文本', []));
+    }
+
+    /** 多场景篇幅修复给出各场景的实测字数与增删范围，不附带文字检查规则；首稿要求把节拍展开写足。 */
+    public function test_length_batch_instructions(): void
+    {
+        $budget = ['slots' => ['scene_1', 'scene_2', 'scene_3'], 'min' => 834, 'max' => 1166];
+        $batch = ContentExecutionContract::outputInstructions('draft', ['budget' => [...$budget, 'slots' => ['scene_1', 'scene_3']], 'draft_repair_slot' => 'scene_1',
+            'draft_repair_slots' => ['scene_1', 'scene_3'], 'repair_direction' => 'length',
+            'repair_slot_counts' => ['scene_1' => 731, 'scene_3' => 1300], 'repair_slot_directions' => ['scene_1' => 'expand', 'scene_3' => 'shorten']]);
+        $this->assertStringContainsString('scene_1原实测731字，偏短，只能净增103至435字，目标净增269字', $batch);
+        $this->assertStringContainsString('scene_3原实测1300字，已超长，必须净删134至466字', $batch);
+        $this->assertStringContainsString('指定的字段scene_1、scene_3', $batch);
+        $this->assertStringNotContainsString('程序会逐字检查', $batch);
+        $expand = ContentExecutionContract::outputInstructions('draft', ['budget' => [...$budget, 'slots' => ['scene_1']], 'draft_repair_slot' => 'scene_1', 'repair_direction' => 'expand', 'repair_current_count' => 731]);
+        $this->assertStringNotContainsString('程序会逐字检查', $expand);
+        $draft = ContentExecutionContract::outputInstructions('draft', ['budget' => $budget]);
+        $this->assertStringContainsString('每个节拍都要展开成在场人物的对白交锋', $draft);
+        $this->assertStringContainsString('估出低于834字必须先补写再输出', $draft);
+        $this->assertStringNotContainsString('每个节拍都要展开', $expand);
+    }
 }

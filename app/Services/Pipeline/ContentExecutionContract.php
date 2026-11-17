@@ -154,6 +154,15 @@ final class ContentExecutionContract
                     // 文字问题修复的slot_plan已去掉叙述字段，照搬判定改按清单逐句对照。
                     .'本次slot_plan只保留时间、地点、台词要点和推进点；plan_sentences_to_avoid列出细纲中所有会被判为照搬的分句，改写和保留的每一句都不能原样包含清单中的任何一句。';
             }
+            // 多场景篇幅修复：各场景给出各自的实测字数与净增或净删范围。
+            if (($context['repair_direction'] ?? null) === 'length') {
+                $instructions .= '本次各'.$unit.'只调整篇幅，不改动已有情节走向。';
+                foreach ($context['repair_slot_counts'] ?? [] as $slot => $count) {
+                    $instructions .= ($context['repair_slot_directions'][$slot] ?? null) === 'shorten'
+                        ? $slot.'原实测'.$count.'字，已超长，必须净删'.($count - $budget['max']).'至'.($count - $budget['min']).'字：直接删除重复解释、流程细节或非必要句子，保留其余原文字句和对白，不新增情节。'
+                        : $slot.'原实测'.$count.'字，偏短，只能净增'.($budget['min'] - $count).'至'.($budget['max'] - $count).'字，目标净增'.($target - $count).'字：保留原有字句，补足人物对白、反应与行动后果，不新增核心事实，不重复其他部分的事件，不写流程步骤凑字。';
+                }
+            }
             if (($context['repair_direction'] ?? null) === 'format') {
                 $instructions .= '原'.$unit.'字数已合格，只按previous_response_failure修正段落格式：把叙述里的对白拆成对白段，把碎句合并成完整叙述段；不增删情节，篇幅保持在原范围。';
             }
@@ -164,13 +173,16 @@ final class ContentExecutionContract
             // 段落列表下模型普遍写短约两成：首稿建议值取区间上四分位，并给出段数和自检要求；修复仍按差额精确增删。
             $target = intdiv($budget['min'] + 3 * $budget['max'], 4);
             $paragraphs = max(1, (int) round($target / self::PLANNED_PARAGRAPH_CHARACTERS));
-            $instructions .= ' 篇幅最容易写短：每个字段按约'.$paragraphs.'段规划，叙述段约六十至一百五十字，对白段约二十至六十字。写完每个字段后逐段累加可见字数，不足'.$budget['min'].'字就在本'.$unit.'内继续补写人物对白、反应和场面细节，不靠重复或流程步骤凑字；宁可接近上限，也不要低于下限。';
+            $instructions .= ' 篇幅最容易写短：每个字段按约'.$paragraphs.'段规划，叙述段约六十至一百五十字，对白段约二十至六十字。写完每个字段后逐段累加可见字数，不足'.$budget['min'].'字就在本'.$unit.'内继续补写人物对白、反应和场面细节，不靠重复或流程步骤凑字；宁可接近上限，也不要低于下限。'
+                // 细纲action只给事件节拍，按节拍一句带过必然写短。
+                .'chapter_plan里每个场景的action只列事件节拍，不是成段正文：每个节拍都要展开成在场人物的对白交锋、动作反应和场面细节，篇幅靠这些写足，不能一个节拍一两句带过。估算字数时按实际要写出的每段逐段累加，估出低于'.$budget['min'].'字必须先补写再输出，不能换一种估算方式了事。';
         }
 
+        // 文字检查规则只给首稿和文字问题修复；篇幅与分段修复附带逐字自检会耗尽推理容量，导致输出被截断。
         return $instructions.' paragraphs中每个字段是一整个'.$unit.'，值为按顺序排列的自然段列表，每项含kind和text：kind为narration表示叙述段，dialogue表示对白段。一个字段内所有段合计必须有'.$budget['min'].'至'.$budget['max'].'个可见字符，建议约'.$target.'字；汉字、标点、数字均计数，空白不计数。这是每个字段的要求，不是全章合计。固定字段依次为：'.implode('、', $budget['slots']).'。'
             .'叙述段写两到五句、通常六十至两百字，写完一个动作、场面或情绪节拍再分段；每个字段里不足'.self::SHORT_NARRATION.'字的叙述段不超过叙述段的四分之一（至少允许'.self::MAX_SHORT_NARRATION.'段），不要一句一段。叙述段里不得出现人物说出口的原话，回忆里的原话也写成对白段。'
             .'对白段是一个人的一次发言，用中文引号写出原话，可带说话人紧邻的一两句动作或神态，引号外不超过'.self::DIALOGUE_ACTION.'字；换另一个人开口必须另起一个对白段。关键交流写成对白段，不要转述。'
-            .'每段text是一段纯正文，不含换行和Markdown，以完整句末标点结束。chapter_plan和slot_plan是写作提纲，要用人物的言行和自己的叙述写出来，不得照抄其中的句子。'.self::textRules().'各字段按slot_plan推进，不重演前面已完成的动作。不得报告自估字数或添加写作说明，直接输出完整正文。前文固定指令中的段落划分或字段说明与此处不一致时（例如每场景两段、每字段一段纯正文、字段内换行），以此处为准。';
+            .'每段text是一段纯正文，不含换行和Markdown，以完整句末标点结束。chapter_plan和slot_plan是写作提纲，要用人物的言行和自己的叙述写出来，不得照抄其中的句子。'.(isset($context['draft_repair_slot']) && ($context['repair_direction'] ?? null) !== 'quality' ? '' : self::textRules()).'各字段按slot_plan推进，不重演前面已完成的动作。不得报告自估字数或添加写作说明，直接输出完整正文。前文固定指令中的段落划分或字段说明与此处不一致时（例如每场景两段、每字段一段纯正文、字段内换行），以此处为准。';
     }
 
     /** 程序逐字检查的两项文字问题及其阈值，写入正文、单场景修复与修订指令，让模型能按同一标准自检。 */
@@ -369,6 +381,58 @@ final class ContentExecutionContract
         }
 
         return $draft;
+    }
+
+    /** 多场景修复逐场景合入：分段与篇幅合格的场景替换进原稿，未达标的场景保留原文；一个都不合格时整次修复无效。
+     * 调用方最后仍须验证整章，未合入场景的问题由下一次修复处理。
+     *
+     * @param  list<string>  $slots
+     * @return array<string, mixed>
+     */
+    public static function mergePassingRepairs(array $draft, array $replacement, array $budget, array $slots): array
+    {
+        ContentSchema::keys($draft, ['title', 'paragraphs']);
+        ContentSchema::keys($draft['paragraphs'], $budget['slots']);
+        $repairBudget = self::repairBudget($budget, $slots);
+        ContentSchema::keys($replacement, ['title', 'paragraphs']);
+        if (! is_array($replacement['paragraphs'])) {
+            throw new InvalidArgumentException('对象结构不合法');
+        }
+        ContentSchema::keys($replacement['paragraphs'], $repairBudget['slots']);
+        if ($replacement['title'] !== $draft['title']) {
+            throw new InvalidArgumentException('单场景修复不得改变标题');
+        }
+        $merged = 0;
+        $errors = [];
+        foreach ($repairBudget['slots'] as $slot) {
+            try {
+                self::body(['title' => $draft['title'], 'paragraphs' => [$slot => $replacement['paragraphs'][$slot]]], self::repairBudget($budget, $slot));
+            } catch (InvalidArgumentException $exception) {
+                $errors[] = preg_replace('/^正文场景预算或格式无效：/u', '', $exception->getMessage());
+
+                continue;
+            }
+            $draft['paragraphs'][$slot] = $replacement['paragraphs'][$slot];
+            $merged++;
+        }
+        if ($merged === 0) {
+            throw new InvalidArgumentException('正文场景预算或格式无效：'.implode('；', $errors));
+        }
+
+        return $draft;
+    }
+
+    /** 不计字数时段落结构与分段规则是否合格，用于区分只需增删篇幅的场景与需要调整分段的场景。 */
+    public static function formatValid(mixed $paragraphs, array $budget): bool
+    {
+        try {
+            self::body(['title' => '分段', 'paragraphs' => ['slot' => $paragraphs]], ['slots' => ['slot'], 'min' => 1, 'max' => PHP_INT_MAX >> 8, 'chapter_slots' => 1,
+                'complete_paragraphs' => $budget['complete_paragraphs'] ?? false]);
+        } catch (InvalidArgumentException) {
+            return false;
+        }
+
+        return true;
     }
 
     /** 指令固定，动态证据目录在实际发送前单独保存完整快照。 */
