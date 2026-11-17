@@ -372,6 +372,7 @@ final class ContentExecutionService
                 $context['repair_direction'] = 'quality';
                 $payload['budget'] = $context['budget'];
                 $payload['slot_plan'] = array_intersect_key($payload['slot_plan'], array_flip($repairSlots));
+                $payload = $this->withoutPlanProse($payload, $run->plan_data);
                 $payload['draft_repair_slots'] = $repairSlots;
                 $sources = [];
                 $counts = [];
@@ -386,7 +387,7 @@ final class ContentExecutionService
                     'required_change' => 0, 'direction' => 'quality',
                     'instruction' => '这些场景字数都已合格，只改写previous_response_failure指出的句子：照搬细纲的改成人物言行或自然叙述，叙述里转述对白原话的删去转述；不增删情节，每个场景篇幅保持在原范围。'];
                 $payload = array_intersect_key($payload, array_flip(['chapter_number', 'author_idea', 'writing_requirements', 'rule_catalog',
-                    'count_rule', 'previous_response_failure', 'original_title', 'surrounding_paragraphs', 'budget', 'slot_plan', 'draft_repair_slots', 'repair_source', 'repair_measurement']));
+                    'count_rule', 'previous_response_failure', 'original_title', 'surrounding_paragraphs', 'budget', 'slot_plan', 'draft_repair_slots', 'repair_source', 'repair_measurement', 'plan_sentences_to_avoid']));
             } elseif ($repairSlot !== null) {
                 $slot = $repairSlot;
                 // 单段修复默认低推理；供应商失败恢复时关闭推理，避免再次耗尽同一输出预算。
@@ -421,10 +422,14 @@ final class ContentExecutionService
                         'quality' => '本场景字数合格，只改写previous_response_failure指出的句子：照搬细纲的改成人物言行或自然叙述，叙述里转述对白原话的删去转述；不增删情节。',
                         default => '本场景字数合格，只按previous_response_failure修正分段：对白独立成段，碎句合并为完整叙述段，不增删情节。',
                     }];
+                // 篇幅修复需要细纲补写或取舍内容；文字问题修复只改句子，叙述字段换成须避开的原句清单。
+                if ($context['repair_direction'] === 'quality') {
+                    $payload = $this->withoutPlanProse($payload, $run->plan_data);
+                }
                 // 局部修复保留整份草稿作邻段上下文，不重复发送未来大纲、历史事件与全量设定。
                 // 这些来源仍冻结在运行中，完成后整章检查会重新读取，不能借此跳过事实校验。
                 $payload = array_intersect_key($payload, array_flip(['chapter_number', 'author_idea', 'writing_requirements', 'rule_catalog',
-                    'count_rule', 'previous_response_failure', 'original_title', 'surrounding_paragraphs', 'budget', 'slot_plan', 'draft_repair_slot', 'repair_source', 'repair_measurement']));
+                    'count_rule', 'previous_response_failure', 'original_title', 'surrounding_paragraphs', 'budget', 'slot_plan', 'draft_repair_slot', 'repair_source', 'repair_measurement', 'plan_sentences_to_avoid']));
             } elseif ($wholeValid) {
                 // 各场景都已合格时整份草稿直接采用，不再为已合格的草稿重新付费生成。
                 $context['reused_draft'] = ['cost_log_id' => $recovery['draft']['cost_log_id'] ?? null, 'merged_stage_id' => $recovery['draft']['merged_stage_id'] ?? null,
@@ -586,6 +591,25 @@ final class ContentExecutionService
         }
 
         return $data;
+    }
+
+    /** 文字问题修复不再发送细纲的叙述字段，避免模型改写时又从中抄句；改为列出全书细纲中会被判为照搬的分句。
+     * 时间、地点、台词要点与推进点保留，修复仍有上下文。
+     *
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function withoutPlanProse(array $payload, ?array $plan): array
+    {
+        foreach ($payload['slot_plan'] as $slot => $scene) {
+            $payload['slot_plan'][$slot] = array_diff_key($scene, array_flip(ContentQualityContract::PLAN_PROSE_FIELDS));
+        }
+        $avoid = ContentQualityContract::planFragments($plan);
+        if ($avoid !== []) {
+            $payload['plan_sentences_to_avoid'] = $avoid;
+        }
+
+        return $payload;
     }
 
     /** 正文阶段文字问题门禁只用于当前协议且能逐场景修复的运行；不能按场景修复的运行沿用整章修订。 */

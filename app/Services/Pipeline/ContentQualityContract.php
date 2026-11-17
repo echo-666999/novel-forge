@@ -38,12 +38,32 @@ final class ContentQualityContract
     public const PLAN_COPY_CHARACTERS = 14;
 
     /** 细纲中用叙述者口吻写成的字段；key_dialogue是台词要点，允许原样写成对白。 */
-    private const PLAN_PROSE_FIELDS = ['action', 'goal', 'obstacle', 'emotional_beat', 'change'];
+    public const PLAN_PROSE_FIELDS = ['action', 'goal', 'obstacle', 'emotional_beat', 'change'];
 
     /** 检测正文逐字照搬细纲句子，按段给出原文片段，交由模型改写而非程序删除。
      * @return list<array<string, mixed>>
      */
     public static function planCopies(string $body, ?array $plan): array
+    {
+        $fragments = self::planFragments($plan);
+        $issues = [];
+        foreach (ContentSchema::paragraphs($body) as $paragraph) {
+            $quotes = array_values(array_filter($fragments, fn (string $fragment): bool => str_contains($paragraph['text'], $fragment)));
+            if ($quotes !== []) {
+                $issues[] = ['type' => 'plan_copy', 'paragraph' => $paragraph['paragraph'], 'anchor_id' => 'p'.$paragraph['paragraph'], 'quotes' => $quotes,
+                    'reason' => '正文逐字照搬细纲句子「'.implode('」「', $quotes).'」，须改写为人物的言行、反应或自然叙述，不保留提纲口吻'];
+            }
+        }
+
+        return $issues;
+    }
+
+    /** 细纲叙述字段中会被判为照搬的分句：按句读与引号切开后达到照搬字数的部分，按出现顺序去重。
+     * 检测与文字问题修复共用，修复请求据此列出须避开的原句。
+     *
+     * @return list<string>
+     */
+    public static function planFragments(?array $plan): array
     {
         $fragments = [];
         foreach ($plan['scenes'] ?? [] as $scene) {
@@ -59,20 +79,18 @@ final class ContentQualityContract
                 }
             }
         }
-        $issues = [];
-        foreach (ContentSchema::paragraphs($body) as $paragraph) {
-            $quotes = array_values(array_filter(array_keys($fragments), fn (string $fragment): bool => str_contains($paragraph['text'], $fragment)));
-            if ($quotes !== []) {
-                $issues[] = ['type' => 'plan_copy', 'paragraph' => $paragraph['paragraph'], 'anchor_id' => 'p'.$paragraph['paragraph'], 'quotes' => $quotes,
-                    'reason' => '正文逐字照搬细纲句子「'.implode('」「', $quotes).'」，须改写为人物的言行、反应或自然叙述，不保留提纲口吻'];
-            }
-        }
 
-        return $issues;
+        return array_keys($fragments);
     }
 
-    /** 叙述与相邻对白逐字重合达到此字数（去标点），即视为先转述、再直接引语的重复。 */
+    /** 叙述与相邻对白逐字重合达到此字数（去标点），且叙述在重合处之前用转述动词引出时，才视为先转述、再直接引语的重复。 */
     public const ECHO_CHARACTERS = 6;
+
+    /** 引出转述内容的动词；重合文字前没有这些动词时只是共用物名或抄录文书，不算转述。检测与写作指令共用此表。 */
+    public const REPORTING_VERBS = ['说', '问', '告诉', '提到', '提起', '讲', '解释', '交代', '嘱咐', '叮嘱', '强调', '回答', '答', '承认', '透露', '念叨', '嘀咕', '喊', '抱怨', '提醒', '劝', '骂', '表示'];
+
+    /** 含转述动词用字但不表示说话的常见词，判定前先去掉。 */
+    private const NON_REPORTING_WORDS = '/说明|小说|问题|问号|答案|讲究/u';
 
     /** 认不出人名时用于判断说话人的常见称谓。 */
     private const KINSHIP_NAMES = ['母亲', '父亲', '妈妈', '爸爸', '外婆', '外公', '奶奶', '爷爷', '舅舅', '舅妈', '姨妈', '姑姑', '叔叔', '婶婶', '哥哥', '姐姐', '弟弟', '妹妹', '丈夫', '妻子'];
@@ -94,6 +112,7 @@ final class ContentQualityContract
     }
 
     /** 检测叙述段把紧邻对白的原话先转述一遍：叙述与对白分段后模型常见的复述写法，交由修订删去其一。
+     * 重合文字所在句子中、重合处之前须有转述动词（说、问、告诉等）；只是动作描写与对白共用物名、编号，或叙述抄录文书原文时不算转述。
      * 一段叙述与前后两段对白的重合分别报告；能认出两边说话人且不是同一人时（一问一答、接话、复述确认）不算转述。
      *
      * @param  list<string>  $names  本书人物名，与称谓及正文中“某某：“”形式的说话人一起用于识别说话人
@@ -121,7 +140,7 @@ final class ContentQualityContract
                     $quote = $strip($quote);
                     for ($offset = 0; $offset + self::ECHO_CHARACTERS <= mb_strlen($quote); $offset++) {
                         $fragment = mb_substr($quote, $offset, self::ECHO_CHARACTERS);
-                        if (! str_contains($stripped, $fragment)) {
+                        if (! str_contains($stripped, $fragment) || ! self::reportsSpeech($narration, $fragment, $strip)) {
                             continue;
                         }
                         $reporters = $speaker === null ? [] : self::reportedBy($narration, $fragment, $names, $strip);
@@ -191,6 +210,20 @@ final class ContentQualityContract
         $after = self::namesIn(mb_substr($line, (int) mb_strrpos($line, '”') + 1), $names);
 
         return $after[0] ?? null;
+    }
+
+    /** 重合文字所在句子中、重合处之前是否有转述动词，即叙述是在转述某人说的话。 */
+    private static function reportsSpeech(string $narration, string $fragment, callable $strip): bool
+    {
+        foreach (preg_split('/[。！？；]/u', $narration) as $sentence) {
+            $sentence = $strip($sentence);
+            $position = mb_strpos($sentence, $fragment);
+            if ($position !== false) {
+                return preg_match('/'.implode('|', self::REPORTING_VERBS).'/u', preg_replace(self::NON_REPORTING_WORDS, '', mb_substr($sentence, 0, $position))) === 1;
+            }
+        }
+
+        return false;
     }
 
     /** 叙述里重合文字所在句子中、重合文字之前出现的人名，即可能的转述者。

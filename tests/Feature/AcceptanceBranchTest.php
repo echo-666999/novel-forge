@@ -257,6 +257,9 @@ class AcceptanceBranchTest extends B04ExecutionTest
                 $this->assertArrayNotHasKey('candidate_roadmap', $payload);
                 $this->assertSame(array_diff_key($original, [$payload['draft_repair_slot'] => true]), $payload['surrounding_paragraphs']);
                 $this->assertArrayNotHasKey('previous_failed_draft', $payload);
+                // 篇幅修复要按细纲补写，仍带完整叙述字段，不附照搬清单。
+                $this->assertArrayHasKey('action', $payload['slot_plan'][$payload['draft_repair_slot']]);
+                $this->assertArrayNotHasKey('plan_sentences_to_avoid', $payload);
                 // 第一次单段仍不达标，后继请求必须收到它，不能误当成可提交正文。
                 $parts[array_key_first($parts)] = [['kind' => 'narration', 'text' => '仍然太短。']];
             } elseif ($repairAttempts === 2) {
@@ -325,6 +328,13 @@ class AcceptanceBranchTest extends B04ExecutionTest
             } else {
                 $repairs[] = $payload['repair_measurement']['direction'];
                 $this->assertStringContainsString('逐字照搬细纲', $payload['previous_response_failure']);
+                // 文字问题修复去掉细纲叙述字段，改发须避开的原句清单；台词要点等上下文保留。
+                $this->assertSame(['scene_1'], array_keys($payload['slot_plan']));
+                $this->assertArrayNotHasKey('action', $payload['slot_plan']['scene_1']);
+                $this->assertArrayNotHasKey('obstacle', $payload['slot_plan']['scene_1']);
+                $this->assertArrayHasKey('key_dialogue', $payload['slot_plan']['scene_1']);
+                $this->assertContains('守塔人劝她别多管闲事并提醒旧航线的事早就没人在意', $payload['plan_sentences_to_avoid']);
+                $this->assertStringContainsString('plan_sentences_to_avoid', $log->request_parameters['prompt_audit']['system_prompt']);
             }
             $response = B02SettingTest::response(json_encode(['title' => '照搬测试', 'paragraphs' => $parts], JSON_UNESCAPED_UNICODE));
             $response['model'] = $request['model'];
@@ -386,6 +396,11 @@ class AcceptanceBranchTest extends B04ExecutionTest
         $this->assertSame(['scene_1', 'scene_3'], $repairs[0]['draft_repair_slots']);
         $this->assertSame(['scene_1', 'scene_3'], $repairs[0]['budget']['slots']);
         $this->assertSame(['scene_1', 'scene_3'], array_keys($repairs[0]['slot_plan']));
+        foreach ($repairs[0]['slot_plan'] as $scene) {
+            $this->assertSame([], array_intersect(array_keys($scene), ['action', 'goal', 'obstacle', 'emotional_beat', 'change']));
+            $this->assertArrayHasKey('key_dialogue', $scene);
+        }
+        $this->assertContains('守塔人劝她别多管闲事并提醒旧航线的事早就没人在意', $repairs[0]['plan_sentences_to_avoid']);
         $this->assertSame(['scene_2'], array_keys($repairs[0]['surrounding_paragraphs']));
         $this->assertSame('quality', $repairs[0]['repair_measurement']['direction']);
         $this->assertSame($original['scene_3'], $repairs[0]['repair_source']['text']['scene_3']);

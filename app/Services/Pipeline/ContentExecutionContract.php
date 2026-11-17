@@ -118,6 +118,7 @@ final class ContentExecutionContract
             $instructions .= '每个range的addresses至少列出一个它处理的findings编号；只替换有问题的段落及必要的前后衔接，没有对应问题的段落不要放进ranges，程序会丢弃没有问题编号的范围。';
             $limit = max(3, intdiv($count + self::REVISION_SHARE - 1, self::REVISION_SHARE));
             $instructions .= '问题带有段号时，范围只能落在这些段及前后'.self::REVISION_SLACK.'段之内；所有范围合计最多覆盖'.$limit.'段，超出整次修订无效。';
+            $instructions .= self::textRules();
             $instructions .= '每个range的text是替换后的自然段列表，与正文分段规则相同：叙述段写完一个动作、场面或情绪节拍再分段，不要一句一段，不夹带人物说出口的原话；对白段是一个人的一次发言，用中文引号写出原话，只带说话人紧邻的一两句动作或神态，引号外不超过'.self::DIALOGUE_ACTION.'字，换人开口另起一段。每段text不含换行和Markdown，以完整句末标点结束。前文固定指令把text说成整段正文时，以此处的段落列表为准。';
         }
         if ($step === 'fine' && isset($context['scene_range'])) {
@@ -147,7 +148,11 @@ final class ContentExecutionContract
             // 字数合格但段落格式失败时只调整分段，不能借修复改变篇幅。
             // 字数合格而有照搬细纲、转述对白等文字问题时，只改写被指出的句子。
             if (($context['repair_direction'] ?? null) === 'quality') {
-                $instructions .= '原'.$unit.'字数已合格，只按previous_response_failure改写被指出的句子：照搬细纲的句子改写成人物的言行、反应或自然叙述，叙述里转述对白原话的删去转述、改写说话时的动作和反应，同时修正其中列出的分段问题；不增删情节，篇幅保持在原范围。';
+                $instructions .= '原'.$unit.'字数已合格，只按previous_response_failure改写被指出的句子：照搬细纲的句子改写成人物的言行、反应或自然叙述，叙述里转述对白原话的删去转述、改写说话时的动作和反应，同时修正其中列出的分段问题；不增删情节，篇幅保持在原范围。'
+                    // 只改叙述而保留相邻对白时，新写的叙述最容易与未改动的对白再次重合。
+                    .'改写后的叙述要再对照前后相邻的对白段自检，包括本次没有改动的对白段，不能形成新的转述，也不能换用提纲里的其他句子。'
+                    // 文字问题修复的slot_plan已去掉叙述字段，照搬判定改按清单逐句对照。
+                    .'本次slot_plan只保留时间、地点、台词要点和推进点；plan_sentences_to_avoid列出细纲中所有会被判为照搬的分句，改写和保留的每一句都不能原样包含清单中的任何一句。';
             }
             if (($context['repair_direction'] ?? null) === 'format') {
                 $instructions .= '原'.$unit.'字数已合格，只按previous_response_failure修正段落格式：把叙述里的对白拆成对白段，把碎句合并成完整叙述段；不增删情节，篇幅保持在原范围。';
@@ -165,7 +170,16 @@ final class ContentExecutionContract
         return $instructions.' paragraphs中每个字段是一整个'.$unit.'，值为按顺序排列的自然段列表，每项含kind和text：kind为narration表示叙述段，dialogue表示对白段。一个字段内所有段合计必须有'.$budget['min'].'至'.$budget['max'].'个可见字符，建议约'.$target.'字；汉字、标点、数字均计数，空白不计数。这是每个字段的要求，不是全章合计。固定字段依次为：'.implode('、', $budget['slots']).'。'
             .'叙述段写两到五句、通常六十至两百字，写完一个动作、场面或情绪节拍再分段；每个字段里不足'.self::SHORT_NARRATION.'字的叙述段不超过叙述段的四分之一（至少允许'.self::MAX_SHORT_NARRATION.'段），不要一句一段。叙述段里不得出现人物说出口的原话，回忆里的原话也写成对白段。'
             .'对白段是一个人的一次发言，用中文引号写出原话，可带说话人紧邻的一两句动作或神态，引号外不超过'.self::DIALOGUE_ACTION.'字；换另一个人开口必须另起一个对白段。关键交流写成对白段，不要转述。'
-            .'每段text是一段纯正文，不含换行和Markdown，以完整句末标点结束。chapter_plan和slot_plan是写作提纲，要用人物的言行和自己的叙述写出来，不得照抄其中的句子。各字段按slot_plan推进，不重演前面已完成的动作。不得报告自估字数或添加写作说明，直接输出完整正文。前文固定指令中的段落划分或字段说明与此处不一致时（例如每场景两段、每字段一段纯正文、字段内换行），以此处为准。';
+            .'每段text是一段纯正文，不含换行和Markdown，以完整句末标点结束。chapter_plan和slot_plan是写作提纲，要用人物的言行和自己的叙述写出来，不得照抄其中的句子。'.self::textRules().'各字段按slot_plan推进，不重演前面已完成的动作。不得报告自估字数或添加写作说明，直接输出完整正文。前文固定指令中的段落划分或字段说明与此处不一致时（例如每场景两段、每字段一段纯正文、字段内换行），以此处为准。';
+    }
+
+    /** 程序逐字检查的两项文字问题及其阈值，写入正文、单场景修复与修订指令，让模型能按同一标准自检。 */
+    private static function textRules(): string
+    {
+        return '程序会逐字检查两项文字问题：一是照搬提纲，正文原样出现chapter_plan或slot_plan的action、goal、obstacle、emotional_beat、change里任何一个'
+            .ContentQualityContract::PLAN_COPY_CHARACTERS.'字及以上的分句（两个标点之间的文字），key_dialogue是台词要点，可以化用成对白；二是叙述转述对白，叙述段在'
+            .implode('、', array_slice(ContentQualityContract::REPORTING_VERBS, 0, 6)).'等动词之后，写出与前一段或后一段对白连续'.ContentQualityContract::ECHO_CHARACTERS.'个字相同的内容（不计标点）。'
+            .'写完每段先对照提纲和相邻对白自检：提纲里的句子换成人物具体的言行和反应来写；对白里已经说出的话，相邻叙述只写说话时的动作、神态和反应，不再用“某人说……”复述一遍。';
     }
 
     /** 修订范围离所处理问题的证据段最多相隔的段数，留出前后衔接的余地。 */

@@ -248,6 +248,42 @@ class ContentDraftBudgetTest extends TestCase
         $this->assertStringNotContainsString('按约', $repair);
     }
 
+    /** 照搬清单只取细纲叙述字段中达到照搬字数的分句，去重保序；引号内台词与key_dialogue不列入，并与检测结果一致。 */
+    public function test_plan_fragments_match_plan_copy_detection(): void
+    {
+        $plan = ['scenes' => [
+            ['action' => '沈禾把裁切过的照片打印件和登记簿复印件并排放在茶几上，等母亲先看见。', 'goal' => '母亲说“你要查就查到底别查一半又缩回去”', 'key_dialogue' => '母亲让她查到底别查一半又缩回去那样更害人'],
+            ['change' => '沈禾把裁切过的照片打印件和登记簿复印件并排放在茶几上', 'emotional_beat' => '母亲从迟疑转为决断'],
+        ]];
+        $this->assertSame(['沈禾把裁切过的照片打印件和登记簿复印件并排放在茶几上'], ContentQualityContract::planFragments($plan));
+        $this->assertSame([], ContentQualityContract::planFragments(null));
+        $issues = ContentQualityContract::planCopies('她把裁切过的照片放下。沈禾把裁切过的照片打印件和登记簿复印件并排放在茶几上，没有说话。', $plan);
+        $this->assertSame(ContentQualityContract::planFragments($plan), $issues[0]['quotes']);
+    }
+
+    /** 首稿、文字问题修复和修订指令都写明照搬提纲与转述对白的检测阈值，数值与检测常量一致。 */
+    public function test_instructions_state_text_check_thresholds(): void
+    {
+        $budget = ['slots' => ['scene_1', 'scene_2', 'scene_3'], 'min' => 834, 'max' => 1166];
+        $copy = '任何一个'.ContentQualityContract::PLAN_COPY_CHARACTERS.'字及以上的分句';
+        $echo = '对白连续'.ContentQualityContract::ECHO_CHARACTERS.'个字相同';
+        $draft = ContentExecutionContract::outputInstructions('draft', ['budget' => $budget]);
+        $quality = ContentExecutionContract::outputInstructions('draft', ['budget' => [...$budget, 'slots' => ['scene_2']], 'draft_repair_slot' => 'scene_2', 'repair_direction' => 'quality']);
+        $revise = ContentExecutionContract::outputInstructions('revise', ['anchors' => ['p1' => [], 'p2' => [], 'p3' => []]]);
+        foreach ([$draft, $quality, $revise] as $instructions) {
+            $this->assertStringContainsString($copy, $instructions);
+            $this->assertStringContainsString($echo, $instructions);
+            $this->assertStringContainsString('说、问、告诉', $instructions);
+            $this->assertStringContainsString('key_dialogue是台词要点', $instructions);
+        }
+        // 文字问题修复额外提醒对照未改动的相邻对白，并按清单避开细纲原句；首稿不带这两句。
+        $this->assertStringContainsString('包括本次没有改动的对白段', $quality);
+        $this->assertStringContainsString('plan_sentences_to_avoid列出细纲中所有会被判为照搬的分句', $quality);
+        $this->assertStringNotContainsString('plan_sentences_to_avoid', $draft);
+        $this->assertStringNotContainsString('包括本次没有改动的对白段', $draft);
+        $this->assertSame(['说', '问', '告诉'], array_slice(ContentQualityContract::REPORTING_VERBS, 0, 3));
+    }
+
     /** 无问题编号的修订范围被丢弃，重复编号去重；全部无编号时整次修订无效。 */
     public function test_authorized_ranges_drop_unaddressed_ranges(): void
     {
@@ -312,6 +348,22 @@ class ContentDraftBudgetTest extends TestCase
         $this->assertCount(1, $issues);
         $this->assertSame(['type' => 'echoed_dialogue', 'paragraph' => 1, 'anchor_id' => 'p1', 'dialogue_paragraph' => 2, 'quotes' => ['红笔在库房那']], array_diff_key($issues[0], ['reason' => true]));
         $this->assertSame([], ContentQualityContract::echoedDialogue("母亲在厨房关了火。\n“你先别跟你舅说。”"));
+    }
+
+    /** 动作描写与对白共用物名、编号，或叙述抄录文书原文时不算转述；只有重合处之前用转述动词引出才报告。 */
+    public function test_echoed_dialogue_requires_reporting_verb(): void
+    {
+        // 第510次运行的误判：叙述写比对动作，对白说出同一个物名。
+        $action = "前三位对上了，后两位被锁扣遮住，她便去看柜脚的黑漆数字，又去看备注残字底下露出一截笔画。\n“您再看一眼，柜脚喷漆的号和备注残字底下的号段接得上。”";
+        $this->assertSame([], ContentQualityContract::echoedDialogue($action));
+        $record = "她翻到附注页，看见一行小字：开箱时开发商方面可派员到场见证。\n“附注只写可派员到场见证，没写由谁通知。”";
+        $this->assertSame([], ContentQualityContract::echoedDialogue($record));
+        // 问号、说明等词含转述动词用字但不表示说话。
+        $words = "她只留下两个问号：技术复核科另存复印件里有没有旧案记录。\n“技术复核科另存复印件待核。”";
+        $this->assertSame([], ContentQualityContract::echoedDialogue($words));
+        // 同一处重合由转述动词引出时照常报告。
+        $reported = "她压低声音，说备注残字底下其实还有一截号码。\n“备注残字底下还有一截号码。”";
+        $this->assertSame([[1, 2]], array_map(fn (array $issue): array => [$issue['paragraph'], $issue['dialogue_paragraph']], ContentQualityContract::echoedDialogue($reported)));
     }
 
     /** 一段叙述同时与前后两段对白重合时分别报告，修复指令一次列全。 */
