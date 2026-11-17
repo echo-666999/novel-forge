@@ -25,6 +25,7 @@ use App\Settings\GeneralSettings;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
+use Throwable;
 
 /** 正文唯一业务入口：首次生成、有限恢复及全文核对共用同一执行器。 */
 final class ContentGenerationService
@@ -337,11 +338,11 @@ final class ContentGenerationService
     }
 
     /** 人工正文另存不可变候选并使旧检查失效，保存本身不投递AI请求。 */
-    public function saveManualCandidate(int $novelId, int $versionId, User $author, int $draftRevision, string $reason): ChapterVersion
+    public function saveManualCandidate(int $novelId, int $versionId, User $author, int $draftRevision, string $reason, ?array $autoSubmit = null): ChapterVersion
     {
         ContentSchema::text($reason);
 
-        return DB::transaction(function () use ($novelId, $versionId, $author, $draftRevision, $reason): ChapterVersion {
+        return DB::transaction(function () use ($novelId, $versionId, $author, $draftRevision, $reason, $autoSubmit): ChapterVersion {
             $novel = Novel::lockForUpdate()->findOrFail($novelId);
             $source = app(ManualContentDrafts::class)->source($novelId, $versionId, $author);
             $this->assertIdle($novel, false);
@@ -374,6 +375,10 @@ final class ContentGenerationService
             $config['initial_step'] = 'check';
             $config['request_cap'] = 1;
             $config['manual_edit'] = ['source_version_id' => $source->id, 'body_hash' => hash('sha256', $draft->body), 'title' => $draft->title, 'author_id' => $author->id];
+            // “保存并重新提交”：作者已通读修改后的正文，授权检查通过即记录全文核对并一键提交，随运行冻结。
+            if ($autoSubmit !== null) {
+                $config['auto_submit'] = $autoSubmit;
+            }
             $run = ChapterGenerationRun::create(['chapter_id' => $source->chapter_id, 'outline_chapter_id' => $parent->outline_chapter_id, 'parent_run_id' => $parent->id,
                 'source_version_id' => $source->id, 'snapshot' => $snapshot, 'config' => $config, 'input_hash' => PlanningJson::hash([$snapshot, $config]),
                 'plan_data' => $parent->plan_data, 'fine_stage_id' => $parent->fine_stage_id, 'status' => 'paused', 'next_step' => 'check', 'stop_reason' => 'manual_draft_saved',
@@ -392,6 +397,88 @@ final class ContentGenerationService
 
             return $version;
         });
+    }
+
+    /** 人工修改一步到位所需的请求数：推进检查 1 次，评审与事件提取各 1 次。 */
+    public const MANUAL_SUBMIT_REQUESTS = 3;
+
+    /** 人工修改一步到位：保存为新候选并开始推进检查；检查通过后按作者授权记录全文核对，再评审、提取并在通过时正式提交。
+     * 任一关没过就停下，问题回到人工编辑页；最多 3 次请求，本书执行上限按需自动调到够用。
+     */
+    public function saveManualAndSubmit(int $novelId, int $versionId, User $author, int $draftRevision, string $reason): ChapterGenerationRun
+    {
+        $this->outsideTransaction();
+        $novel = Novel::findOrFail($novelId);
+        $limit = max($novel->max_execution_count, $novel->execution_count + self::MANUAL_SUBMIT_REQUESTS);
+        $version = $this->saveManualCandidate($novelId, $versionId, $author, $draftRevision, $reason,
+            ['operator_id' => $author->id, 'reason' => $reason, 'execution_limit' => $limit, 'at' => now()->toIso8601String()]);
+
+        return $this->continue($version->run_id, executionLimit: $limit, reason: $reason, authorId: $author->id);
+    }
+
+    /** 一步到位的后半程：推进检查通过后记录作者授权的全文核对并发起一键提交；被拒时留档，作者可在工作台手动继续。只执行一次。 */
+    public function continueAutoSubmit(int $id): void
+    {
+        $run = ChapterGenerationRun::find($id);
+        $grant = $run?->config['auto_submit'] ?? null;
+        if (! is_array($grant) || $run->status !== 'completed' || $run->stop_reason !== 'awaiting_review'
+            || collect($run->control_history)->contains(fn (array $item): bool => str_starts_with((string) ($item['action'] ?? ''), 'auto_submit'))) {
+            return;
+        }
+        try {
+            $submission = $this->startSubmission($run, User::findOrFail($grant['operator_id']), $grant['reason'], (int) $grant['execution_limit']);
+            $entry = ['action' => 'auto_submit_started', 'submission_run_id' => $submission->id];
+        } catch (Throwable $exception) {
+            $entry = ['action' => 'auto_submit_failed', 'error' => mb_substr($exception->getMessage(), 0, 500)];
+        }
+        $run->refresh()->update(['control_history' => [...$run->control_history, [...$entry, 'at' => now()->toIso8601String()]]]);
+    }
+
+    /** 推进检查已通过、正文未再改动的候选（例如 AI 修订后检查通过）：作者确认已通读后直接评审、提取并在通过时正式提交，最多 2 次请求。 */
+    public function submitCheckedCandidate(int $runId, User $author, string $reason): ChapterSubmissionRun
+    {
+        $this->outsideTransaction();
+        ContentSchema::text($reason);
+        $run = ChapterGenerationRun::findOrFail($runId);
+        if ($run->status !== 'completed' || $run->stop_reason !== 'awaiting_review') {
+            throw new InvalidArgumentException('当前候选的推进检查还没有通过，不能直接提交');
+        }
+        $novel = $run->chapter->novel;
+
+        return $this->startSubmission($run, $author, $reason, max($novel->max_execution_count, $novel->execution_count + 2));
+    }
+
+    /** 记录作者已通读的全文核对，再按同一授权发起一键提交。 */
+    private function startSubmission(ChapterGenerationRun $run, User $author, string $reason, int $executionLimit): ChapterSubmissionRun
+    {
+        $this->recordReading($run->id, $author, true, ['作者人工修改或采纳修订后已通读正文，并授权：推进检查通过即视为全文核对通过。']);
+        $chapter = $run->chapter->fresh();
+
+        return app(ChapterSubmissionService::class)->prepare($chapter->current_candidate_version_id, $author,
+            app(CanonicalBaselines::class)->activeStateBefore($chapter->novel, $chapter->number), $reason, $executionLimit, autoCommit: ['reason' => $reason]);
+    }
+
+    /** 人工编辑页“让 AI 改选中的问题”：编辑区有改动时先保存为新候选，再按选中的问题定点修订并复查（最多 3 次请求，计入工作台修订轮次）。
+     * 结果成为新候选；作者在编辑页查看改动后决定采纳（继续提交）或回到上一版。
+     *
+     * @param  list<string>  $issues
+     */
+    public function reviseSelectedIssues(int $novelId, int $versionId, User $author, int $draftRevision, array $issues, string $reason, bool $extraRound = false): ChapterGenerationRun
+    {
+        $this->outsideTransaction();
+        $candidate = ChapterVersion::findOrFail($versionId);
+        $draft = DB::table('manual_content_drafts')->where(['chapter_id' => $candidate->chapter_id, 'actor_id' => $author->id])->first();
+        if ($draft !== null && ($draft->body !== $candidate->body || $draft->title !== $candidate->title)) {
+            $candidate = $this->saveManualCandidate($novelId, $versionId, $author, $draftRevision, $reason);
+        } elseif ($draft !== null) {
+            // 草稿与候选相同，修订结果会成为新候选；删掉草稿，避免之后被当作过期旧草稿。
+            DB::table('manual_content_drafts')->where('id', $draft->id)->delete();
+        }
+        $parent = ChapterGenerationRun::where('chapter_id', $candidate->chapter_id)->latest('id')->firstOrFail();
+        $novel = Novel::findOrFail($novelId);
+
+        return $this->recover($parent->id, $author, $reason, 3, max($novel->max_execution_count, $novel->execution_count + 3),
+            issues: $issues, expectedVersionId: $candidate->id, extraRound: $extraRound);
     }
 
     /** 同一授权只能补未执行步骤，不扩大冻结请求上限或重发未知付费意图。 */

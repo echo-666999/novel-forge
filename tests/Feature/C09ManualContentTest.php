@@ -4,10 +4,12 @@ namespace Tests\Feature;
 
 use App\Enums\NovelStatus;
 use App\Filament\Resources\Novels\Pages\EditChapterDraft;
+use App\Models\ChapterEventExtraction;
 use App\Models\ChapterGenerationRun;
 use App\Models\ChapterProgressionCheck;
 use App\Models\ChapterReview;
 use App\Models\ChapterSubmissionRun;
+use App\Models\ChapterSubmissionValidation;
 use App\Models\ChapterVersion;
 use App\Models\CostLog;
 use App\Models\NovelSettingConfirmation;
@@ -18,6 +20,7 @@ use App\Services\Pipeline\ContentExecutionService;
 use App\Services\Pipeline\ContentGenerationService;
 use App\Services\Pipeline\ContentSchema;
 use App\Services\Pipeline\ManualContentDrafts;
+use App\Services\Pipeline\ParagraphDiff;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Support\Facades\DB;
@@ -157,6 +160,142 @@ class C09ManualContentTest extends TestCase
         }
         $this->assertSame(1, DB::table('manual_content_drafts')->count());
         $this->assertSame($source->id, $source->chapter->fresh()->current_candidate_version_id);
+    }
+
+    /** 一键提交被评审挡住后，编辑页改列评审问题，不再显示该版推进检查的问题；阻塞在前。 */
+    public function test_editor_lists_review_issues_after_submission_rejected(): void
+    {
+        [$novel, $actor, $source] = $this->source();
+        $lines = explode("\n", $source->body);
+        $checkQuote = mb_substr($lines[0], 0, 10);
+        $blockQuote = mb_substr($lines[2], 0, 10);
+        $adviseQuote = mb_substr($lines[1], 0, 10);
+        ChapterProgressionCheck::factory()->create(['chapter_id' => $source->chapter_id, 'version_id' => $source->id, 'body_hash' => $source->body_hash, 'verdict' => 'insufficient',
+            'result' => ['verdict' => 'insufficient', 'continuity_issues' => [['type' => 'repeated_action', 'reason' => '检查期问题。', 'evidence' => [['quote' => $checkQuote]]]]]]);
+        $submission = ChapterSubmissionRun::factory()->create(['version_id' => $source->id, 'status' => 'failed', 'stop_reason' => 'REVIEW_NOT_PASSED']);
+        $review = ChapterReview::factory()->create(['submission_run_id' => $submission->id, 'result' => ['verdict' => 'needs_revision', 'findings' => [
+            ['kind' => 'literary', 'severity' => 'advisory', 'reason' => '视角越界。', 'evidence' => [['quote' => $adviseQuote, 'paragraph' => 2]]],
+            ['kind' => 'continuity', 'severity' => 'blocking', 'reason' => 'p3 与前文矛盾。', 'evidence' => [['quote' => $blockQuote, 'paragraph' => 3]]],
+        ]]]);
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        $this->actingAs($actor);
+
+        $page = Livewire::test(EditChapterDraft::class, ['record' => $novel->id]);
+        $markSource = $page->instance()->markSource();
+        $this->assertSame('review', $markSource['origin']);
+        $this->assertSame(['blocking', 'advisory'], array_column($markSource['issues'], 'severity'));
+        $this->assertSame([$blockQuote], $markSource['issues'][0]['quotes']);
+        $this->assertContains(['kind' => 'block', 'label' => '连贯性：p3 与前文矛盾。', 'quote' => $blockQuote], $markSource['marks']);
+        $this->assertContains(['kind' => 'advise', 'label' => '文学表达：视角越界。', 'quote' => $adviseQuote], $markSource['marks']);
+        $this->assertNotContains('check', array_column($markSource['marks'], 'kind'));
+        $page->assertSee('问题来自版本 '.$source->version.' 的提交评审 #'.$review->id)->assertSee('阻塞问题（必须改）')->assertDontSee('推进检查问题来自版本');
+    }
+
+    /** 确定性验证阻塞时，错误码翻成中文并借事件提取的证据定位原文；系统原因失败只提示重新一键提交。 */
+    public function test_editor_lists_validation_errors_and_system_notice(): void
+    {
+        [$novel, $actor, $source] = $this->source();
+        $quote = mb_substr(explode("\n", $source->body)[1], 0, 12);
+        $submission = ChapterSubmissionRun::factory()->create(['version_id' => $source->id, 'status' => 'failed', 'stop_reason' => 'EVENT_VALIDATION_BLOCKED']);
+        $extraction = ChapterEventExtraction::factory()->create(['submission_run_id' => $submission->id, 'result' => ['events' => [], 'patch' => [], 'proposed_entities' => [],
+            'foreshadows' => [['foreshadow_id' => 12, 'action' => 'payoff', 'explanation' => '提前揭晓', 'evidence' => [['quote' => $quote, 'paragraph' => 2]]]]]]);
+        ChapterSubmissionValidation::factory()->create(['submission_run_id' => $submission->id, 'extraction_id' => $extraction->id, 'verdict' => 'blocked',
+            'result' => ['verdict' => 'blocked', 'errors' => [['code' => 'FORESHADOW_WINDOW_VIOLATION', 'reference' => 'foreshadow-12'], ['code' => 'PATCH_INVALID', 'reference' => 'event-1']], 'approval_required' => []]]);
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        $this->actingAs($actor);
+
+        $issues = Livewire::test(EditChapterDraft::class, ['record' => $novel->id])->instance()->markSource();
+        $this->assertSame('validation', $issues['origin']);
+        $this->assertStringContainsString('伏笔在回收窗口之外被回收', $issues['issues'][0]['reason']);
+        $this->assertSame([$quote], $issues['issues'][0]['quotes']);
+        $this->assertSame(['text', 'rerun'], array_column($issues['issues'], 'scope'));
+
+        $submission->update(['stop_reason' => 'PROVIDER_FAILED']);
+        $system = Livewire::test(EditChapterDraft::class, ['record' => $novel->id]);
+        $this->assertSame([], $system->instance()->markSource()['issues']);
+        $system->assertSee('不是正文问题，不需要修改正文');
+    }
+
+    /** 本地检查随正文实时给出字数是否符合要求，不调用模型。 */
+    public function test_local_checks_report_length_live(): void
+    {
+        [$novel, $actor, $source] = $this->source();
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        $this->actingAs($actor);
+        $page = Livewire::test(EditChapterDraft::class, ['record' => $novel->id]);
+        $checks = $page->instance()->localChecks();
+        $this->assertSame(ContentSchema::count($source->body), $checks['count']);
+        $this->assertTrue($checks['length_ok']);
+        $page->assertSee('本地检查');
+
+        $page->set('data.body', '她把门关上。');
+        $this->assertFalse($page->instance()->localChecks()['length_ok']);
+        $page->assertSee('保存为新候选会被拒绝');
+        Http::assertNothingSent();
+    }
+
+    /** “保存并重新提交”：保存候选并检查，检查通过后按作者授权记录核对并发起一键提交；共一次检查请求，评审与提取进入队列。 */
+    public function test_save_and_submit_chains_check_and_submission(): void
+    {
+        [$novel, $actor, $source] = $this->source();
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        $this->actingAs($actor);
+        Livewire::test(EditChapterDraft::class, ['record' => $novel->id])
+            ->set('data.body', EditChapterDraft::displayBody($source->body.'她合上档案，记下日期。'))
+            ->callAction('saveAndSubmit', ['reason' => '按评审意见修改', 'confirm' => true])->assertHasNoActionErrors();
+        $candidate = ChapterVersion::latest('id')->firstOrFail();
+        $run = ChapterGenerationRun::findOrFail($candidate->run_id);
+        $this->assertSame('pending', $run->status);
+        $this->assertSame($actor->id, $run->config['auto_submit']['operator_id']);
+        $this->assertSame(0, DB::table('manual_content_drafts')->count());
+
+        Http::fake(['*' => fn ($request) => Http::response(B04ContentTest::validResponse($request))]);
+        app(ContentExecutionService::class)->runStep($run->id, $run->invocation_id, app(AiTextGenerationService::class));
+        Http::assertSentCount(1);
+        $run->refresh();
+        $this->assertSame('b04_accepted', $run->stop_reason);
+        $this->assertSame('auto_submit_started', collect($run->control_history)->last()['action']);
+        $submission = ChapterSubmissionRun::where('version_id', $candidate->id)->sole();
+        $this->assertSame('按评审意见修改', data_get($submission->config, 'auto_commit.reason'));
+        $this->assertNull($candidate->chapter->fresh()->formal_version_id);
+
+        // 只接一次：重复触发不会再建提交准备。
+        app(ContentGenerationService::class)->continueAutoSubmit($run->id);
+        $this->assertSame(1, ChapterSubmissionRun::where('version_id', $candidate->id)->count());
+    }
+
+    /** 查看改动对比问题来源版本；换版本时推荐未被驳回且检查通过的版本，并提示与已驳回版本相同。 */
+    public function test_compare_recommend_and_rejected_notice(): void
+    {
+        [$novel, $actor, $source] = $this->source();
+        $body = str_replace('。', '，她停了一下。', $source->body);
+        $passed = ChapterVersion::factory()->create(['run_id' => $source->run_id, 'chapter_id' => $source->chapter_id, 'version' => $source->version + 1,
+            'body' => $body, 'body_hash' => hash('sha256', $body), 'character_count' => ContentSchema::count($body)]);
+        ChapterProgressionCheck::factory()->create(['chapter_id' => $passed->chapter_id, 'version_id' => $passed->id, 'body_hash' => $passed->body_hash, 'verdict' => 'pass', 'result' => ['verdict' => 'pass']]);
+        $rejectedBody = $source->body.'她又看了一眼。';
+        $rejected = ChapterVersion::factory()->create(['run_id' => $source->run_id, 'chapter_id' => $source->chapter_id, 'version' => $source->version + 2,
+            'body' => $rejectedBody, 'body_hash' => hash('sha256', $rejectedBody), 'character_count' => ContentSchema::count($rejectedBody)]);
+        ChapterProgressionCheck::factory()->create(['chapter_id' => $rejected->chapter_id, 'version_id' => $rejected->id, 'body_hash' => $rejected->body_hash, 'verdict' => 'pass', 'result' => ['verdict' => 'pass']]);
+        $review = ChapterReview::factory()->create(['submission_run_id' => ChapterSubmissionRun::factory()->create(['version_id' => $rejected->id, 'status' => 'failed', 'stop_reason' => 'REVIEW_NOT_PASSED'])->id]);
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        $this->actingAs($actor);
+
+        $page = Livewire::test(EditChapterDraft::class, ['record' => $novel->id]);
+        $choices = $page->instance()->versionChoices();
+        $this->assertSame($passed->id, $choices['recommended']);
+        $this->assertStringStartsWith('★ 推荐', $choices['options'][$passed->id]);
+        $this->assertStringContainsString('已被评审 #'.$review->id.' 驳回', $choices['options'][$rejected->id]);
+
+        $page->set('data.body', EditChapterDraft::displayBody($rejectedBody));
+        $page->assertSee('该版本已被提交评审 #'.$review->id.' 驳回');
+        $diff = $page->instance()->compareBase();
+        $this->assertStringContainsString('版本 '.$rejected->version, $diff['heading']);
+        $this->assertSame(0, ParagraphDiff::changes($diff['rows']));
+        $page->set('data.body', EditChapterDraft::displayBody($source->body.'她又看了两眼。'));
+        $this->assertStringContainsString('（当前候选）', $page->instance()->compareBase()['heading']);
+        $this->assertSame(1, ParagraphDiff::changes($page->instance()->compareBase()['rows']));
+        $page->mountAction('compare')->assertActionMounted('compare');
+        $this->assertStringContainsString('共改动 1 段', view('filament.partials.draft-diff', $page->instance()->compareBase())->render());
     }
 
     /** 历史版本可作为人工编辑起点：从工作台链接或编辑页动作载入其正文，发布为新候选，不直接改候选指针、不调用模型。 */

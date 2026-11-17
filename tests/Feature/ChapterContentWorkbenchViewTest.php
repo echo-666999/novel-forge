@@ -307,6 +307,7 @@ class ChapterContentWorkbenchViewTest extends TestCase
             ->assertSee('硬检查通过，等待作者批准新实体')
             ->assertSee('评审通过')
             ->assertSee('钥匙位置前后矛盾。')
+            ->assertSee('评审问题（1 条阻塞）')
             ->assertSee('第2段：她把钥匙放进物证袋。')
             ->assertSee('事件 1 · 状态变化 0 · 新实体 1')
             ->assertSee('新实体1')

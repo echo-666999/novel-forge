@@ -53,4 +53,13 @@ class SubmissionPresenterTest extends TestCase
         $empty = SubmissionPresenter::present(null, null, null, null, [], []);
         $this->assertSame(['review' => null, 'extraction' => null, 'validation' => null, 'commit' => null], $empty);
     }
+
+    /** 确定性验证错误码翻成中文说明、对象名称与处理方式，原错误码留在括号中。 */
+    public function test_validation_errors_are_readable(): void
+    {
+        $view = SubmissionPresenter::present(null, ['foreshadows' => []], ['verdict' => 'blocked', 'errors' => [['code' => 'FORESHADOW_PAYOFF_MISSING', 'reference' => 'foreshadow-10']], 'approval_required' => []], null, [], [10 => '铜钥匙']);
+
+        $this->assertFalse($view['validation']['passed']);
+        $this->assertSame(['伏笔「铜钥匙」：本章是这条伏笔回收窗口的最后一章，正文没有回收（FORESHADOW_PAYOFF_MISSING）。补写回收这条伏笔的情节（改正文）'], $view['validation']['errors']);
+    }
 }

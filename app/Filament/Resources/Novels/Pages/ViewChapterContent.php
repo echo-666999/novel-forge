@@ -253,7 +253,7 @@ class ViewChapterContent extends Page implements HasTable
             'title' => '已授权 '.$count.' / '.RevisionWorkbench::ROUND_LIMIT.' 轮'.($count > RevisionWorkbench::ROUND_LIMIT ? '（含追加）' : ''),
             'verdict' => match (true) {
                 $run->chapter->formal_version_id !== null => '正式版本只读',
-                $count >= RevisionWorkbench::HARD_ROUND_LIMIT => '请人工编辑',
+                $count >= $workbench->hardLimit($run->chapter_id) => '请人工编辑',
                 $count >= RevisionWorkbench::ROUND_LIMIT => '可确认追加或人工编辑',
                 default => '可发起修订',
             },
@@ -544,7 +544,7 @@ class ViewChapterContent extends Page implements HasTable
                                     '评审通过' => 'success', '需要修订' => 'danger', default => 'gray',
                                 }),
                             TextEntry::make('review_summary')->label('评审摘要')->state(fn (): ?string => $this->submissionView()['review']['summary'] ?? null)->visible(fn (): bool => filled($this->submissionView()['review']['summary'] ?? null)),
-                            RepeatableEntry::make('review_findings')->label('评审问题（阻塞在前）')->state(fn (): array => $this->reviewFindingRows())->placeholder('没有评审问题')
+                            RepeatableEntry::make('review_findings')->label(fn (): string => $this->reviewFindingsHeading())->state(fn (): array => $this->reviewFindingRows())->placeholder('没有评审问题')
                                 ->visible(fn (): bool => $this->submissionView()['review'] !== null)->schema([
                                     Flex::make([
                                         TextEntry::make('title')->hiddenLabel()->weight('bold'),
@@ -1052,6 +1052,21 @@ class ViewChapterContent extends Page implements HasTable
         );
     }
 
+    /** 评审问题标题按实际数量说明阻塞与建议，避免全是建议时仍提示“阻塞”。 */
+    private function reviewFindingsHeading(): string
+    {
+        $findings = collect($this->submissionView()['review']['findings'] ?? []);
+        $blocking = $findings->where('blocking', true)->count();
+        $advisory = $findings->count() - $blocking;
+
+        return '评审问题'.match (true) {
+            $findings->isEmpty() => '',
+            $blocking === 0 => '（'.$advisory.' 条建议，均不阻塞提交）',
+            $advisory === 0 => '（'.$blocking.' 条阻塞）',
+            default => '（'.$blocking.' 条阻塞在前，'.$advisory.' 条建议）',
+        };
+    }
+
     /** 评审问题卡片：阻塞在前，类型作标题。
      * @return list<array{title: string, verdict: string, reason: string, evidence: list<string>}>
      */
@@ -1135,9 +1150,9 @@ class ViewChapterContent extends Page implements HasTable
         return [$this->selectChapterAction(), $this->reviewRevisionAction('reviseFromReview'), Action::make('reviseIssues')->label('针对指定问题修订')
             ->visible(fn (): bool => $this->run() !== null && $this->candidate() !== null && $this->run()->chapter->formal_version_id === null
                 && in_array($this->run()->status, ['completed', 'paused', 'error'], true)
-                && app(RevisionWorkbench::class)->rounds($this->run()->chapter_id) < RevisionWorkbench::HARD_ROUND_LIMIT)
+                && app(RevisionWorkbench::class)->rounds($this->run()->chapter_id) < app(RevisionWorkbench::class)->hardLimit($this->run()->chapter_id))
             ->modalHeading('指定问题并授权一轮定点修订')
-            ->modalDescription(fn (): string => '每章默认'.RevisionWorkbench::ROUND_LIMIT.'轮，超出须逐轮确认，最多'.RevisionWorkbench::HARD_ROUND_LIMIT.'轮（本章已用'.app(RevisionWorkbench::class)->rounds($this->run()->chapter_id).'轮）；本轮最多三次真实请求：范围修订、格式不合格时补发一次、独立复评。旧正文与费用保留，其他失败不自动重发。')
+            ->modalDescription(fn (): string => '每章默认'.RevisionWorkbench::ROUND_LIMIT.'轮，超出须逐轮确认，最多'.app(RevisionWorkbench::class)->hardLimit($this->run()->chapter_id).'轮（本章已用'.app(RevisionWorkbench::class)->rounds($this->run()->chapter_id).'轮）；本轮最多三次真实请求：范围修订、格式不合格时补发一次、独立复评。旧正文与费用保留，其他失败不自动重发。')
             ->schema([
                 TextInput::make('parent_id')->label('冻结运行编号')->default(fn (): ?int => $this->run()?->id)->readOnly()->required(),
                 TextInput::make('version_id')->label('冻结正文版本')->default(fn (): ?int => $this->candidate()?->id)->readOnly()->required(),
@@ -1147,7 +1162,7 @@ class ViewChapterContent extends Page implements HasTable
                 // 本轮最多三次请求（修订、格式补发、复评），默认上限须容纳全部三次。
                 TextInput::make('execution_limit')->label('确认小说累计执行上限')->integer()->required()->minValue(1)->maxValue(2147483647)->default(fn (): int => max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + 3))
                     ->helperText(fn (): string => '已用 '.$this->getRecord()->execution_count.' / 上限 '.$this->getRecord()->max_execution_count.'；本轮最多 3 次请求，上限至少为 '.($this->getRecord()->execution_count + 3).'。'),
-                Checkbox::make('extra_round')->label(fn (): string => '已用完'.RevisionWorkbench::ROUND_LIMIT.'轮默认修订，我确认追加第'.(app(RevisionWorkbench::class)->rounds($this->run()->chapter_id) + 1).'轮（最多'.RevisionWorkbench::HARD_ROUND_LIMIT.'轮）')
+                Checkbox::make('extra_round')->label(fn (): string => '已用完'.RevisionWorkbench::ROUND_LIMIT.'轮默认修订，我确认追加第'.(app(RevisionWorkbench::class)->rounds($this->run()->chapter_id) + 1).'轮（最多'.app(RevisionWorkbench::class)->hardLimit($this->run()->chapter_id).'轮）')
                     ->visible(fn (): bool => app(RevisionWorkbench::class)->rounds($this->run()->chapter_id) >= RevisionWorkbench::ROUND_LIMIT)->accepted(),
                 Checkbox::make('accept_request')->label('授权本轮修订与复评及对应费用')->accepted(),
             ])->action(function (array $data): void {
@@ -1164,6 +1179,25 @@ class ViewChapterContent extends Page implements HasTable
                 $this->resolvedFormalVersion = null;
                 $this->getRecord()->refresh();
             }),
+            // 本章 AI 修订轮次用完（或即将用完）时，作者可放宽本章上限；只能调高，最多 10 轮，留档于本章最新运行。
+            Action::make('raiseRoundLimit')->label('放宽本章 AI 修订上限')->color('gray')->icon('heroicon-o-adjustments-horizontal')
+                ->visible(fn (): bool => $this->run() !== null && $this->run()->chapter->formal_version_id === null && ! $this->runActive()
+                    && app(RevisionWorkbench::class)->rounds($this->run()->chapter_id) >= RevisionWorkbench::ROUND_LIMIT
+                    && app(RevisionWorkbench::class)->hardLimit($this->run()->chapter_id) < RevisionWorkbench::MAX_ROUND_LIMIT)
+                ->modalHeading('放宽本章 AI 修订轮次上限')
+                ->modalDescription(fn (): string => '本章已用 AI 修订 '.app(RevisionWorkbench::class)->rounds($this->run()->chapter_id).' 轮，当前上限 '.app(RevisionWorkbench::class)->hardLimit($this->run()->chapter_id)
+                    .' 轮。放宽后，超过默认 '.RevisionWorkbench::ROUND_LIMIT.' 轮的每一轮仍需逐轮确认，每轮最多 3 次请求。只影响本章，最多 '.RevisionWorkbench::MAX_ROUND_LIMIT.' 轮。')
+                ->schema([
+                    TextInput::make('limit')->label('新的上限（轮）')->integer()->required()->maxValue(RevisionWorkbench::MAX_ROUND_LIMIT)
+                        ->minValue(fn (): int => app(RevisionWorkbench::class)->hardLimit($this->run()->chapter_id) + 1)
+                        ->default(fn (): int => min(RevisionWorkbench::MAX_ROUND_LIMIT, app(RevisionWorkbench::class)->hardLimit($this->run()->chapter_id) + 2)),
+                    Textarea::make('reason')->label('原因')->default('剩余问题需要继续 AI 定点修订')->required()->maxLength(2000),
+                ])
+                ->action(function (array $data): void {
+                    $this->performContentAction(fn () => app(RevisionWorkbench::class)->raiseLimit($this->run()->chapter, Filament::auth()->user(), (int) $data['limit'], $data['reason']));
+                    $this->resolvedRun = null;
+                    $this->getRecord()->refresh();
+                }),
             // 修订响应因格式停下时，可按当前规则重新校验已付费的响应，通过即采用，不重发修订请求。
             Action::make('revalidateRevision')->label('重新校验已保存的修订')
                 ->visible(fn (): bool => ($this->run()?->config['version'] ?? null) === ContentExecutionContract::VERSION && $this->run()?->status === 'paused'

@@ -55,7 +55,7 @@ final class SubmissionPresenter
         return [
             'review' => $review === null ? null : self::review($review),
             'extraction' => $extraction === null ? null : self::extraction($extraction, $entity, $foreshadowTitles),
-            'validation' => $validation === null ? null : self::validation($validation, $entity),
+            'validation' => $validation === null ? null : self::validation($validation, $entity, $extraction ?? [], $entityNames, $foreshadowTitles),
             'commit' => $commit === null ? null : self::commit($commit),
         ];
     }
@@ -128,13 +128,18 @@ final class SubmissionPresenter
 
     /** 确定性验证：结论、错误与待作者批准的实体。
      * @param  callable(mixed): string  $entity
+     * @param  array<string, mixed>  $extraction
+     * @param  array<int|string, string>  $entityNames
+     * @param  array<int|string, string>  $foreshadowTitles
      * @return array{passed: bool, errors: list<string>, approvals: list<string>}
      */
-    private static function validation(array $validation, callable $entity): array
+    private static function validation(array $validation, callable $entity, array $extraction = [], array $entityNames = [], array $foreshadowTitles = []): array
     {
         $errors = [];
+        // 错误码翻成中文说明与处理建议，原错误码保留在括号中便于排查。
         foreach (FieldDiff::listOf($validation['errors'] ?? null) as $error) {
-            $errors[] = is_array($error) ? implode('；', SettingVersionDiff::lines($error)) : (string) $error;
+            $issue = ManualEditIssues::validationIssue(is_array($error) ? $error : ['code' => (string) $error], $extraction, $entityNames, $foreshadowTitles);
+            $errors[] = $issue['reason'].'。'.$issue['hint'].'（'.ManualEditIssues::SCOPES[$issue['scope']].'）';
         }
         $approvals = array_map(fn (mixed $item): string => is_array($item) ? implode('；', SettingVersionDiff::lines($item)) : $entity($item), FieldDiff::listOf($validation['approval_required'] ?? null));
 

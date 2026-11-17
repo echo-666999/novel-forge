@@ -4,15 +4,20 @@ namespace Tests\Feature;
 
 use App\Enums\StageStatus;
 use App\Filament\Resources\Novels\NovelResource;
+use App\Filament\Resources\Novels\Pages\EditChapterDraft;
 use App\Filament\Resources\Novels\Pages\ViewChapterContent;
 use App\Models\ChapterGenerationRun;
+use App\Models\ChapterReview;
+use App\Models\ChapterSubmissionRun;
 use App\Models\ChapterVersion;
 use App\Models\CostLog;
+use App\Models\NovelSettingConfirmation;
 use App\Models\NovelStage;
 use App\Models\User;
 use App\Services\Pipeline\ContentExecutionService;
 use App\Services\Pipeline\ContentGenerationService;
 use App\Services\Pipeline\ContentSchema;
+use App\Services\Pipeline\ParagraphDiff;
 use App\Services\Pipeline\RevisionWorkbench;
 use Filament\Actions\Testing\TestAction;
 use Illuminate\Support\Facades\DB;
@@ -133,6 +138,27 @@ class C07RevisionWorkbenchTest extends B04ExecutionTest
             $this->assertStringContainsString('修订已达到4轮上限', $exception->getMessage());
         }
 
+        // 工作台放宽本章上限（只能调高、最多10轮、留档）后可继续追加，直到新上限。
+        $chapter = ChapterGenerationRun::latest('id')->firstOrFail()->chapter;
+        Livewire::test(ViewChapterContent::class, ['record' => $novelId])->assertActionVisible('raiseRoundLimit')
+            ->callAction('raiseRoundLimit', ['limit' => 11, 'reason' => '超上限'])->assertHasActionErrors(['limit']);
+        $this->assertNull($chapter->fresh()->revision_round_limit);
+        Livewire::test(ViewChapterContent::class, ['record' => $novelId])
+            ->callAction('raiseRoundLimit', ['limit' => 5, 'reason' => '剩余问题继续修订'])->assertHasNoActionErrors()
+            ->assertActionVisible('reviseIssues');
+        $this->assertSame(5, $chapter->fresh()->revision_round_limit);
+        $this->assertSame(['old' => 4, 'new' => 5], array_intersect_key(collect(ChapterGenerationRun::latest('id')->firstOrFail()->control_history)->last(), ['old' => 1, 'new' => 1]));
+        try {
+            app(RevisionWorkbench::class)->raiseLimit($chapter, User::firstOrFail(), 5, '不能不调高');
+            $this->fail('新上限须大于当前上限');
+        } catch (InvalidArgumentException $exception) {
+            $this->assertStringContainsString('新上限须大于当前的 5 轮', $exception->getMessage());
+        }
+        $round(true);
+        $this->assertSame(5, app(RevisionWorkbench::class)->rounds($chapter->id));
+        $this->assertStringContainsString('达到上限', app(RevisionWorkbench::class)->status(ChapterGenerationRun::latest('id')->firstOrFail()));
+        $chapter->update(['revision_round_limit' => null]);
+
         // 轮次用完后仍可整章重写：新运行不带工作台标记、从正文生成起步，生成新候选并检查。
         $versions = ChapterVersion::count();
         Livewire::test(ViewChapterContent::class, ['record' => $novelId])
@@ -144,7 +170,7 @@ class C07RevisionWorkbenchTest extends B04ExecutionTest
         $this->assertSame('draft', $rewrite->config['initial_step']);
         $this->drain();
         $this->assertSame($versions + 1, ChapterVersion::count());
-        $this->assertSame(4, app(RevisionWorkbench::class)->rounds($rewrite->chapter_id));
+        $this->assertSame(5, app(RevisionWorkbench::class)->rounds($rewrite->chapter_id));
     }
 
     /** 历史版本列表显示各版推进检查结论，旧版本可作为人工编辑起点。 */
@@ -320,5 +346,56 @@ class C07RevisionWorkbenchTest extends B04ExecutionTest
         $this->expectException(InvalidArgumentException::class);
         $service->recover($child->id, User::firstOrFail(), '正式版本越界', 2, 30,
             issues: ['人物口吻不一致'], expectedVersionId: $child->fresh()->chapter->current_candidate_version_id);
+    }
+
+    /** 人工编辑页勾选评审问题交给 AI：按工作台定点修订并复查，结果成为新候选；可查看相对上一版的改动，也可不采纳回到上一版。 */
+    public function test_editor_ai_revises_selected_issues_and_can_revert(): void
+    {
+        $run = $this->start();
+        $this->drain();
+        $version = ChapterVersion::sole();
+        $quote = mb_substr(explode("\n", $version->body)[0], 0, 12);
+        $submission = ChapterSubmissionRun::factory()->create(['version_id' => $version->id, 'status' => 'failed', 'stop_reason' => 'REVIEW_NOT_PASSED']);
+        ChapterReview::factory()->create(['submission_run_id' => $submission->id, 'result' => ['verdict' => 'needs_revision', 'findings' => [
+            ['kind' => 'continuity', 'severity' => 'blocking', 'reason' => '首段时间交代与后文矛盾。', 'evidence' => [['quote' => $quote, 'paragraph' => 1]]],
+        ]]]);
+        $novelId = $run->chapter->novel_id;
+
+        $page = Livewire::withQueryParams(['chapter' => 1])->test(EditChapterDraft::class, ['record' => $novelId])->assertActionVisible('aiRevise');
+        $this->assertSame([0], array_keys($page->instance()->aiIssueOptions()));
+        $page->callAction('aiRevise', ['issues' => [0], 'accept_request' => true])->assertHasNoActionErrors();
+        $child = ChapterGenerationRun::latest('id')->firstOrFail();
+        $this->assertSame($run->id, $child->parent_run_id);
+        $this->assertStringContainsString('首段时间交代与后文矛盾。', $child->config['workbench']['issues'][0]);
+        $this->assertStringContainsString($quote, $child->config['workbench']['issues'][0]);
+        $this->drain();
+        $revised = ChapterVersion::latest('id')->firstOrFail();
+        $this->assertSame($version->id, $revised->parent_version_id);
+
+        $page = Livewire::withQueryParams(['chapter' => 1])->test(EditChapterDraft::class, ['record' => $novelId])
+            ->assertSet('versionId', $revised->id)->assertSee('当前候选是 AI 按你选的 1 条问题修改后的版本')->assertActionVisible('revertAi');
+        $diff = $page->instance()->compareBase();
+        $this->assertStringContainsString('相对上一版（版本 '.$version->version.'）', $diff['heading']);
+        $this->assertGreaterThan(0, ParagraphDiff::changes($diff['rows']));
+        $page->callAction('revertAi')->assertHasNoActionErrors();
+        $this->assertSame($version->body, DB::table('manual_content_drafts')->value('body'));
+        DB::table('manual_content_drafts')->delete();
+    }
+
+    /** 推进检查已通过且编辑区没有改动时，人工编辑页直接提供“提交”，不需要重新保存或检查。 */
+    public function test_editor_submits_checked_candidate_directly(): void
+    {
+        // 正式提交只能由本书负责账号发起：用负责账号生成并提交。
+        $novel = B04ContentTest::readyNovel(true, 20);
+        $novel->update(['chapter_length_policy' => ['min_characters' => 2500, 'max_characters' => 3500]]);
+        $owner = User::findOrFail(NovelSettingConfirmation::where('novel_id', $novel->id)->firstOrFail()->confirmed_by);
+        $run = app(ContentGenerationService::class)->start($novel, $owner);
+        $this->drain();
+        Livewire::actingAs($owner)->withQueryParams(['chapter' => 1])->test(EditChapterDraft::class, ['record' => $run->chapter->novel_id])
+            ->assertActionHidden('saveAndSubmit')->assertActionVisible('submitChecked')
+            ->callAction('submitChecked', ['reason' => '检查通过后提交', 'confirm' => true])->assertHasNoActionErrors()->assertNotNotified('未能开始');
+        $this->assertSame('b04_accepted', $run->fresh()->stop_reason);
+        $submission = ChapterSubmissionRun::where('version_id', ChapterVersion::sole()->id)->sole();
+        $this->assertSame('检查通过后提交', data_get($submission->config, 'auto_commit.reason'));
     }
 }

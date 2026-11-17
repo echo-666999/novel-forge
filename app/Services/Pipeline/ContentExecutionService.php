@@ -845,6 +845,9 @@ final class ContentExecutionService
         }
         if ($next) {
             $this->dispatch(ChapterGenerationRun::findOrFail($id));
+        } else {
+            // “保存并重新提交”的人工候选：检查通过后接着一键提交。
+            app(ContentGenerationService::class)->continueAutoSubmit($id);
         }
     }
 
