@@ -106,6 +106,10 @@ class B04ExecutionTest extends TestCase
             }
             if ($step === 'fine') {
                 $data = B04ContentTest::fine();
+                // 模拟把正文写进细纲：action超出硬上限；once场景在补发时给出节拍式细纲。
+                if ($this->scenario === 'long_action' || ($this->scenario === 'long_action_once' && ! isset($payload['retry_instruction']))) {
+                    $data['scenes'][1]['action'] = str_repeat('档案员拖延调阅，她逐项比对航线记录。', 20);
+                }
             } elseif ($step === 'draft') {
                 $this->assertArrayNotHasKey('available_anchors', $payload);
                 $this->assertArrayNotHasKey('last_attempt', $payload);
@@ -301,6 +305,36 @@ class B04ExecutionTest extends TestCase
         $this->assertSame('awaiting_review', $run->fresh()->stop_reason);
         $this->assertStringContainsString(self::COPIED_PLAN, ChapterVersion::oldest('id')->firstOrFail()->body);
         $this->assertStringNotContainsString(self::COPIED_PLAN, ChapterVersion::latest('id')->firstOrFail()->body);
+    }
+
+    /** 细纲action写成成段叙述时，同一运行内带着实测字数补发一次细纲，合格后照常写正文。 */
+    public function test_overlong_fine_action_is_retried_once_in_run(): void
+    {
+        $this->scenario = 'long_action_once';
+        $run = $this->start();
+        $this->drain();
+        $this->assertSame('awaiting_review', $run->fresh()->stop_reason);
+        $fines = NovelStage::where('input->run_id', $run->id)->where('input->step', 'fine')->orderBy('id')->get();
+        $this->assertCount(2, $fines);
+        $this->assertSame(ContentExecutionService::IN_RUN_REPAIR, $fines[0]->output['data']['outcome']);
+        $this->assertStringStartsWith(ContentExecutionContract::PLAN_ACTION_ERROR.'：scene_2实际', $fines[0]->output['data']['validation_error']);
+        $this->assertSame('completed', $fines[1]->status->value);
+        $retry = json_decode(explode('冻结输入：', CostLog::where('request_parameters->step', 'fine')->latest('id')->firstOrFail()->request_parameters['prompt_audit']['user_prompt'], 2)[1], true);
+        $this->assertStringStartsWith(ContentExecutionContract::PLAN_ACTION_ERROR, $retry['previous_response_failure']);
+        $this->assertArrayHasKey('retry_instruction', $retry);
+        $this->assertEquals(B04ContentTest::fine()['scenes'], $run->fresh()->plan_data['scenes']);
+    }
+
+    /** 细纲补发每次运行只有一次：补发后仍超长即停下，不进入正文。 */
+    public function test_overlong_fine_action_stops_after_one_retry(): void
+    {
+        $this->scenario = 'long_action';
+        $run = $this->start();
+        $this->drain();
+        $this->assertSame('invalid_schema', $run->fresh()->stop_reason);
+        $this->assertSame('fine', $run->fresh()->next_step);
+        $this->assertSame(2, NovelStage::where('input->run_id', $run->id)->where('input->step', 'fine')->count());
+        $this->assertSame(0, NovelStage::where('input->run_id', $run->id)->where('input->step', 'draft')->count());
     }
 
     /** 修订中没有问题编号的范围被丢弃并留档，其余授权范围照常应用，不因此作废整次修订。 */

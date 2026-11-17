@@ -341,4 +341,62 @@ class AcceptanceBranchTest extends B04ExecutionTest
         $this->assertSame('check', $run->next_step);
         $this->assertSame(0, NovelStage::where('input->run_id', $run->id)->where('input->step', 'revise')->count());
     }
+
+    /** 多个场景只有文字问题时合并为一次修复请求：只返回这些场景，其余场景逐字保留，额度不再按场景逐个消耗。 */
+    public function test_quality_issues_in_several_scenes_are_repaired_in_one_request(): void
+    {
+        $novel = B04ContentTest::readyNovel(true, 50);
+        $novel->update(['chapter_length_policy' => ['min_characters' => 2500, 'max_characters' => 3500], 'generation_config' => [...($novel->generation_config ?? []), 'acceptance_branch' => ['key' => 'test']]]);
+        $run = app(ContentGenerationService::class)->start($novel, User::firstOrFail());
+        app(ContentExecutionService::class)->runStep($run->id, $run->invocation_id, app(AiTextGenerationService::class));
+        $repairs = [];
+        $original = [];
+        Http::swap(new Factory);
+        Http::preventStrayRequests();
+        Http::fake(['*' => function ($request) use (&$repairs, &$original) {
+            $log = CostLog::latest('id')->firstOrFail();
+            $payload = json_decode(explode('冻结输入：', $log->request_parameters['prompt_audit']['user_prompt'], 2)[1], true);
+            $parts = [];
+            foreach ($payload['budget']['slots'] as $slot) {
+                $parts[$slot] = B04ContentTest::sceneParagraphs(intdiv($payload['budget']['min'] + $payload['budget']['max'], 2), '甲');
+            }
+            if (! isset($payload['draft_repair_slot']) && ! isset($payload['draft_repair_slots'])) {
+                // 首稿第一、三场景都照搬同一句细纲，第二场景合格。
+                $copied = '守塔人劝她别多管闲事并提醒旧航线的事早就没人在意';
+                foreach (['scene_1', 'scene_3'] as $slot) {
+                    $parts[$slot][0]['text'] = $copied.'，'.mb_substr($parts[$slot][0]['text'], mb_strlen($copied) + 1);
+                }
+                $parts['scene_2'] = B04ContentTest::sceneParagraphs(intdiv($payload['budget']['min'] + $payload['budget']['max'], 2), '乙');
+                $original = $parts;
+            } else {
+                $repairs[] = $payload;
+                $this->assertStringContainsString('编辑已有小说的几个场景', $log->request_parameters['prompt_audit']['system_prompt']);
+            }
+            $response = B02SettingTest::response(json_encode(['title' => '合并修复测试', 'paragraphs' => $parts], JSON_UNESCAPED_UNICODE));
+            $response['model'] = $request['model'];
+
+            return Http::response($response);
+        }]);
+        $run->refresh();
+        for ($step = 0; $step < 4 && $run->status === 'pending' && $run->next_step === 'draft'; $step++) {
+            app(ContentExecutionService::class)->runStep($run->id, $run->invocation_id, app(AiTextGenerationService::class));
+            $run->refresh();
+        }
+        $this->assertCount(1, $repairs);
+        $this->assertSame(['scene_1', 'scene_3'], $repairs[0]['draft_repair_slots']);
+        $this->assertSame(['scene_1', 'scene_3'], $repairs[0]['budget']['slots']);
+        $this->assertSame(['scene_1', 'scene_3'], array_keys($repairs[0]['slot_plan']));
+        $this->assertSame(['scene_2'], array_keys($repairs[0]['surrounding_paragraphs']));
+        $this->assertSame('quality', $repairs[0]['repair_measurement']['direction']);
+        $this->assertSame($original['scene_3'], $repairs[0]['repair_source']['text']['scene_3']);
+        $this->assertStringContainsString('scene_3第1段逐字照搬细纲', $repairs[0]['previous_response_failure']);
+        // 首稿、一次合并修复后直接生成候选；未修复的场景逐字保留。
+        $this->assertSame(3, $run->requests_used);
+        $this->assertSame('check', $run->next_step);
+        $repair = NovelStage::where('input->run_id', $run->id)->where('input->step', 'draft')->latest('id')->firstOrFail();
+        $this->assertSame(['scene_1', 'scene_3'], $repair->output['data']['repair_slots']);
+        $version = ChapterVersion::findOrFail($run->chapter->fresh()->current_candidate_version_id);
+        $this->assertStringNotContainsString('守塔人劝她', $version->body);
+        $this->assertSame(array_column($original['scene_2'], 'text'), array_slice(explode("\n", $version->body), 2, 2));
+    }
 }

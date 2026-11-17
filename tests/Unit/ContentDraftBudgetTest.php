@@ -404,4 +404,57 @@ class ContentDraftBudgetTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
         ContentExecutionContract::mergeParagraphRepair($draft, ['title' => '标题', 'paragraphs' => ['p2' => [self::narration('走。')]]], $budget, 'p2');
     }
+
+    /** 文字问题可合并修复多个槽位：只替换指定槽位，其余逐字保留，指令列出全部字段。 */
+    public function test_partial_repair_merges_several_slots(): void
+    {
+        $budget = ['slots' => ['p1', 'p2', 'p3'], 'min' => 3, 'max' => 4, 'complete_paragraphs' => true];
+        $draft = ['title' => '标题', 'paragraphs' => ['p1' => [self::narration('她来了。')], 'p2' => [self::narration('他走了。')], 'p3' => [self::narration('灯亮了。')]]];
+        $replacement = ['title' => '标题', 'paragraphs' => ['p3' => [self::narration('灯灭了。')], 'p1' => [self::narration('她到了。')]]];
+        $result = ContentExecutionContract::mergeParagraphRepair($draft, $replacement, $budget, ['p3', 'p1']);
+        $this->assertSame([self::narration('她到了。')], $result['paragraphs']['p1']);
+        $this->assertSame($draft['paragraphs']['p2'], $result['paragraphs']['p2']);
+        $this->assertSame([self::narration('灯灭了。')], $result['paragraphs']['p3']);
+        // 按冻结目录顺序排列，计数随槽位数变化。
+        $repairBudget = ContentExecutionContract::repairBudget($budget, ['p3', 'p1']);
+        $this->assertSame(['p1', 'p3'], $repairBudget['slots']);
+        $this->assertSame(2, $repairBudget['count']);
+        $this->assertSame(3, $repairBudget['chapter_slots']);
+        $instructions = ContentExecutionContract::outputInstructions('draft', ['budget' => $repairBudget, 'draft_repair_slot' => 'p1', 'draft_repair_slots' => ['p1', 'p3'], 'repair_direction' => 'quality']);
+        $this->assertStringContainsString('2个分节修复', $instructions);
+        $this->assertStringContainsString('指定的字段p1、p3', $instructions);
+        $this->assertStringNotContainsString('唯一字段', $instructions);
+        // 缺少任一指定槽位都不能合并。
+        $this->expectException(InvalidArgumentException::class);
+        ContentExecutionContract::mergeParagraphRepair($draft, ['title' => '标题', 'paragraphs' => ['p1' => [self::narration('她到了。')]]], $budget, ['p1', 'p3']);
+    }
+
+    /** 冻结目录以外的槽位不能进入修复预算。 */
+    public function test_repair_budget_rejects_unknown_slots(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        ContentExecutionContract::repairBudget(['slots' => ['p1', 'p2'], 'min' => 3, 'max' => 4], ['p1', 'p9']);
+    }
+
+    /** 细纲action写成成段叙述时整份细纲无效，并报告每个超长场景的实测字数；指令给出节拍上限。 */
+    public function test_fine_rejects_prose_length_action(): void
+    {
+        $policy = ['min_characters' => 2500, 'max_characters' => 3500];
+        $scene = fn (string $action): array => ['time' => '傍晚', 'place' => '库房', 'action' => $action, 'change' => '母亲松口', 'goal' => '找到柜子', 'obstacle' => '母亲回避', 'emotional_beat' => '迟疑转为决意', 'key_dialogue' => '母亲让她查到底', 'point_ids' => ['p1']];
+        $fine = ['hook' => '钩子', 'adjustments' => [], 'hook_transition' => ['completed_state' => '完成', 'trigger' => '触发', 'next_question' => '问题', 'point_ids' => ['p1']]];
+        $limit = ContentExecutionContract::PLAN_ACTION_LIMIT;
+        $data = ContentExecutionContract::fine([...$fine, 'scenes' => [$scene(str_repeat('甲', $limit)), $scene('乙'), $scene('丙')]], ['p1'], $policy);
+        $this->assertCount(3, $data['scenes']);
+        $instructions = ContentExecutionContract::outputInstructions('fine', ['scene_range' => ContentExecutionContract::sceneRange($policy)]);
+        $this->assertStringContainsString('约'.ContentExecutionContract::PLAN_ACTION_CHARACTERS.'字以内', $instructions);
+        $this->assertStringContainsString('超过'.$limit.'字整份细纲无效', $instructions);
+        try {
+            ContentExecutionContract::fine([...$fine, 'scenes' => [$scene('乙'), $scene(str_repeat('甲', $limit + 1)), $scene(str_repeat('丙', $limit + 5))]], ['p1'], $policy);
+            $this->fail('超长action应当无效');
+        } catch (InvalidArgumentException $exception) {
+            $this->assertStringStartsWith(ContentExecutionContract::PLAN_ACTION_ERROR, $exception->getMessage());
+            $this->assertStringContainsString('scene_2实际'.($limit + 1).'字；scene_3实际'.($limit + 5).'字', $exception->getMessage());
+            $this->assertStringNotContainsString('scene_1', $exception->getMessage());
+        }
+    }
 }

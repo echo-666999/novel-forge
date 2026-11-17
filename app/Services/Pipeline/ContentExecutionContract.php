@@ -59,6 +59,15 @@ final class ContentExecutionContract
     /** 每个场景写透所需的大致可见字符数；篇幅不足时少排场景，而不是把场景压成流程摘要。 */
     public const SCENE_CHARACTERS = 800;
 
+    /** 细纲场景action建议的可见字数上限：只写事件节拍，不写成可直接放进正文的成段叙述。 */
+    public const PLAN_ACTION_CHARACTERS = 200;
+
+    /** 细纲场景action的硬上限；超出即视为把正文写进细纲，正文几乎必然逐字照搬。 */
+    public const PLAN_ACTION_LIMIT = 300;
+
+    /** 细纲action过长的错误前缀，同一运行内据此补发一次细纲请求。 */
+    public const PLAN_ACTION_ERROR = '细纲场景action过长';
+
     /** 细纲场景中服务于写戏的字段；v14细纲没有这些字段，复用时只读兼容。 */
     public const DRAMA_FIELDS = ['goal', 'obstacle', 'emotional_beat', 'key_dialogue'];
 
@@ -114,7 +123,9 @@ final class ContentExecutionContract
         if ($step === 'fine' && isset($context['scene_range'])) {
             $range = $context['scene_range'];
 
-            return $instructions.'scenes必须有'.$range['min'].'至'.$range['max'].'个场景，本章篇幅下每个场景约需'.self::SCENE_CHARACTERS.'字以上才能写透，不要排更多场景赶路。每个场景都必须填写goal、obstacle、emotional_beat和key_dialogue，不能留空。前文固定指令中的场景数量或字段与此处不一致时，以此处为准。';
+            return $instructions.'scenes必须有'.$range['min'].'至'.$range['max'].'个场景，本章篇幅下每个场景约需'.self::SCENE_CHARACTERS.'字以上才能写透，不要排更多场景赶路。每个场景都必须填写goal、obstacle、emotional_beat和key_dialogue，不能留空。'
+                // 细纲写成成段叙述时，正文会逐字照搬而被质量门禁拦下，因此细纲只给节拍。
+                .'细纲是写作提纲，不是正文：action只按先后列出本场事件节拍（谁做了什么、得到什么结果），约'.self::PLAN_ACTION_CHARACTERS.'字以内，超过'.self::PLAN_ACTION_LIMIT.'字整份细纲无效；不写神态、小动作、环境描写和成句台词，这些留给正文。goal、obstacle、emotional_beat、change各用一两句概括，不写成可以直接放进正文的叙述句。正文与细纲连续'.ContentQualityContract::PLAN_COPY_CHARACTERS.'字相同会被判为照搬。前文固定指令中的场景数量或字段与此处不一致时，以此处为准。';
         }
         if ($step !== 'draft') {
             return $instructions;
@@ -123,6 +134,7 @@ final class ContentExecutionContract
         $target = intdiv($budget['min'] + $budget['max'], 2);
         $unit = str_starts_with($budget['slots'][0], 'scene_') ? '场景' : '分节';
         if (isset($context['draft_repair_slot'])) {
+            $repairSlots = $context['draft_repair_slots'] ?? [$context['draft_repair_slot']];
             // 修复目标取区间中点，为模型计数偏差保留双向余量，接受上下界不变。
             $instructions .= ($context['repair_direction'] ?? null) === 'shorten' ? '当前指定'.$unit.'已超长，本次只缩写不扩写。以约'.$target.'字为目标，写完后自检并删掉超额的非必要描述，不得用新增情节凑字。' : '';
             if (($context['repair_direction'] ?? null) === 'shorten' && isset($context['repair_current_count'])) {
@@ -140,7 +152,9 @@ final class ContentExecutionContract
             if (($context['repair_direction'] ?? null) === 'format') {
                 $instructions .= '原'.$unit.'字数已合格，只按previous_response_failure修正段落格式：把叙述里的对白拆成对白段，把碎句合并成完整叙述段；不增删情节，篇幅保持在原范围。';
             }
-            $instructions .= '本次为失败草稿的单'.$unit.'修复，不重新生成整章。只返回title和paragraphs内指定的唯一字段'.$context['draft_repair_slot'].'；标题保持原值。其他部分只作上下文，不得复制到本次输出。';
+            $instructions .= count($repairSlots) > 1
+                ? '本次为失败草稿的'.count($repairSlots).'个'.$unit.'修复，不重新生成整章。只返回title和paragraphs内指定的字段'.implode('、', $repairSlots).'，每个字段都是该'.$unit.'改写后的完整段落列表；标题保持原值。其他部分只作上下文，不得复制到本次输出。'
+                : '本次为失败草稿的单'.$unit.'修复，不重新生成整章。只返回title和paragraphs内指定的唯一字段'.$context['draft_repair_slot'].'；标题保持原值。其他部分只作上下文，不得复制到本次输出。';
         } else {
             // 段落列表下模型普遍写短约两成：首稿建议值取区间上四分位，并给出段数和自检要求；修复仍按差额精确增删。
             $target = intdiv($budget['min'] + 3 * $budget['max'], 4);
@@ -257,16 +271,21 @@ final class ContentExecutionContract
         return [[...$data, 'ranges' => $kept], $dropped];
     }
 
-    /** 单场景恢复仍使用原预算；每次请求仅改变一个确定槽位，不放宽整章门禁。
+    /** 局部恢复仍使用原预算；每次请求只改变确定的槽位（篇幅或分段修复一个，文字问题修复可合并多个），不放宽整章门禁。
+     *
+     * @param  string|list<string>  $slots
      * @return array<string, mixed>
      */
-    public static function repairBudget(array $budget, string $slot): array
+    public static function repairBudget(array $budget, string|array $slots): array
     {
-        if (! in_array($slot, $budget['slots'], true)) {
+        $slots = array_values(array_unique((array) $slots));
+        if ($slots === [] || array_diff($slots, $budget['slots']) !== []) {
             throw new InvalidArgumentException('不能修复冻结目录以外的场景');
         }
+        // 按冻结目录顺序输出，Schema与校验字段顺序稳定。
+        $slots = array_values(array_intersect($budget['slots'], $slots));
 
-        return [...$budget, 'slots' => [$slot], 'count' => 1, 'chapter_slots' => count($budget['slots'])];
+        return [...$budget, 'slots' => $slots, 'count' => count($slots), 'chapter_slots' => count($budget['slots'])];
     }
 
     /** 单场景字数的可接受范围：严格区间上下各放宽5%，向内取整，放宽幅度不超过5%。
@@ -317,18 +336,23 @@ final class ContentExecutionContract
         return max($budget['min'] - $count, $count - $budget['max'], 0);
     }
 
-    /** 只接受原槽位的合格替换，原稿其他场景逐字保留；调用方最后必须再验证整章。
+    /** 只接受指定槽位的合格替换，原稿其他场景逐字保留；调用方最后必须再验证整章。
+     *
+     * @param  string|list<string>  $slots
      * @return array<string, mixed>
      */
-    public static function mergeParagraphRepair(array $draft, array $replacement, array $budget, string $slot): array
+    public static function mergeParagraphRepair(array $draft, array $replacement, array $budget, string|array $slots): array
     {
         ContentSchema::keys($draft, ['title', 'paragraphs']);
         ContentSchema::keys($draft['paragraphs'], $budget['slots']);
-        self::body($replacement, self::repairBudget($budget, $slot));
+        $repairBudget = self::repairBudget($budget, $slots);
+        self::body($replacement, $repairBudget);
         if ($replacement['title'] !== $draft['title']) {
             throw new InvalidArgumentException('单场景修复不得改变标题');
         }
-        $draft['paragraphs'][$slot] = $replacement['paragraphs'][$slot];
+        foreach ($repairBudget['slots'] as $slot) {
+            $draft['paragraphs'][$slot] = $replacement['paragraphs'][$slot];
+        }
 
         return $draft;
     }
@@ -387,12 +411,21 @@ final class ContentExecutionContract
         if (count($data['scenes']) < $range['min'] || count($data['scenes']) > $range['max']) {
             throw new InvalidArgumentException('本章篇幅应规划'.$range['min'].'至'.$range['max'].'个场景，实际'.count($data['scenes']).'个');
         }
-        foreach ($data['scenes'] as $scene) {
+        $overlong = [];
+        foreach ($data['scenes'] as $index => $scene) {
             foreach (self::DRAMA_FIELDS as $field) {
                 if (! array_key_exists($field, $scene)) {
                     throw new InvalidArgumentException('细纲场景缺少'.$field);
                 }
             }
+            $count = ContentSchema::count((string) ($scene['action'] ?? ''));
+            if ($count > self::PLAN_ACTION_LIMIT) {
+                $overlong[] = 'scene_'.($index + 1).'实际'.$count.'字';
+            }
+        }
+        // 成段叙述式的细纲会被正文逐字照搬，正文阶段再拦截只会耗尽修复额度。
+        if ($overlong !== []) {
+            throw new InvalidArgumentException(self::PLAN_ACTION_ERROR.'：'.implode('；', $overlong).'，每场最多'.self::PLAN_ACTION_LIMIT.'字；只按先后列出事件节拍，删去神态、小动作、环境描写和成句台词');
         }
 
         return $data;
