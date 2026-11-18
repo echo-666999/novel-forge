@@ -53,6 +53,7 @@ use Filament\Schemas\Components\Grid;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Tabs;
 use Filament\Schemas\Components\Tabs\Tab;
+use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
 use Filament\Schemas\Schema;
 use Filament\Tables\Columns\TextColumn;
@@ -69,6 +70,9 @@ use UnitEnum;
 /** 按章节阅读及证据页面，失败正文和每版历史始终可见。 */
 class ViewChapterContent extends Page implements HasTable
 {
+    /** 全文核对通过的勾选说明；通过且未填写结论时以此作为留档结论。 */
+    private const READING_ACCEPTED_NOTE = '已阅读全文，推进、钩子与时序基本完成，未发现待解决问题';
+
     use InteractsWithRecord;
     use InteractsWithTable;
 
@@ -1351,9 +1355,15 @@ class ViewChapterContent extends Page implements HasTable
                 }), Action::make('fullReading')->label('记录全文核对')->modalHeading('核对当前正文与独立检查')
                 ->visible(fn (): bool => $this->run()?->status === 'completed' && $this->run()?->stop_reason === 'awaiting_review')
                 ->modalDescription('仅记录全文核对。未通过只保存意见并暂停，不自动发送模型请求；实现验收不代表作者批准或正式提交。')
-                ->schema([Checkbox::make('accepted')->label('已阅读全文，推进、钩子与时序基本完成，未发现待解决问题'), Textarea::make('notes')->label('全文核对结论或待解决问题（每行一条）')->required()])
+                // 通过时结论选填，留空记默认结论；不通过时必须写明问题，这些问题会交给下一轮修订。
+                ->schema([Checkbox::make('accepted')->label(self::READING_ACCEPTED_NOTE)->live(),
+                    Textarea::make('notes')->label(fn (Get $get): string => $get('accepted') ? '全文核对结论（选填，每行一条）' : '待解决问题（每行一条，将交给下一轮修订）')
+                        ->required(fn (Get $get): bool => ! $get('accepted'))])
                 ->action(function (array $data): void {
-                    $notes = array_values(array_filter(array_map('trim', explode("\n", $data['notes']))));
+                    $notes = array_values(array_filter(array_map('trim', explode("\n", (string) ($data['notes'] ?? '')))));
+                    if ($notes === [] && ($data['accepted'] ?? false)) {
+                        $notes = [self::READING_ACCEPTED_NOTE];
+                    }
                     $this->performContentAction(fn () => app(ContentGenerationService::class)->recordReading($this->run()->id, Filament::auth()->user(), (bool) ($data['accepted'] ?? false), $notes));
                     $this->resolvedRun = null;
                     $this->resolvedFormalVersion = null;

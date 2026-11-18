@@ -784,6 +784,24 @@ class B04ExecutionTest extends TestCase
         $this->assertSame('b04_accepted', $run->fresh()->stop_reason);
     }
 
+    /** 全文核对：通过时结论选填，留空记默认结论；不通过时必须写明待解决问题。 */
+    public function test_full_reading_notes_required_only_when_not_accepted(): void
+    {
+        $novel = B04ContentTest::readyNovel();
+        Livewire::test(ViewNovel::class, ['record' => $novel->id])->callAction('generateFirstChapter', [
+            'tokens' => 8192, 'request_limit' => 5, 'execution_limit' => 20, 'reason' => '隔离后台启动', 'accept_request' => true])->assertHasNoActionErrors();
+        $this->drain();
+        $run = ChapterGenerationRun::sole();
+        Livewire::test(ViewChapterContent::class, ['record' => $novel->id])
+            ->callAction('fullReading', ['accepted' => false, 'notes' => ''])->assertHasActionErrors(['notes' => 'required']);
+        $this->assertSame('awaiting_review', $run->fresh()->stop_reason);
+        Livewire::test(ViewChapterContent::class, ['record' => $novel->id])
+            ->callAction('fullReading', ['accepted' => true, 'notes' => ''])->assertHasNoActionErrors();
+        $run->refresh();
+        $this->assertSame('b04_accepted', $run->stop_reason);
+        $this->assertSame(['已阅读全文，推进、钩子与时序基本完成，未发现待解决问题'], collect($run->control_history)->last()['notes']);
+    }
+
     /** 费用意图保存失败不能发送HTTP，更不能报作已发生的未知付费。 */
     public function test_audit_write_failure_has_no_http_or_cost(): void
     {
