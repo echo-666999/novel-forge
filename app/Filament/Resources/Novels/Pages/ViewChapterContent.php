@@ -139,7 +139,7 @@ class ViewChapterContent extends Page implements HasTable
         $state = app(NovelProgressQuery::class)->forChapter($this->getRecord(), $chapter);
         // 卡片标题已是本章章名，去掉总览用的“第N章：”前缀；说明指向本页按钮而不是“正文工作台”。
         $detail = $this->run()?->stop_reason === 'awaiting_review' && $state['step'] === 'production'
-            ? '读完正文后点右上角「记录全文核对」，勾选已阅读全文并写下结论；通过后右上角会出现「准备正式提交」。'
+            ? '读完正文后点右上角「记录全文核对」，勾选已阅读全文并写下结论；通过后右上角会出现「一键正式提交」。'
             : str_replace('在正文工作台', '在本页右上角', $state['detail']);
 
         return ['headline' => preg_replace('/^第\d+章：/u', '', $state['headline']), 'detail' => $detail, 'running' => $state['running']];
@@ -1254,16 +1254,7 @@ class ViewChapterContent extends Page implements HasTable
             // 模型修订轮次用完或作者想直接改稿时，进入人工编辑；人工候选会另行做一次独立推进检查。
             Action::make('manualEdit')->label('人工编辑正文')->icon('heroicon-o-pencil-square')->color('gray')
                 ->visible(fn (): bool => $this->candidate() !== null && $this->run()?->chapter->formal_version_id === null && ! $this->runActive())
-                ->url(fn (): string => NovelResource::getUrl('editor', ['record' => $this->getRecord(), 'chapter' => $this->chapterNumber])), Action::make('prepareSubmission')->label('准备正式提交')->visible(fn (): bool => $this->run()?->stop_reason === 'b04_accepted' && $this->submission() === null)
-                ->modalHeading('授权一次评审及一次事件提取')->modalDescription('当前正文保持冻结；最多两次模型请求。任何失败立即停止，不自动续写或重试。新实体另待作者批准。')
-                ->schema([TextInput::make('execution_limit')->label('小说累计执行上限')->integer()->minValue(1)->maxValue(2147483647)->required()
-                    ->default(fn (): int => max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + 2)),
-                    Textarea::make('reason')->label('准备原因')->required(), Checkbox::make('accept_request')->label('批准上述最多两次请求及费用')->accepted()])
-                ->action(function (array $data): void {
-                    $this->performContentAction(fn () => app(ChapterSubmissionService::class)->prepare($this->candidate()->id, Filament::auth()->user(),
-                        app(CanonicalBaselines::class)->activeStateBefore($this->getRecord(), $this->candidate()->chapter->number), $data['reason'], (int) $data['execution_limit']));
-                    $this->getRecord()->refresh();
-                }), Action::make('retrySubmission')->label('重跑失败评审 / 提取')
+                ->url(fn (): string => NovelResource::getUrl('editor', ['record' => $this->getRecord(), 'chapter' => $this->chapterNumber])), Action::make('retrySubmission')->label('重跑失败评审 / 提取')
                 ->visible(fn (): bool => $this->submission()?->status === 'failed')
                 ->modalDescription('保留旧正文、评审、提取和费用，新建后继准备；最多重新评审和提取各一次，未知费用不冲销。')
                 ->schema([TextInput::make('predecessor_id')->label('失败准备编号')->default(fn (): ?int => $this->submission()?->id)->readOnly()->required(),
@@ -1282,15 +1273,18 @@ class ViewChapterContent extends Page implements HasTable
                     $this->getRecord()->refresh();
                 }), Action::make('submitInOneStep')->label('一键正式提交')->color('success')->visible(fn (): bool => $this->run()?->stop_reason === 'b04_accepted' && $this->submission() === null)
                 ->modalHeading('评审、提取并正式提交')
-                ->modalDescription('依次做一次独立评审和一次事件提取（最多两次模型请求）。评审通过且没有新实体待批准时自动正式提交；评审未通过或有新实体时停下，在本页处理。')
+                ->modalDescription('当前正文保持冻结，依次做一次独立评审和一次事件提取（最多两次模型请求），任何失败立即停止，不自动重试。评审未通过或有新实体待批准时停下，在本页处理。')
                 ->schema([TextInput::make('execution_limit')->label('小说累计执行上限')->integer()->minValue(1)->maxValue(2147483647)->required()
                     ->default(fn (): int => max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + 2)),
                     Textarea::make('reason')->label('提交原因')->required(),
-                    Checkbox::make('acknowledge')->label('我已核对当前正文，批准最多两次请求及费用，并授权评审通过后自动正式提交')->accepted()])
+                    // 不勾选时只做评审与提取，之后用“正式提交当前章”逐项批准后提交。
+                    Checkbox::make('auto_commit')->label('评审通过且没有新实体待批准时自动正式提交')->default(true)
+                        ->helperText('取消勾选则只做评审和事件提取，完成后再点“正式提交当前章”手动提交。'),
+                    Checkbox::make('acknowledge')->label('我已核对当前正文，批准最多两次请求及费用')->accepted()])
                 ->action(function (array $data): void {
                     $this->performContentAction(fn () => app(ChapterSubmissionService::class)->prepare($this->candidate()->id, Filament::auth()->user(),
                         app(CanonicalBaselines::class)->activeStateBefore($this->getRecord(), $this->candidate()->chapter->number), $data['reason'], (int) $data['execution_limit'],
-                        autoCommit: ['reason' => $data['reason']]));
+                        autoCommit: ($data['auto_commit'] ?? false) ? ['reason' => $data['reason']] : null));
                     $this->getRecord()->refresh();
                 }), Action::make('commitChapter')->label('正式提交当前章')->visible(fn (): bool => in_array($this->submission()?->status, ['ready', 'awaiting_approval'], true))
                 ->modalHeading('批准冻结正文、实体并正式提交')->modalDescription(fn (): string => '正文摘要：'.$this->candidate()?->body_hash.'。提交原子保存事件与状态，完成章节数加1；所有硬门禁会再次校验。')

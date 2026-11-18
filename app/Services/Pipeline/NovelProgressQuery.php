@@ -131,7 +131,7 @@ final class NovelProgressQuery
             return $this->result('production', $title.'：等你核对全文', '阅读候选正文，在正文工作台记录全文核对结论。', url: $url, manual: true);
         }
         if ($body->stop_reason === 'b04_accepted') {
-            return $this->result('production', $title.'：可以准备正式提交', '在正文工作台点击“准备正式提交”，系统会做一次评审和一次事件提取。', url: $url);
+            return $this->result('production', $title.'：可以一键正式提交', '在正文工作台点击“一键正式提交”，系统会做一次评审和一次事件提取，评审通过后自动正式提交。', url: $url);
         }
 
         return $this->result('production', $title.'：正文生成停止', (ProductionFailure::detailLabel($body->stop_reason) ?? '').'。可在正文工作台查看原因并恢复。', url: $url);

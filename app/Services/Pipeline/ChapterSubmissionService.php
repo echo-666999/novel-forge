@@ -76,7 +76,7 @@ final class ChapterSubmissionService
             app(ContentGenerationService::class)->assertFrozenSources($bodyRun);
             $confirmation = NovelSettingConfirmation::findOrFail($bodyRun->snapshot['confirmation_id']);
             if (! app(BookAuthorship::class)->allows($version->chapter->novel_id, $operator, $confirmation->confirmed_by)) {
-                throw new InvalidArgumentException('本书由账号「'.app(BookAuthorship::class)->requiredAccountName($version->chapter->novel_id, $confirmation->confirmed_by).'」负责，只能由该账号准备正式提交，请换用该账号登录，或在小说页接管本书');
+                throw new InvalidArgumentException('本书由账号「'.app(BookAuthorship::class)->requiredAccountName($version->chapter->novel_id, $confirmation->confirmed_by).'」负责，只能由该账号正式提交，请换用该账号登录，或在小说页接管本书');
             }
             if ($bodyRun->stop_reason !== 'b04_accepted') {
                 throw new InvalidArgumentException('AUTHOR_OR_CONTENT_NOT_READY');

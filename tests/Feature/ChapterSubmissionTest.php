@@ -512,10 +512,12 @@ class ChapterSubmissionTest extends TestCase
         $page = Livewire::test(ViewChapterContent::class, ['record' => $novel->id]);
         $page->callAction('fullReading', ['accepted' => true, 'notes' => '接管人已阅读全文'])->assertHasNoActionErrors();
         $this->assertSame('b04_accepted', $body->fresh()->stop_reason);
-        $page = Livewire::test(ViewChapterContent::class, ['record' => $novel->id])->assertActionVisible('prepareSubmission')
-            ->callAction('prepareSubmission', ['reason' => '接管后准备提交', 'accept_request' => true])->assertHasNoActionErrors();
+        $page = Livewire::test(ViewChapterContent::class, ['record' => $novel->id])->assertActionVisible('submitInOneStep')
+            ->callAction('submitInOneStep', ['reason' => '接管后准备提交', 'auto_commit' => false, 'acknowledge' => true])->assertHasNoActionErrors();
         $submission = ChapterSubmissionRun::sole();
         $this->assertSame($other->id, $submission->config['operator_id']);
+        // 取消自动提交时不冻结提交授权，停在待手动提交。
+        $this->assertArrayNotHasKey('auto_commit', $submission->config);
         for ($i = 0; $i < 2 && $submission->refresh()->status === 'pending'; $i++) {
             app(ChapterSubmissionService::class)->execute($submission->id, $submission->invocation_id, false);
         }
