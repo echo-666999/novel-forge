@@ -501,10 +501,10 @@ class C01SequenceTest extends TestCase
         $this->assertSame('第1章：可以一键正式提交', $this->progressHeadline($novel));
         // 不勾选自动提交时只做评审与提取，之后手动正式提交。
         Livewire::test(ViewChapterContent::class, ['record' => $novel->id])->assertActionDoesNotExist('prepareSubmission')
-            ->callAction('submitInOneStep', ['reason' => '准备提交第1章', 'auto_commit' => false, 'acknowledge' => true])->assertHasNoActionErrors();
+            ->callAction('submitInOneStep', ['auto_commit' => false, 'acknowledge' => true])->assertHasNoActionErrors();
         $this->runQueuedJobs();
         $this->assertContains($this->progressHeadline($novel), ['第1章：可以正式提交', '第1章：等你批准新实体并正式提交']);
-        Livewire::test(ViewChapterContent::class, ['record' => $novel->id])->callAction('commitChapter', ['approved_entities' => [], 'reason' => '作者批准第1章', 'acknowledge' => true])->assertHasNoActionErrors();
+        Livewire::test(ViewChapterContent::class, ['record' => $novel->id])->callAction('commitChapter', ['approved_entities' => [], 'acknowledge' => true])->assertHasNoActionErrors();
         $this->assertSame(1, $novel->fresh()->chapters_done);
         // 执行次数用完时标题追加需追加上限，说明给出调高入口；调高后恢复原标题。
         $novel->update(['max_execution_count' => $novel->fresh()->execution_count]);

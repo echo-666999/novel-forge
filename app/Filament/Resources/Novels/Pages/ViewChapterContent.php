@@ -1280,15 +1280,16 @@ class ViewChapterContent extends Page implements HasTable
                 ->modalDescription('当前正文保持冻结，依次做一次独立评审和一次事件提取（最多两次模型请求），任何失败立即停止，不自动重试。评审未通过或有新实体待批准时停下，在本页处理。')
                 ->schema([TextInput::make('execution_limit')->label('小说累计执行上限')->integer()->minValue(1)->maxValue(2147483647)->required()
                     ->default(fn (): int => max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + 2)),
-                    Textarea::make('reason')->label('提交原因')->required(),
                     // 不勾选时只做评审与提取，之后用“正式提交当前章”逐项批准后提交。
                     Checkbox::make('auto_commit')->label('评审通过且没有新实体待批准时自动正式提交')->default(true)
                         ->helperText('取消勾选则只做评审和事件提取，完成后再点“正式提交当前章”手动提交。'),
                     Checkbox::make('acknowledge')->label('我已核对当前正文，批准最多两次请求及费用')->accepted()])
                 ->action(function (array $data): void {
+                    // 提交原因由程序按操作生成并留档，作者无需另填。
+                    $reason = ($data['auto_commit'] ?? false) ? '作者一键正式提交第'.$this->chapterNumber.'章' : '作者准备正式提交第'.$this->chapterNumber.'章，评审与提取后手动提交';
                     $this->performContentAction(fn () => app(ChapterSubmissionService::class)->prepare($this->candidate()->id, Filament::auth()->user(),
-                        app(CanonicalBaselines::class)->activeStateBefore($this->getRecord(), $this->candidate()->chapter->number), $data['reason'], (int) $data['execution_limit'],
-                        autoCommit: ($data['auto_commit'] ?? false) ? ['reason' => $data['reason']] : null));
+                        app(CanonicalBaselines::class)->activeStateBefore($this->getRecord(), $this->candidate()->chapter->number), $reason, (int) $data['execution_limit'],
+                        autoCommit: ($data['auto_commit'] ?? false) ? ['reason' => $reason] : null));
                     $this->getRecord()->refresh();
                 }), Action::make('commitChapter')->label('正式提交当前章')->visible(fn (): bool => in_array($this->submission()?->status, ['ready', 'awaiting_approval'], true))
                 ->modalHeading('批准冻结正文、实体并正式提交')->modalDescription(fn (): string => '正文摘要：'.$this->candidate()?->body_hash.'。提交原子保存事件与状态，完成章节数加1；所有硬门禁会再次校验。')
@@ -1296,7 +1297,6 @@ class ViewChapterContent extends Page implements HasTable
                     TextInput::make('proposal_hash')->label('冻结提议摘要')->default(fn (): string => PlanningJson::hash(ChapterEventExtraction::where('submission_run_id', $this->submission()->id)->sole()->result['proposed_entities']))->readOnly()->required(),
                     TextInput::make('idempotency_key')->label('提交幂等键')->default(fn (): string => (string) Str::uuid7())->readOnly()->required(),
                     CheckboxList::make('approved_entities')->label('逐项批准新实体及别名')->options(fn (): array => $this->entityApprovalOptions()),
-                    Textarea::make('reason')->label('正式提交原因')->required(),
                     Checkbox::make('acknowledge')->label('我已核对当前正文及上方评审、事件、状态差异，并批准正式提交')->accepted()])
                 ->action(function (array $data): void {
                     $this->performContentAction(function () use ($data): void {
@@ -1307,7 +1307,8 @@ class ViewChapterContent extends Page implements HasTable
                         }
                         app(CanonicalCommitService::class)->commit($run->version_id, ChapterReview::where('submission_run_id', $run->id)->sole()->id,
                             $extraction->id, ChapterSubmissionValidation::where('submission_run_id', $run->id)->oldest('id')->firstOrFail()->id,
-                            $run->expected_state_version, $data['idempotency_key'], Filament::auth()->user(), $data['reason'], $data['approved_entities'] ?? [], (bool) $data['acknowledge']);
+                            // 提交原因由程序生成并留档，作者无需另填。
+                            $run->expected_state_version, $data['idempotency_key'], Filament::auth()->user(), '作者批准并正式提交第'.$this->chapterNumber.'章', $data['approved_entities'] ?? [], (bool) $data['acknowledge']);
                     });
                     $this->resolvedRun = null;
                     $this->resolvedFormalVersion = null;

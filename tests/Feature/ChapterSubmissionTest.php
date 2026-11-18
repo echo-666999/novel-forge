@@ -482,9 +482,11 @@ class ChapterSubmissionTest extends TestCase
         Livewire::test(ViewChapterContent::class, ['record' => $run->novel_id])
             ->assertSee('隔离访客')->assertSee('等待作者批准新实体')
             ->callAction('commitChapter', ['submission_id' => $run->id, 'proposal_hash' => PlanningJson::hash($extraction->result['proposed_entities']),
-                'idempotency_key' => (string) Str::uuid7(), 'approved_entities' => ['new-1'], 'reason' => '隔离后台逐项批准', 'acknowledge' => true])
+                'idempotency_key' => (string) Str::uuid7(), 'approved_entities' => ['new-1'], 'acknowledge' => true])
             ->assertHasNoActionErrors();
         $this->assertSame(1, CanonicalCommit::count());
+        // 提交原因由程序生成并留档。
+        $this->assertSame('作者批准并正式提交第'.ChapterVersion::findOrFail(CanonicalCommit::sole()->version_id)->chapter->number.'章', CanonicalCommit::sole()->reason);
         $this->assertSame(2, StoryEntity::count());
         Http::assertSentCount(5);
     }
@@ -513,8 +515,10 @@ class ChapterSubmissionTest extends TestCase
         $page->callAction('fullReading', ['accepted' => true, 'notes' => '接管人已阅读全文'])->assertHasNoActionErrors();
         $this->assertSame('b04_accepted', $body->fresh()->stop_reason);
         $page = Livewire::test(ViewChapterContent::class, ['record' => $novel->id])->assertActionVisible('submitInOneStep')
-            ->callAction('submitInOneStep', ['reason' => '接管后准备提交', 'auto_commit' => false, 'acknowledge' => true])->assertHasNoActionErrors();
+            ->callAction('submitInOneStep', ['auto_commit' => false, 'acknowledge' => true])->assertHasNoActionErrors();
         $submission = ChapterSubmissionRun::sole();
+        // 提交原因由程序生成，区分只准备与一键提交。
+        $this->assertSame('作者准备正式提交第1章，评审与提取后手动提交', $submission->config['reason']);
         $this->assertSame($other->id, $submission->config['operator_id']);
         // 取消自动提交时不冻结提交授权，停在待手动提交。
         $this->assertArrayNotHasKey('auto_commit', $submission->config);
@@ -522,7 +526,7 @@ class ChapterSubmissionTest extends TestCase
             app(ChapterSubmissionService::class)->execute($submission->id, $submission->invocation_id, false);
         }
         Livewire::test(ViewChapterContent::class, ['record' => $novel->id])->assertActionVisible('commitChapter')
-            ->callAction('commitChapter', ['reason' => '接管人正式提交', 'acknowledge' => true])->assertHasNoActionErrors();
+            ->callAction('commitChapter', ['acknowledge' => true])->assertHasNoActionErrors();
         $this->assertSame($body->chapter->fresh()->formal_version_id, CanonicalCommit::sole()->version_id);
     }
 
@@ -535,8 +539,9 @@ class ChapterSubmissionTest extends TestCase
         $this->actingAs($operator);
         Filament::setCurrentPanel(Filament::getPanel('admin'));
         Livewire::test(ViewChapterContent::class, ['record' => $version->chapter->novel_id])->assertActionVisible('submitInOneStep')
-            ->callAction('submitInOneStep', ['reason' => '一键提交', 'acknowledge' => true])->assertHasNoActionErrors();
+            ->callAction('submitInOneStep', ['acknowledge' => true])->assertHasNoActionErrors();
         $run = ChapterSubmissionRun::sole();
+        $this->assertSame('作者一键正式提交第'.$version->chapter->number.'章', $run->config['auto_commit']['reason']);
         $this->assertSame($operator->id, $run->config['auto_commit']['operator_id']);
         for ($i = 0; $i < 2 && $run->refresh()->status === 'pending'; $i++) {
             app(ChapterSubmissionService::class)->execute($run->id, $run->invocation_id, false);
