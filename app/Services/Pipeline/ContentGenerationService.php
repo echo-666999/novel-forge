@@ -294,6 +294,12 @@ final class ContentGenerationService
                     }
                 } elseif (is_array($failedLog?->structured_output['paragraphs'] ?? null)) {
                     $config['recovery_draft'] = ['cost_log_id' => $failedLog->id, 'response' => $failedLog->structured_output];
+                } elseif ($config['slot_repair'] && ($truncated = data_get($failedStage->output, 'data.truncated_draft') ?? ContentExecutionService::truncatedDraft(
+                    CostLog::where('novel_stage_id', $failedStage->id)->whereKey(data_get($failedStage->output, 'data.cost_log_id'))->first(),
+                    ContentExecutionContract::budget($parent->snapshot['novel']['chapter_length_policy'], $plan, $fine))) !== null) {
+                    // 整章输出被截断：继承已完整写出的场景，未写完的场景由本次运行按细纲补写，不重写整章。
+                    $config['recovery_draft'] = ['cost_log_id' => $truncated['cost_log_id'], 'response' => $truncated['response']];
+                    $config['recovery_validation_error'] ??= '正文输出达到Token上限被截断，未写完的场景'.implode('、', $truncated['missing']).'需按细纲补写。';
                 }
             }
             $config['recovery_findings'] = app(ContentExecutionService::class)->findings($parent, $source);

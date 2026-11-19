@@ -95,6 +95,10 @@ final class DeepSeekTextProvider implements TextProvider
             providerRequestId: $response->raw?->header('x-request-id') ?: null,
             rawResponse: $raw,
         );
+        // 输出达到上限被截断（含推理消耗）单独归类，调用方可复用截断前已完整写出的内容，不当作供应商失败。
+        if ($raw !== null && data_get($raw, 'incomplete_details.reason') === 'max_output_tokens') {
+            throw new AiGenerationException('输出达到Token上限被截断（推理占用'.($usage['reasoning_tokens'] ?? '未知').'个Token），已保留响应。', 'output_truncated', 'failed', $result);
+        }
         if (trim($result->text) === '' || ($raw !== null && ($raw['status'] ?? null) !== 'completed')) {
             throw new AiGenerationException('供应商未返回完整有效文本，已保留响应。', 'invalid_response', 'failed', $result);
         }

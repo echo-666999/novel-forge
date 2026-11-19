@@ -302,6 +302,106 @@ class AcceptanceBranchTest extends B04ExecutionTest
         $this->assertSame(array_column(array_merge(...array_slice(array_values($original), 2)), 'text'), array_slice($paragraphs, 4));
     }
 
+    /** 整章正文达到输出上限被截断：标为截断而非供应商失败，保留已完整的场景，在同一运行内只补写未写完的场景。 */
+    public function test_truncated_draft_keeps_complete_scenes_and_writes_the_rest(): void
+    {
+        $novel = B04ContentTest::readyNovel(true, 50);
+        $novel->update(['chapter_length_policy' => ['min_characters' => 2500, 'max_characters' => 3500], 'generation_config' => [...($novel->generation_config ?? []), 'acceptance_branch' => ['key' => 'test']]]);
+        $run = app(ContentGenerationService::class)->start($novel, User::firstOrFail());
+        app(ContentExecutionService::class)->runStep($run->id, $run->invocation_id, app(AiTextGenerationService::class));
+        $original = [];
+        $repairs = [];
+        Http::swap(new Factory);
+        Http::preventStrayRequests();
+        Http::fake(['*' => function ($request) use (&$original, &$repairs) {
+            $log = CostLog::latest('id')->firstOrFail();
+            $payload = json_decode(explode('冻结输入：', $log->request_parameters['prompt_audit']['user_prompt'], 2)[1], true);
+            $parts = [];
+            foreach ($payload['budget']['slots'] as $slot) {
+                $parts[$slot] = B04ContentTest::sceneParagraphs(intdiv($payload['budget']['min'] + $payload['budget']['max'], 2), '甲');
+            }
+            if (! isset($payload['draft_repair_slot']) && ! isset($payload['draft_repair_slots'])) {
+                $this->assertStringContainsString('不要在思考中先写出正文', $log->request_parameters['prompt_audit']['system_prompt']);
+                // 第一个场景完整写出，第二个场景写到一半时达到输出上限。
+                $original = $parts;
+                $text = json_encode(['title' => '截断测试', 'paragraphs' => $parts], JSON_UNESCAPED_UNICODE);
+                $response = B02SettingTest::response(mb_strcut($text, 0, strpos($text, '"scene_2"') + 40), 'incomplete');
+                $response['incomplete_details'] = ['reason' => 'max_output_tokens'];
+                $response['usage']['output_tokens_details'] = ['reasoning_tokens' => 14000];
+            } else {
+                $repairs[] = $payload;
+                $this->assertStringContainsString('补写', $log->request_parameters['prompt_audit']['system_prompt']);
+                $response = B02SettingTest::response(json_encode(['title' => '截断测试', 'paragraphs' => array_intersect_key($parts, array_flip($payload['draft_repair_slots'] ?? [$payload['draft_repair_slot']]))], JSON_UNESCAPED_UNICODE));
+            }
+            $response['model'] = $request['model'];
+
+            return Http::response($response);
+        }]);
+        for ($step = 0; $step < 4 && $run->refresh()->status === 'pending'; $step++) {
+            app(ContentExecutionService::class)->runStep($run->id, $run->invocation_id, app(AiTextGenerationService::class));
+        }
+        $truncated = CostLog::where('status', 'failed')->latest('id')->firstOrFail();
+        $this->assertSame('output_truncated', $truncated->error_category);
+        $stage = NovelStage::findOrFail($truncated->novel_stage_id);
+        $this->assertSame(ContentExecutionService::IN_RUN_REPAIR, $stage->output['data']['outcome']);
+        $this->assertSame(['scene_2', 'scene_3'], $stage->output['data']['truncated_draft']['missing']);
+        // 未写完的两个场景合并为一次补写请求，已完整的场景只作上下文。
+        $this->assertCount(1, $repairs);
+        $this->assertSame(['scene_2', 'scene_3'], $repairs[0]['draft_repair_slots']);
+        $this->assertSame(['scene_2' => 'write', 'scene_3' => 'write'], $repairs[0]['repair_measurement']['directions']);
+        $this->assertSame(['scene_1' => $original['scene_1']], $repairs[0]['surrounding_paragraphs']);
+        $this->assertStringContainsString('被截断', $repairs[0]['previous_response_failure']);
+        $this->assertSame('check', $run->next_step);
+        $version = ChapterVersion::findOrFail($run->chapter->current_candidate_version_id);
+        $this->assertSame(array_column($original['scene_1'], 'text'), array_slice(explode("\n", $version->body), 0, 2));
+    }
+
+    /** 截断后额度不足时停在“输出被截断”；恢复运行继承已完整的场景，只补写未写完的场景。 */
+    public function test_truncated_draft_recovery_writes_only_missing_scenes(): void
+    {
+        $novel = B04ContentTest::readyNovel(true, 50);
+        $novel->update(['chapter_length_policy' => ['min_characters' => 2500, 'max_characters' => 3500], 'generation_config' => [...($novel->generation_config ?? []), 'acceptance_branch' => ['key' => 'test']]]);
+        $run = app(ContentGenerationService::class)->start($novel, User::firstOrFail());
+        app(ContentExecutionService::class)->runStep($run->id, $run->invocation_id, app(AiTextGenerationService::class));
+        $novel->refresh()->update(['max_execution_count' => $novel->execution_count + 1]);
+        $repairs = [];
+        Http::swap(new Factory);
+        Http::preventStrayRequests();
+        Http::fake(['*' => function ($request) use (&$repairs) {
+            $log = CostLog::latest('id')->firstOrFail();
+            $payload = json_decode(explode('冻结输入：', $log->request_parameters['prompt_audit']['user_prompt'], 2)[1], true);
+            $parts = [];
+            foreach ($payload['budget']['slots'] as $slot) {
+                $parts[$slot] = B04ContentTest::sceneParagraphs(intdiv($payload['budget']['min'] + $payload['budget']['max'], 2), '乙');
+            }
+            if (! isset($payload['draft_repair_slot']) && ! isset($payload['draft_repair_slots'])) {
+                $text = json_encode(['title' => '截断测试', 'paragraphs' => $parts], JSON_UNESCAPED_UNICODE);
+                $response = B02SettingTest::response(mb_strcut($text, 0, strpos($text, '"scene_3"') + 30), 'incomplete');
+                $response['incomplete_details'] = ['reason' => 'max_output_tokens'];
+            } else {
+                $repairs[] = $payload;
+                $response = B02SettingTest::response(json_encode(['title' => '截断测试', 'paragraphs' => [$payload['draft_repair_slot'] => $parts[$payload['draft_repair_slot']]]], JSON_UNESCAPED_UNICODE));
+            }
+            $response['model'] = $request['model'];
+
+            return Http::response($response);
+        }]);
+        app(ContentExecutionService::class)->runStep($run->id, $run->refresh()->invocation_id, app(AiTextGenerationService::class));
+        $this->assertSame('output_truncated', $run->refresh()->stop_reason);
+        $this->assertSame([], $repairs);
+        $child = app(ContentGenerationService::class)->recover($run->id, User::firstOrFail(), '补写截断场景', 3, $novel->refresh()->execution_count + 3);
+        for ($step = 0; $step < 3 && $child->refresh()->status === 'pending'; $step++) {
+            app(ContentExecutionService::class)->runStep($child->id, $child->invocation_id, app(AiTextGenerationService::class));
+        }
+        // 单个未写完的场景按“补写”处理，不重写已完整的前两个场景。
+        $this->assertCount(1, $repairs);
+        $this->assertSame('scene_3', $repairs[0]['draft_repair_slot']);
+        $this->assertSame('write', $repairs[0]['repair_measurement']['direction']);
+        $this->assertSame([], $repairs[0]['repair_source']['text']);
+        $this->assertSame('check', $child->next_step);
+        $this->assertNotNull($child->chapter->current_candidate_version_id);
+    }
+
     /** 正文照搬细纲时不进入整章修订：在同一运行内按场景改写被指出的句子，改好后直接生成候选。 */
     public function test_plan_copy_is_repaired_per_scene_without_revision(): void
     {

@@ -49,13 +49,13 @@ enum ProductionFailure: string
 
     /** 明确失败且换一次请求可能成功的错误，每种错误在同一章最多自动恢复一次。 */
     private const AUTOMATIC = [
-        'CONTENT_STOPPED:invalid_schema', 'CONTENT_STOPPED:provider_failed', 'CONTENT_STOPPED:retry_limit', 'CONTENT_PARAGRAPH_INCOMPLETE',
+        'CONTENT_STOPPED:invalid_schema', 'CONTENT_STOPPED:provider_failed', 'CONTENT_STOPPED:output_truncated', 'CONTENT_STOPPED:retry_limit', 'CONTENT_PARAGRAPH_INCOMPLETE',
         'SUBMISSION_STOPPED:EVENT_VALIDATION_BLOCKED', 'SUBMISSION_STOPPED:INVALID_RESPONSE', 'SETTING_DECISION_FAILED',
     ];
 
     /** 详情码的中文说明；未列出的详情显示原码。 */
     private const DETAILS = [
-        'invalid_schema' => '模型返回的结构或证据引用无效', 'provider_failed' => '模型服务明确返回失败', 'retry_limit' => '推进修订次数已用完',
+        'invalid_schema' => '模型返回的结构或证据引用无效', 'provider_failed' => '模型服务明确返回失败', 'output_truncated' => '正文输出达到Token上限被截断', 'retry_limit' => '推进修订次数已用完',
         'execution_limit' => '执行额度已用完', 'unknown' => '调用结果未知，可能已计费', 'length_invalid' => '正文字数不在冻结范围内',
         'blocked' => '检查发现与核心设定冲突', 'progression_insufficient' => '独立检查判定情节推进或章末钩子不足',
         'body_quality_insufficient' => '有限预算内未能修好篇幅或写作问题', 'reading_failed' => '全文核对未通过',

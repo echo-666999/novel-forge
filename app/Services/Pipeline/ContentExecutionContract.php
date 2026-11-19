@@ -158,10 +158,16 @@ final class ContentExecutionContract
             if (($context['repair_direction'] ?? null) === 'length') {
                 $instructions .= '本次各'.$unit.'只调整篇幅，不改动已有情节走向。';
                 foreach ($context['repair_slot_counts'] ?? [] as $slot => $count) {
-                    $instructions .= ($context['repair_slot_directions'][$slot] ?? null) === 'shorten'
-                        ? $slot.'原实测'.$count.'字，已超长，必须净删'.($count - $budget['max']).'至'.($count - $budget['min']).'字：直接删除重复解释、流程细节或非必要句子，保留其余原文字句和对白，不新增情节。'
-                        : $slot.'原实测'.$count.'字，偏短，只能净增'.($budget['min'] - $count).'至'.($budget['max'] - $count).'字，目标净增'.($target - $count).'字：保留原有字句，补足人物对白、反应与行动后果，不新增核心事实，不重复其他部分的事件，不写流程步骤凑字。';
+                    $instructions .= match ($context['repair_slot_directions'][$slot] ?? null) {
+                        'write' => $slot.'在上次整章输出中被截断、尚未写出：按slot_plan从头写出完整'.$unit.'，篇幅'.$budget['min'].'至'.$budget['max'].'字，建议约'.$target.'字，与前后部分衔接，不重复其中的事件。',
+                        'shorten' => $slot.'原实测'.$count.'字，已超长，必须净删'.($count - $budget['max']).'至'.($count - $budget['min']).'字：直接删除重复解释、流程细节或非必要句子，保留其余原文字句和对白，不新增情节。',
+                        default => $slot.'原实测'.$count.'字，偏短，只能净增'.($budget['min'] - $count).'至'.($budget['max'] - $count).'字，目标净增'.($target - $count).'字：保留原有字句，补足人物对白、反应与行动后果，不新增核心事实，不重复其他部分的事件，不写流程步骤凑字。',
+                    };
                 }
+            }
+            // 截断后补写：上次整章输出未写到的场景按细纲从头写出，与前后已保留的场景衔接。
+            if (($context['repair_direction'] ?? null) === 'write') {
+                $instructions .= '上次整章输出在本'.$unit.'处被截断，本'.$unit.'尚未写出。按slot_plan从头写出完整'.$unit.'，与surrounding_paragraphs中前后已保留的部分衔接，不重复其中的事件；篇幅'.$budget['min'].'至'.$budget['max'].'字，建议约'.$target.'字，写足人物对白、反应与行动后果。思考时只列要点，不要在思考中先写出正文。';
             }
             if (($context['repair_direction'] ?? null) === 'format') {
                 $instructions .= '原'.$unit.'字数已合格，只按previous_response_failure修正段落格式：把叙述里的对白拆成对白段，把碎句合并成完整叙述段；不增删情节，篇幅保持在原范围。';
@@ -175,14 +181,16 @@ final class ContentExecutionContract
             $paragraphs = max(1, (int) round($target / self::PLANNED_PARAGRAPH_CHARACTERS));
             $instructions .= ' 篇幅最容易写短：每个字段按约'.$paragraphs.'段规划，叙述段约六十至一百五十字，对白段约二十至六十字。写完每个字段后逐段累加可见字数，不足'.$budget['min'].'字就在本'.$unit.'内继续补写人物对白、反应和场面细节，不靠重复或流程步骤凑字；宁可接近上限，也不要低于下限。'
                 // 细纲action只给事件节拍，按节拍一句带过必然写短。
-                .'chapter_plan里每个场景的action只列事件节拍，不是成段正文：每个节拍都要展开成在场人物的对白交锋、动作反应和场面细节，篇幅靠这些写足，不能一个节拍一两句带过。估算字数时按实际要写出的每段逐段累加，估出低于'.$budget['min'].'字必须先补写再输出，不能换一种估算方式了事。';
+                .'chapter_plan里每个场景的action只列事件节拍，不是成段正文：每个节拍都要展开成在场人物的对白交锋、动作反应和场面细节，篇幅靠这些写足，不能一个节拍一两句带过。估算字数时按实际要写出的每段逐段累加，估出低于'.$budget['min'].'字必须先补写再输出，不能换一种估算方式了事。'
+                // 推理与正文共用输出上限：在思考中先写一遍整章再自查会耗尽容量，导致正文截断。
+                .'思考与正文共用同一输出上限：思考时只列每个场景的节拍、对白要点和篇幅分配，不要在思考中先写出正文或逐段起草，也不要在思考中逐段复查；正文直接写在输出里，边写边按上述规则自检。';
         }
 
         // 文字检查规则只给首稿和文字问题修复；篇幅与分段修复附带逐字自检会耗尽推理容量，导致输出被截断。
         return $instructions.' paragraphs中每个字段是一整个'.$unit.'，值为按顺序排列的自然段列表，每项含kind和text：kind为narration表示叙述段，dialogue表示对白段。一个字段内所有段合计必须有'.$budget['min'].'至'.$budget['max'].'个可见字符，建议约'.$target.'字；汉字、标点、数字均计数，空白不计数。这是每个字段的要求，不是全章合计。固定字段依次为：'.implode('、', $budget['slots']).'。'
             .'叙述段写两到五句、通常六十至两百字，写完一个动作、场面或情绪节拍再分段；每个字段里不足'.self::SHORT_NARRATION.'字的叙述段不超过叙述段的四分之一（至少允许'.self::MAX_SHORT_NARRATION.'段），不要一句一段。叙述段里不得出现人物说出口的原话，回忆里的原话也写成对白段。'
             .'对白段是一个人的一次发言，用中文引号写出原话，可带说话人紧邻的一两句动作或神态，引号外不超过'.self::DIALOGUE_ACTION.'字；换另一个人开口必须另起一个对白段。关键交流写成对白段，不要转述。'
-            .'每段text是一段纯正文，不含换行和Markdown，以完整句末标点结束。chapter_plan和slot_plan是写作提纲，要用人物的言行和自己的叙述写出来，不得照抄其中的句子。'.(isset($context['draft_repair_slot']) && ($context['repair_direction'] ?? null) !== 'quality' ? '' : self::textRules()).'各字段按slot_plan推进，不重演前面已完成的动作。不得报告自估字数或添加写作说明，直接输出完整正文。前文固定指令中的段落划分或字段说明与此处不一致时（例如每场景两段、每字段一段纯正文、字段内换行），以此处为准。';
+            .'每段text是一段纯正文，不含换行和Markdown，以完整句末标点结束。chapter_plan和slot_plan是写作提纲，要用人物的言行和自己的叙述写出来，不得照抄其中的句子。'.(isset($context['draft_repair_slot']) && ! in_array($context['repair_direction'] ?? null, ['quality', 'write'], true) ? '' : self::textRules()).'各字段按slot_plan推进，不重演前面已完成的动作。不得报告自估字数或添加写作说明，直接输出完整正文。前文固定指令中的段落划分或字段说明与此处不一致时（例如每场景两段、每字段一段纯正文、字段内换行），以此处为准。';
     }
 
     /** 程序逐字检查的两项文字问题及其阈值，写入正文、单场景修复与修订指令，让模型能按同一标准自检。 */
@@ -420,6 +428,68 @@ final class ContentExecutionContract
         }
 
         return $draft;
+    }
+
+    /** 输出被截断的整章响应中，取出已完整闭合的场景段落列表；未写完或未开始的场景记为空列表，留待补写。
+     * 一个完整场景都没有时返回 null。只做结构提取，各场景是否合格仍由正文校验判定。
+     *
+     * @param  list<string>  $slots
+     * @return array{title: string, paragraphs: array<string, list<array{kind: string, text: string}>>, missing: list<string>}|null
+     */
+    public static function salvageTruncated(string $text, array $slots): ?array
+    {
+        $paragraphs = [];
+        $missing = [];
+        foreach ($slots as $slot) {
+            $list = null;
+            if (preg_match('/"'.preg_quote($slot, '/').'"\s*:\s*\[/u', $text, $match, PREG_OFFSET_CAPTURE) === 1) {
+                $start = $match[0][1] + strlen($match[0][0]) - 1;
+                $end = self::closingBracket($text, $start);
+                $decoded = $end === null ? null : json_decode(substr($text, $start, $end - $start + 1), true);
+                $valid = is_array($decoded) && $decoded !== [] && array_is_list($decoded)
+                    && array_filter($decoded, fn (mixed $item): bool => ! is_array($item) || ! is_string($item['kind'] ?? null) || ! is_string($item['text'] ?? null)) === [];
+                $list = $valid ? array_map(fn (array $item): array => ['kind' => $item['kind'], 'text' => $item['text']], $decoded) : null;
+            }
+            $paragraphs[$slot] = $list ?? [];
+            if ($list === null) {
+                $missing[] = $slot;
+            }
+        }
+        if (count($missing) === count($slots)) {
+            return null;
+        }
+        $title = preg_match('/"title"\s*:\s*("(?:[^"\\\\]|\\\\.)*")/u', $text, $match) === 1 ? json_decode($match[1]) : null;
+
+        return ['title' => is_string($title) && $title !== '' ? $title : '未命名', 'paragraphs' => $paragraphs, 'missing' => $missing];
+    }
+
+    /** 从$start处的左方括号起，跳过JSON字符串内容，返回与之配对的右方括号位置；文本在配对前结束时返回 null。 */
+    private static function closingBracket(string $text, int $start): ?int
+    {
+        $depth = 0;
+        $inString = false;
+        $length = strlen($text);
+        for ($index = $start; $index < $length; $index++) {
+            $char = $text[$index];
+            if ($inString) {
+                if ($char === '\\') {
+                    $index++;
+                } elseif ($char === '"') {
+                    $inString = false;
+                }
+
+                continue;
+            }
+            if ($char === '"') {
+                $inString = true;
+            } elseif ($char === '[' || $char === '{') {
+                $depth++;
+            } elseif (($char === ']' || $char === '}') && --$depth === 0) {
+                return $index;
+            }
+        }
+
+        return null;
     }
 
     /** 不计字数时段落结构与分段规则是否合格，用于区分只需增删篇幅的场景与需要调整分段的场景。 */

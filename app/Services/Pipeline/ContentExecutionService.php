@@ -338,7 +338,8 @@ final class ContentExecutionService
                 } catch (InvalidArgumentException) {
                     $bodyFailed[$slot] = true;
                     // 分段合格、只有字数越界的场景可与其他同类场景合并扩写或压缩。
-                    $lengthOnly[$slot] = ContentExecutionContract::formatValid($draft['paragraphs'][$slot], $budget);
+                    // 截断后未写出的空场景同样按篇幅类处理，可与其他场景合并补写。
+                    $lengthOnly[$slot] = $draft['paragraphs'][$slot] === [] || ContentExecutionContract::formatValid($draft['paragraphs'][$slot], $budget);
                 }
                 if ($repairSlot === null && (isset($bodyFailed[$slot]) || isset($quality[$slot]))) {
                     $repairSlot = $slot;
@@ -393,7 +394,7 @@ final class ContentExecutionService
                     // 篇幅修复沿用单场景的最近完整尝试，避免每次从更偏离预算的初稿重做。
                     $sources[$slot] = $lengthBatch ? ($recovery['repair']['paragraphs'][$slot] ?? $draft['paragraphs'][$slot]) : $draft['paragraphs'][$slot];
                     $counts[$slot] = ContentSchema::count(ContentExecutionContract::slotText($sources[$slot]));
-                    $directions[$slot] = $lengthBatch ? ($counts[$slot] < $lowest ? 'expand' : 'shorten') : 'quality';
+                    $directions[$slot] = $lengthBatch ? ($sources[$slot] === [] ? 'write' : ($counts[$slot] < $lowest ? 'expand' : 'shorten')) : 'quality';
                 }
                 $context['repair_slot_counts'] = $counts;
                 $context['repair_slot_directions'] = $directions;
@@ -405,7 +406,7 @@ final class ContentExecutionService
                 $payload['repair_measurement'] = $lengthBatch
                     ? ['slots' => $repairSlots, 'actual_characters' => $counts, 'target_characters' => $targetCount,
                         'required_change' => array_map(fn (int $count): int => $targetCount - $count, $counts), 'direction' => 'length', 'directions' => $directions,
-                        'instruction' => '按directions分别处理各场景：expand补足在场人物的对白、反应与行动后果，不重复其他场景事件；shorten删除重复描述、流程细节与非必要动作，保留关键行动和对白。各场景按自己的required_change净增或净删。']
+                        'instruction' => '按directions分别处理各场景：write表示该场景在上次整章输出中被截断、尚未写出，按slot_plan从头写出完整场景；expand补足在场人物的对白、反应与行动后果，不重复其他场景事件；shorten删除重复描述、流程细节与非必要动作，保留关键行动和对白。各场景按自己的required_change净增或净删。']
                     : ['slots' => $repairSlots, 'actual_characters' => $counts, 'target_characters' => $targetCount,
                         'required_change' => 0, 'direction' => 'quality',
                         'instruction' => '这些场景字数都已合格，只改写previous_response_failure指出的句子：照搬细纲的改成人物言行或自然叙述，叙述里转述对白原话的删去转述；不增删情节，每个场景篇幅保持在原范围。'];
@@ -432,6 +433,7 @@ final class ContentExecutionService
                 // 字数在容差内而分段规则失败时只调格式，不能被误导成扩写或压缩；因整章合计越界选中的场景按原区间增删。
                 [$lowest, $highest] = $byTotal ? [$budget['min'], $budget['max']] : ContentExecutionContract::tolerated($budget);
                 $context['repair_direction'] = match (true) {
+                    $repairSource === [] => 'write',
                     $currentCount > $highest => 'shorten',
                     $currentCount < $lowest => 'expand',
                     isset($quality[$slot]) => 'quality',
@@ -442,6 +444,7 @@ final class ContentExecutionService
                     'instruction' => match ($context['repair_direction']) {
                         'shorten' => '本场景超长，只做压缩，删除重复描述、流程细节与非必要动作，保留已有关键行动和对白，不把后文动作提前写入。',
                         'expand' => '本场景过短，补足在场人物的对白、反应与行动后果，不重复前后场景事件。',
+                        'write' => '本场景在上次整章输出中被截断、尚未写出，按slot_plan从头写出完整场景，与前后场景衔接。',
                         'quality' => '本场景字数合格，只改写previous_response_failure指出的句子：照搬细纲的改成人物言行或自然叙述，叙述里转述对白原话的删去转述；不增删情节。',
                         default => '本场景字数合格，只按previous_response_failure修正分段：对白独立成段，碎句合并为完整叙述段，不增删情节。',
                     }];
@@ -569,7 +572,12 @@ final class ContentExecutionService
             $error = $data['validation_error'] ?? $error;
             $log = CostLog::where('novel_stage_id', $stage->id)->whereKey($data['cost_log_id'] ?? 0)->where('status', 'succeeded')->first();
             $parts = $log?->structured_output['paragraphs'] ?? null;
-            if (is_array($data['repaired_draft']['response'] ?? null)) {
+            if (is_array($data['truncated_draft']['response'] ?? null)) {
+                // 整章输出被截断：已完整的场景作为草稿保留，未写完的场景为空，下一次请求按细纲补写。
+                $draft = ['cost_log_id' => $data['truncated_draft']['cost_log_id'], 'response' => $data['truncated_draft']['response']];
+                $repair = null;
+                $inRun = true;
+            } elseif (is_array($data['repaired_draft']['response'] ?? null)) {
                 // 修复已合入，其余场景逐字保留；多场景修复中未达标的场景按尝试保留，作下次修复输入。
                 $draft = ['cost_log_id' => $data['cost_log_id'] ?? null, 'response' => $data['repaired_draft']['response'], 'merged_stage_id' => $stage->id, 'merged_hash' => $data['repaired_draft']['hash']];
                 $repair = is_array($parts) && isset($data['repair_slots'])
@@ -615,6 +623,22 @@ final class ContentExecutionService
         }
 
         return $repair;
+    }
+
+    /** 达到输出上限而截断的整章正文响应：取出已完整写出的场景，未写完的场景记为空列表；不是截断或没有完整场景时返回 null。
+     *
+     * @param  array<string, mixed>  $budget
+     * @return array{cost_log_id: int, response: array{title: string, paragraphs: array<string, list<array<string, string>>>}, missing: list<string>}|null
+     */
+    public static function truncatedDraft(?CostLog $log, array $budget): ?array
+    {
+        $raw = $log?->raw_response;
+        if ($log === null || ! is_array($raw) || data_get($raw, 'incomplete_details.reason') !== 'max_output_tokens' || ! is_string($log->response_text)) {
+            return null;
+        }
+        $salvaged = ContentExecutionContract::salvageTruncated($log->response_text, $budget['slots']);
+
+        return $salvaged === null ? null : ['cost_log_id' => $log->id, 'response' => ['title' => $salvaged['title'], 'paragraphs' => $salvaged['paragraphs']], 'missing' => $salvaged['missing']];
     }
 
     /** 本运行冻结细纲下的整章正文预算。
@@ -806,6 +830,7 @@ final class ContentExecutionService
         $droppedRanges = [];
         $reusedDraft = $request['context']['reused_draft'] ?? null;
         $reusedRevision = $request['context']['reused_revision'] ?? null;
+        $truncatedDraft = null;
         try {
             $tokens = isset($request['context']['draft_repair_slot']) ? ($run->config['repair_max_output_tokens'] ?? $run->config['max_output_tokens']) : $run->config['max_output_tokens'];
             // 首次正文的推理容量只来自新运行冻结配置，单段修复仍使用独立预算。
@@ -859,9 +884,18 @@ final class ContentExecutionService
                 $budget => 'budget_exhausted',
                 $exception->status === 'unknown' => 'unknown',
                 $exception->category === 'http_402' => 'insufficient_balance',
+                $exception->category === 'output_truncated' => 'output_truncated',
                 default => 'provider_failed',
             };
-            $error = $exception->category === 'context_capacity' || $budget ? $exception->getMessage() : null;
+            $error = in_array($exception->category, ['context_capacity', 'output_truncated'], true) || $budget ? $exception->getMessage() : null;
+            // 整章正文被截断时保留已完整写出的场景，未写完的场景在额度内逐场景补写，不重写整章。
+            if ($failure === 'output_truncated' && $step === 'draft' && ! isset($request['context']['draft_repair_slot'])) {
+                $truncatedDraft = self::truncatedDraft($log, $request['context']['budget']);
+                if ($truncatedDraft !== null) {
+                    $error = '正文输出达到Token上限被截断：已保留完整场景'.(implode('、', array_diff($request['context']['budget']['slots'], $truncatedDraft['missing'])) ?: '无')
+                        .'，未写完的场景'.implode('、', $truncatedDraft['missing']).'需按细纲补写。';
+                }
+            }
         } catch (Throwable $exception) {
             // 采用已保存响应时没有新请求：复验失败同样归为响应结构无效。
             $failure = $log?->status === 'succeeded' || $reusedDraft !== null || $reusedRevision !== null ? 'invalid_schema' : (CostLog::where('novel_stage_id', $stage->id)->exists() ? 'unknown' : 'audit_failed');
@@ -870,7 +904,7 @@ final class ContentExecutionService
         try {
             $repairSlot = $request['context']['draft_repair_slot'] ?? null;
             $repairSlots = $request['context']['draft_repair_slots'] ?? null;
-            $next = DB::transaction(function () use ($id, $token, $stage, $source, $step, $data, $failure, $error, $log, $started, $repairedDraft, $droppedRanges, $reusedDraft, $reusedRevision, $repairSlot, $repairSlots): bool {
+            $next = DB::transaction(function () use ($id, $token, $stage, $source, $step, $data, $failure, $error, $log, $started, $repairedDraft, $droppedRanges, $reusedDraft, $reusedRevision, $repairSlot, $repairSlots, $truncatedDraft): bool {
                 $reference = ChapterGenerationRun::findOrFail($id);
                 $novel = Novel::lockForUpdate()->findOrFail($reference->chapter->novel_id);
                 $run = ChapterGenerationRun::lockForUpdate()->findOrFail($id);
@@ -884,7 +918,8 @@ final class ContentExecutionService
                 }
                 $stop = $failure;
                 // 篇幅或分段未通过时，在已授权额度内继续修复，不再一次失败就停下等待手动恢复。
-                $repairInRun = $failure === 'invalid_schema' && $this->canRepairInRun($run, $novel, $error, $step);
+                $repairInRun = ($failure === 'invalid_schema' && $this->canRepairInRun($run, $novel, $error, $step))
+                    || ($truncatedDraft !== null && self::slotRepair($run) && $this->hasRepairQuota($run, $novel));
                 if ($repairInRun) {
                     $stop = null;
                 }
@@ -906,6 +941,9 @@ final class ContentExecutionService
                 }
                 if ($repairSlots !== null) {
                     $output['repair_slots'] = $repairSlots;
+                }
+                if ($truncatedDraft !== null) {
+                    $output['truncated_draft'] = $truncatedDraft;
                 }
                 if ($repairInRun) {
                     $run->next_step = $step;

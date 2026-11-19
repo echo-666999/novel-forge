@@ -399,6 +399,7 @@ class ViewChapterContent extends Page implements HasTable
             'retry_limit' => '推进修订次数耗尽，已停止并保留全部版本',
             'unknown' => '调用结果未知，请先核查费用及已保存产物',
             'provider_failed' => '供应商明确失败，未自动重发',
+            'output_truncated' => '正文输出达到Token上限被截断，已完整写出的场景已保留；恢复时只补写未写完的场景',
             'invalid_schema' => '响应结构或引用证据无效，原始响应已保留',
             'length_invalid' => '正文字数不符合冻结范围，正文已保留',
             'blocked' => '检查发现核心设定冲突，已阻塞',

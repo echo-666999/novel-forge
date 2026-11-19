@@ -32,6 +32,15 @@ final class ChapterGenerationAgent implements Agent, HasStructuredOutput
         // 单段修复属于编辑任务，不能同时要求重写整章，否则会诱发扩写或照抄旧段。
         if (isset($this->options->executionContext['draft_repair_slot'])) {
             $scenes = count($this->options->executionContext['draft_repair_slots'] ?? []) > 1 ? '几个场景' : '一个场景';
+            // 合并修复中有截断未写出的场景时，提示这些场景按细纲补写，而不是修改空的原文。
+            if (in_array('write', $this->options->executionContext['repair_slot_directions'] ?? [], true)) {
+                $scenes .= '（repair_source.text为空的场景在上次输出中被截断，按slot_plan补写完整）';
+            }
+            // 截断后补写的单个场景没有原文可改，按细纲写作，不套用编辑原文的要求。
+            if (($this->options->executionContext['repair_direction'] ?? null) === 'write') {
+                return '你正在为已有小说补写一个场景：上次整章输出在此处被截断，repair_source.text为空。按slot_plan写出完整场景，保持人物立场、因果顺序和事实类别，与surrounding_paragraphs中前后已保留的场景衔接，不得重复其事件。保持段落列表结构：叙述段按节拍成段、不夹带原话，对白段一人一次发言。标题使用original_title。遵守作者原始创意和rule_catalog。'
+                    .ContentExecutionContract::outputInstructions($this->options->chapterStep, $this->options->executionContext);
+            }
 
             return '你正在编辑已有小说的'.$scenes.'，不是创作新章节。仅修改repair_source.text，保留关键行动、对白、人物立场、因果顺序和事实类别，保持段落列表结构：叙述段按节拍成段、不夹带原话，对白段一人一次发言。surrounding_paragraphs只用于衔接，不得重复其事件。按repair_measurement实测差额完成压缩或扩写；优先删除重复解释和非必要细节，不能删除推进所必需的行动。标题使用original_title。遵守作者原始创意和rule_catalog。'
                 .ContentExecutionContract::outputInstructions($this->options->chapterStep, $this->options->executionContext);

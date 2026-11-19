@@ -555,4 +555,17 @@ class ContentDraftBudgetTest extends TestCase
         $this->assertStringContainsString('估出低于834字必须先补写再输出', $draft);
         $this->assertStringNotContainsString('每个节拍都要展开', $expand);
     }
+
+    /** 截断响应只取出已闭合的场景；正文里的引号、括号与转义不影响配对，未写完的场景记为空。 */
+    public function test_salvage_truncated_keeps_only_closed_scenes(): void
+    {
+        $text = '{"title":"第十章\\"两把\\"钥匙","paragraphs":{"scene_1":[{"kind":"narration","text":"她把[编号]与{备注}排开。"},{"kind":"dialogue","text":"“柜子]第三格\\"在哪？”"}],"scene_2":[{"kind":"narration","text":"写到一半';
+        $salvaged = ContentExecutionContract::salvageTruncated($text, ['scene_1', 'scene_2', 'scene_3']);
+        $this->assertSame('第十章"两把"钥匙', $salvaged['title']);
+        $this->assertSame([['kind' => 'narration', 'text' => '她把[编号]与{备注}排开。'], ['kind' => 'dialogue', 'text' => '“柜子]第三格"在哪？”']], $salvaged['paragraphs']['scene_1']);
+        $this->assertSame([], $salvaged['paragraphs']['scene_2']);
+        $this->assertSame([], $salvaged['paragraphs']['scene_3']);
+        $this->assertSame(['scene_2', 'scene_3'], $salvaged['missing']);
+        $this->assertNull(ContentExecutionContract::salvageTruncated('{"title":"空","paragraphs":{"scene_1":[{"kind":"narration","text":"未完', ['scene_1', 'scene_2']));
+    }
 }
