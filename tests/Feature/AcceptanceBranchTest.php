@@ -200,6 +200,13 @@ class AcceptanceBranchTest extends B04ExecutionTest
         $draft = TextRequestOptions::executionChapter('draft', 0, [...$context, 'accepted_branch_continuation' => true], 16384);
         $this->assertSame(16384, $draft->maxOutputTokens);
         $this->assertSame(300, $draft->timeoutSeconds);
+        // 运行冻结扩展输出时整章初稿可用到32768，超过即拒绝。
+        $this->assertSame(32768, TextRequestOptions::executionChapter('draft', 0, [...$context, 'extended_output' => true], 32768)->maxOutputTokens);
+        try {
+            TextRequestOptions::executionChapter('draft', 0, [...$context, 'extended_output' => true], 32769);
+            $this->fail('超过扩展输出上限必须拒绝');
+        } catch (InvalidArgumentException) {
+        }
         $this->expectException(InvalidArgumentException::class);
         TextRequestOptions::executionChapter('draft', 0, $context, 16384);
     }

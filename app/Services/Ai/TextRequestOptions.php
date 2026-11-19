@@ -13,6 +13,9 @@ final readonly class TextRequestOptions
     /** 扩展推理请求的最长HTTP超时；长超时队列任务必须大于此值，否则请求会被任务超时打断成未知结果。 */
     public const EXTENDED_TIMEOUT_SECONDS = 300;
 
+    /** 扩展输出容量（含推理）的上限，模型配置的 extended_output_tokens 不得超过此值。 */
+    public const EXTENDED_OUTPUT_LIMIT = 32768;
+
     /** 参数仅由用途工厂生成；正文仅接受当前统一协议。
      * @param  array{start: int, end: int, total: int}|null  $outlineRange
      * @param  string|null  $builtinInstructions  根运行冻结的固定提示词，空值兼容历史程序文本。
@@ -72,10 +75,10 @@ final readonly class TextRequestOptions
     public static function executionChapter(string $step, float $temperature, array $context, int $bodyTokens = 8192): self
     {
         self::setting($temperature);
-        // 仅显式单段修复，或运行已冻结扩展输出容量（含旧验收分支）的正文、修订、复查允许16K推理，其他请求保持原上限。
+        // 仅显式单段修复，或运行已冻结扩展输出容量（含旧验收分支）的正文、修订、复查允许扩展推理容量，其他请求保持原上限。
         $repairThinking = ($context['deepseek_reasoning_effort'] ?? null) === 'low'
             && (($step === 'draft' && isset($context['draft_repair_slot'])) || (in_array($step, ['draft', 'revise', 'check'], true) && (($context['accepted_branch_continuation'] ?? false) || ($context['extended_output'] ?? false))));
-        if (! in_array($step, ['fine', 'draft', 'revise', 'check'], true) || $bodyTokens < 1 || $bodyTokens > ($repairThinking ? 16384 : 8192)) {
+        if (! in_array($step, ['fine', 'draft', 'revise', 'check'], true) || $bodyTokens < 1 || $bodyTokens > ($repairThinking ? self::EXTENDED_OUTPUT_LIMIT : 8192)) {
             throw new InvalidArgumentException('统一正文步骤无效');
         }
         foreach (['anchors', 'rules', 'findings'] as $field) {

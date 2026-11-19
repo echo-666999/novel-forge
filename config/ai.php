@@ -21,14 +21,15 @@ return [
         ],
     ],
     // 模型配置：供应商、可选性与能力在新运行创建时冻结进运行配置，旧运行不受修改影响。
-    // extended_output_tokens：正文、修订、复查可用的扩展输出容量（含推理），空值表示保持8192。
+    // extended_output_tokens：正文、修订、复查可用的扩展输出容量（含推理），空值表示保持8192，最大32768。
+    // DeepSeek Flash 写整章初稿时推理常达1.4万至1.6万Token，16384会截断正文，故提高到32768。
     // review_reasoning：独立评审的推理强度，空值表示不开启。slot_repair：正文字数失败后按段修复。
     'models' => [
         'deepseek-flash' => [
             'label'                  => 'DeepSeek Flash',
             'provider'               => 'deepseek',
             'selectable'             => true,
-            'extended_output_tokens' => 16384,
+            'extended_output_tokens' => 32768,
             'review_reasoning'       => 'low',
             'slot_repair'            => true
         ],
@@ -36,7 +37,7 @@ return [
             'label'                  => 'DeepSeek V4 Pro',
             'provider'               => 'deepseek',
             'selectable'             => true,
-            'extended_output_tokens' => 16384,
+            'extended_output_tokens' => 32768,
             'review_reasoning'       => 'low',
             'slot_repair'            => true
         ],
