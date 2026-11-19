@@ -775,7 +775,7 @@ class B04ExecutionTest extends TestCase
     {
         $novel = B04ContentTest::readyNovel();
         Livewire::test(ViewNovel::class, ['record' => $novel->id])->callAction('generateFirstChapter', [
-            'tokens' => 8192, 'request_limit' => 5, 'execution_limit' => 20, 'reason' => '隔离后台启动', 'accept_request' => true])->assertHasNoActionErrors();
+            'tokens' => 8192, 'request_limit' => 5, 'reason' => '隔离后台启动', 'accept_request' => true])->assertHasNoActionErrors();
         $this->drain();
         $run = ChapterGenerationRun::sole();
         Livewire::test(ViewChapterContent::class, ['record' => $novel->id])->assertSee('记录全文核对')
@@ -789,7 +789,7 @@ class B04ExecutionTest extends TestCase
     {
         $novel = B04ContentTest::readyNovel();
         Livewire::test(ViewNovel::class, ['record' => $novel->id])->callAction('generateFirstChapter', [
-            'tokens' => 8192, 'request_limit' => 5, 'execution_limit' => 20, 'reason' => '隔离后台启动', 'accept_request' => true])->assertHasNoActionErrors();
+            'tokens' => 8192, 'request_limit' => 5, 'reason' => '隔离后台启动', 'accept_request' => true])->assertHasNoActionErrors();
         $this->drain();
         $run = ChapterGenerationRun::sole();
         Livewire::test(ViewChapterContent::class, ['record' => $novel->id])
@@ -1012,7 +1012,7 @@ class B04ExecutionTest extends TestCase
         $novel = B04ContentTest::readyNovel();
         DB::table('novel_outline_chapters')->where('chapter_number', 1)->update(['title' => '隔离篡改来源']);
         Livewire::test(ViewNovel::class, ['record' => $novel->id])->callAction('generateFirstChapter', [
-            'tokens' => 8192, 'request_limit' => 5, 'execution_limit' => 20, 'reason' => '来源无效应拒绝', 'accept_request' => true])->assertNotified('首章操作未执行');
+            'tokens' => 8192, 'request_limit' => 5, 'reason' => '来源无效应拒绝', 'accept_request' => true])->assertNotified('首章操作未执行');
         $this->assertSame(0, $novel->chapters()->count());
         Http::assertNothingSent();
     }

@@ -86,7 +86,7 @@ class C07RevisionWorkbenchTest extends B04ExecutionTest
         // 另起一次修订运行，弹窗只列新运行自己的请求。
         app(ContentGenerationService::class)->recordReading($first->id, User::firstOrFail(), true, ['原候选已核对']);
         $page = Livewire::test(ViewChapterContent::class, ['record' => $first->chapter->novel_id])->assertSee('当前步骤：')
-            ->callAction('reviseIssues', data: ['parent_id' => $first->id, 'version_id' => ChapterVersion::sole()->id, 'issues' => '人物口吻不一致：请把首段对白改为克制的表达。', 'execution_limit' => 40, 'accept_request' => true]);
+            ->callAction('reviseIssues', data: ['parent_id' => $first->id, 'version_id' => ChapterVersion::sole()->id, 'issues' => '人物口吻不一致：请把首段对白改为克制的表达。', 'accept_request' => true]);
         $this->drain();
         $child = ChapterGenerationRun::latest('id')->firstOrFail();
         $childLogs = CostLog::whereIn('novel_stage_id', NovelStage::where('input->run_id', $child->id)->pluck('id'))->pluck('id');
@@ -120,7 +120,7 @@ class C07RevisionWorkbenchTest extends B04ExecutionTest
         $page = Livewire::test(ViewChapterContent::class, ['record' => $novelId])->assertActionVisible('reviseIssues')->assertActionVisible('manualEdit')
             ->assertActionHasUrl('manualEdit', NovelResource::getUrl('editor', ['record' => $novelId, 'chapter' => 1]));
         // 不勾选追加确认会被表单拦下，服务端同样拒绝。
-        $page->callAction('reviseIssues', data: ['issues' => '人物口吻不一致：第三轮。', 'execution_limit' => 500, 'accept_request' => true])->assertHasActionErrors(['extra_round']);
+        $page->callAction('reviseIssues', data: ['issues' => '人物口吻不一致：第三轮。', 'accept_request' => true])->assertHasActionErrors(['extra_round']);
         try {
             $round();
             $this->fail('未确认不能追加第三轮');
@@ -162,7 +162,7 @@ class C07RevisionWorkbenchTest extends B04ExecutionTest
         // 轮次用完后仍可整章重写：新运行不带工作台标记、从正文生成起步，生成新候选并检查。
         $versions = ChapterVersion::count();
         Livewire::test(ViewChapterContent::class, ['record' => $novelId])
-            ->callAction('rewriteChapter', ['request_limit' => 5, 'execution_limit' => 500, 'accept_request' => true])->assertHasNoActionErrors();
+            ->callAction('rewriteChapter', ['request_limit' => 5, 'accept_request' => true])->assertHasNoActionErrors();
         $rewrite = ChapterGenerationRun::latest('id')->firstOrFail();
         // 整章重写多留一次格式补发，补发后仍够自动修订并复查。
         $this->assertSame(5, $rewrite->request_limit);
@@ -261,7 +261,7 @@ class C07RevisionWorkbenchTest extends B04ExecutionTest
         $novel = $parent->chapter->novel->fresh();
         $novel->update(['max_execution_count' => $novel->execution_count + 2]);
         Livewire::test(ViewChapterContent::class, ['record' => $novel->id])
-            ->mountAction('reviseIssues')->assertActionDataSet(['execution_limit' => $novel->execution_count + 3])
+            ->mountAction('reviseIssues')
             ->setActionData(['issues' => '人物口吻不一致：请把首段对白改为克制的表达。', 'accept_request' => true])
             ->callMountedAction()->assertHasNoActionErrors();
         $this->assertSame($novel->execution_count + 3, $novel->fresh()->max_execution_count);
@@ -279,7 +279,7 @@ class C07RevisionWorkbenchTest extends B04ExecutionTest
         $issue = '人物口吻不一致：请把首段对白改为克制的表达，保持事实不变。';
         Livewire::test(ViewChapterContent::class, ['record' => $parent->chapter->novel_id])
             ->callAction('reviseIssues', data: ['parent_id' => $parent->id, 'version_id' => $source->id,
-                'issues' => $issue, 'execution_limit' => 30, 'accept_request' => true])
+                'issues' => $issue, 'accept_request' => true])
             ->assertHasNoActionErrors();
         $child = ChapterGenerationRun::latest('id')->firstOrFail();
         $this->assertNotSame($parent->id, $child->id);

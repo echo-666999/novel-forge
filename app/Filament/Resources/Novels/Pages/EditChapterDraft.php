@@ -376,13 +376,12 @@ class EditChapterDraft extends Page
                 ->action(fn () => $this->loadVersion(ChapterVersion::where('chapter_id', $this->chapterId())->where('version', $this->aiRevision()['parent'])->firstOrFail()->id)),
             Action::make('check')->label('检查已保存的候选')->color('success')->visible(fn (): bool => $this->manualRun() !== null)
                 ->modalDescription(fn (): string => '对已保存的人工候选做一次推进检查（1 次请求）'.$this->executionLimitNote(1).'；不自动修订，也不提交。通过后回工作台一键提交。未保存为候选的工作草稿不会发送。')
-                ->schema([TextInput::make('execution_limit')->label('小说执行总上限')->integer()->minValue(1)->default(fn (): int => max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + 1))->required(),
-                    Textarea::make('reason')->label('检查原因')->default(fn (): string => $this->defaultReason())->required(), Checkbox::make('approve')->label('确认发送已保存人工候选，执行一次付费检查')->accepted()])
+                ->schema([Textarea::make('reason')->label('检查原因')->default(fn (): string => $this->defaultReason())->required(), Checkbox::make('approve')->label('确认发送已保存人工候选，执行一次付费检查')->accepted()])
                 ->action(function (array $data): void {
                     try {
                         $run = $this->manualRun();
                         abort_if($run === null, 409);
-                        app(ContentGenerationService::class)->continue($run->id, executionLimit: (int) $data['execution_limit'], reason: $data['reason'], authorId: Filament::auth()->id());
+                        app(ContentGenerationService::class)->continue($run->id, executionLimit: max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + 1), reason: $data['reason'], authorId: Filament::auth()->id());
                         $this->redirect(NovelResource::getUrl('content', ['record' => $this->getRecord(), 'chapter' => $this->chapterNumber]));
                     } catch (InvalidArgumentException $error) {
                         Notification::make()->danger()->title('检查未启动')->body($error->getMessage())->send();

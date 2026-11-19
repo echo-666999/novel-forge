@@ -559,45 +559,49 @@ class ViewChapterContent extends Page implements HasTable
                                     TextEntry::make('evidence')->label('原文依据')->listWithLineBreaks()->bulleted()->placeholder('无引文')->extraAttributes(['style' => 'line-height: 1.8']),
                                 ]),
                         ]),
-                        Section::make('事件提取')->compact()->collapsible()->description(fn (): ?string => $this->extractionCounts())->schema([
-                            TextEntry::make('extraction_empty')->hiddenLabel()->state('尚无记录')->color('gray')->visible(fn (): bool => $this->submissionView()['extraction'] === null),
-                            RepeatableEntry::make('extraction_foreshadows')->label('伏笔流转')->state(fn (): array => $this->extractionRows('foreshadows'))
-                                ->visible(fn (): bool => $this->extractionRows('foreshadows') !== [])->schema([
-                                    Flex::make([
-                                        TextEntry::make('title')->hiddenLabel()->weight('bold'),
-                                        TextEntry::make('verdict')->hiddenLabel()->badge()->grow(false)->color('primary'),
-                                    ])->verticallyAlignCenter(),
-                                    TextEntry::make('reason')->label('说明'),
-                                    TextEntry::make('evidence')->label('原文依据')->listWithLineBreaks()->bulleted()->placeholder('无引文')->extraAttributes(['style' => 'line-height: 1.8']),
-                                ]),
-                            RepeatableEntry::make('extraction_entities')->label('新实体（需批准）')->state(fn (): array => $this->extractionRows('entities'))
-                                ->visible(fn (): bool => $this->extractionRows('entities') !== [])->schema([
-                                    Flex::make([
-                                        TextEntry::make('title')->hiddenLabel()->weight('bold'),
-                                        TextEntry::make('verdict')->hiddenLabel()->badge()->grow(false)->color('warning'),
-                                    ])->verticallyAlignCenter(),
-                                    TextEntry::make('reason')->label('实体定义'),
-                                    TextEntry::make('evidence')->label('原文依据')->listWithLineBreaks()->bulleted()->placeholder('无引文')->extraAttributes(['style' => 'line-height: 1.8']),
-                                ]),
-                            RepeatableEntry::make('extraction_changes')->label('状态变化')->state(fn (): array => $this->extractionRows('changes'))
-                                ->visible(fn (): bool => $this->extractionRows('changes') !== [])->schema([
-                                    Flex::make([
-                                        TextEntry::make('title')->hiddenLabel()->weight('bold'),
-                                        TextEntry::make('verdict')->hiddenLabel()->badge()->grow(false)->color('gray'),
-                                    ])->verticallyAlignCenter(),
-                                    TextEntry::make('reason')->label('变化'),
-                                ]),
-                            RepeatableEntry::make('extraction_events')->label('事件（按叙事顺序）')->state(fn (): array => $this->extractionRows('events'))->placeholder('未提取到事件。')
-                                ->visible(fn (): bool => $this->submissionView()['extraction'] !== null)->schema([
-                                    Flex::make([
-                                        TextEntry::make('title')->hiddenLabel()->weight('bold'),
-                                        TextEntry::make('verdict')->hiddenLabel()->badge()->grow(false)->color(fn (string $state): string => $state === '当前' ? 'gray' : 'warning'),
-                                    ])->verticallyAlignCenter(),
-                                    TextEntry::make('reason')->label('事件经过'),
-                                    TextEntry::make('people')->label('主体与对象'),
-                                    TextEntry::make('evidence')->label('原文依据')->listWithLineBreaks()->bulleted()->placeholder('无引文')->extraAttributes(['style' => 'line-height: 1.8']),
-                                ]),
-                        ]),
+                        Section::make('事件提取')->key('submission-extraction')->compact()->collapsible()->description(fn (): ?string => $this->extractionCounts())
+                            ->headerActions([$this->commitChapterAction('commitChapterInline', true)->color('warning')])->schema([
+                                TextEntry::make('extraction_empty')->hiddenLabel()->state('尚无记录')->color('gray')->visible(fn (): bool => $this->submissionView()['extraction'] === null),
+                                RepeatableEntry::make('extraction_foreshadows')->label('伏笔流转')->state(fn (): array => $this->extractionRows('foreshadows'))
+                                    ->visible(fn (): bool => $this->extractionRows('foreshadows') !== [])->schema([
+                                        Flex::make([
+                                            TextEntry::make('title')->hiddenLabel()->weight('bold'),
+                                            TextEntry::make('verdict')->hiddenLabel()->badge()->grow(false)->color('primary'),
+                                        ])->verticallyAlignCenter(),
+                                        TextEntry::make('reason')->label('说明'),
+                                        TextEntry::make('evidence')->label('原文依据')->listWithLineBreaks()->bulleted()->placeholder('无引文')->extraAttributes(['style' => 'line-height: 1.8']),
+                                    ]),
+                                RepeatableEntry::make('extraction_entities')->label(fn (): string => $this->submission()?->status === 'committed' ? '新实体' : '新实体（需批准）')->state(fn (): array => $this->extractionRows('entities'))
+                                    ->visible(fn (): bool => $this->extractionRows('entities') !== [])->schema([
+                                        Flex::make([
+                                            TextEntry::make('title')->hiddenLabel()->weight('bold'),
+                                            TextEntry::make('verdict')->hiddenLabel()->badge()->grow(false)
+                                                ->color(fn (string $state): string => match ($state) {
+                                                    '已批准' => 'success', '未批准' => 'gray', default => 'warning',
+                                                }),
+                                        ])->verticallyAlignCenter(),
+                                        TextEntry::make('reason')->label('实体定义'),
+                                        TextEntry::make('evidence')->label('原文依据')->listWithLineBreaks()->bulleted()->placeholder('无引文')->extraAttributes(['style' => 'line-height: 1.8']),
+                                    ]),
+                                RepeatableEntry::make('extraction_changes')->label('状态变化')->state(fn (): array => $this->extractionRows('changes'))
+                                    ->visible(fn (): bool => $this->extractionRows('changes') !== [])->schema([
+                                        Flex::make([
+                                            TextEntry::make('title')->hiddenLabel()->weight('bold'),
+                                            TextEntry::make('verdict')->hiddenLabel()->badge()->grow(false)->color('gray'),
+                                        ])->verticallyAlignCenter(),
+                                        TextEntry::make('reason')->label('变化'),
+                                    ]),
+                                RepeatableEntry::make('extraction_events')->label('事件（按叙事顺序）')->state(fn (): array => $this->extractionRows('events'))->placeholder('未提取到事件。')
+                                    ->visible(fn (): bool => $this->submissionView()['extraction'] !== null)->schema([
+                                        Flex::make([
+                                            TextEntry::make('title')->hiddenLabel()->weight('bold'),
+                                            TextEntry::make('verdict')->hiddenLabel()->badge()->grow(false)->color(fn (string $state): string => $state === '当前' ? 'gray' : 'warning'),
+                                        ])->verticallyAlignCenter(),
+                                        TextEntry::make('reason')->label('事件经过'),
+                                        TextEntry::make('people')->label('主体与对象'),
+                                        TextEntry::make('evidence')->label('原文依据')->listWithLineBreaks()->bulleted()->placeholder('无引文')->extraAttributes(['style' => 'line-height: 1.8']),
+                                    ]),
+                            ]),
                         Section::make('确定性验证')->compact()->schema([
                             TextEntry::make('validation_verdict')->hiddenLabel()->badge()->state(fn (): string => match ($this->submissionView()['validation']['passed'] ?? null) {
                                 true => '通过', false => '未通过', default => '尚无记录',
@@ -998,6 +1002,18 @@ class ViewChapterContent extends Page implements HasTable
         }
     }
 
+    /** 弹窗只确认本次请求上限；本书执行总上限不足时按本次所需补足，不会调低。 */
+    private function executionLimitFor(int $requests): int
+    {
+        return max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + $requests);
+    }
+
+    /** 本书执行次数现状，提示不足时会自动补足。 */
+    private function executionLimitHint(): string
+    {
+        return '本书执行次数已用 '.$this->getRecord()->execution_count.' / '.$this->getRecord()->max_execution_count.'，不足时按本次请求总上限自动补足。';
+    }
+
     /** 根据保留产物显示预算，服务仍会重新校验选择的策略和全局修订设置。 */
     private function recoveryCap(bool $rewrite = false): int
     {
@@ -1022,6 +1038,37 @@ class ViewChapterContent extends Page implements HasTable
             && data_get($this->run()->config, 'submission_review.id') !== $review->id;
     }
 
+    /** 批准新实体并正式提交：页头一个入口；有新实体待批准时，事件提取区块再放一个同样的入口，就近批准。
+     * 两处使用同一弹窗与校验，只是动作名不同。
+     */
+    private function commitChapterAction(string $name, bool $inline = false): Action
+    {
+        return Action::make($name)->label(fn (): string => $this->submission()?->status === 'awaiting_approval' ? '批准新实体并正式提交' : '正式提交当前章')
+            ->visible(fn (): bool => in_array($this->submission()?->status, ['ready', 'awaiting_approval'], true) && ($inline === false || $this->submission()?->status === 'awaiting_approval'))
+            ->modalHeading('批准冻结正文、实体并正式提交')->modalDescription(fn (): string => '正文摘要：'.$this->candidate()?->body_hash.'。提交原子保存事件与状态，完成章节数加1；所有硬门禁会再次校验。')
+            ->schema([TextInput::make('submission_id')->label('冻结准备编号')->default(fn (): ?int => $this->submission()?->id)->readOnly()->required(),
+                TextInput::make('proposal_hash')->label('冻结提议摘要')->default(fn (): string => PlanningJson::hash(ChapterEventExtraction::where('submission_run_id', $this->submission()->id)->sole()->result['proposed_entities']))->readOnly()->required(),
+                TextInput::make('idempotency_key')->label('提交幂等键')->default(fn (): string => (string) Str::uuid7())->readOnly()->required(),
+                CheckboxList::make('approved_entities')->label('逐项批准新实体及别名')->options(fn (): array => $this->entityApprovalOptions()),
+                Checkbox::make('acknowledge')->label('我已核对当前正文及上方评审、事件、状态差异，并批准正式提交')->accepted()])
+            ->action(function (array $data): void {
+                $this->performContentAction(function () use ($data): void {
+                    $run = $this->submission();
+                    $extraction = ChapterEventExtraction::where('submission_run_id', $run->id)->sole();
+                    if ((int) $data['submission_id'] !== $run->id || $data['proposal_hash'] !== PlanningJson::hash($extraction->result['proposed_entities'])) {
+                        throw new InvalidArgumentException('批准表单已过期，请重新打开');
+                    }
+                    app(CanonicalCommitService::class)->commit($run->version_id, ChapterReview::where('submission_run_id', $run->id)->sole()->id,
+                        $extraction->id, ChapterSubmissionValidation::where('submission_run_id', $run->id)->oldest('id')->firstOrFail()->id,
+                        // 提交原因由程序生成并留档，作者无需另填。
+                        $run->expected_state_version, $data['idempotency_key'], Filament::auth()->user(), '作者批准并正式提交第'.$this->chapterNumber.'章', $data['approved_entities'] ?? [], (bool) $data['acknowledge']);
+                });
+                $this->resolvedRun = null;
+                $this->resolvedFormalVersion = null;
+                $this->getRecord()->refresh();
+            });
+    }
+
     /** 按提交评审意见修订：评审问题随运行冻结，定点修订后重新检查，通过后再做一键提交；勾选整章重写时按冻结场景重写。 */
     private function reviewRevisionAction(string $name): Action
     {
@@ -1032,11 +1079,9 @@ class ViewChapterContent extends Page implements HasTable
                 Checkbox::make('rewrite')->label('改为整章重写（问题牵涉多个场景时使用）')->live()
                     ->afterStateUpdated(function (?bool $state, Set $set): void {
                         $set('request_limit', $this->recoveryCap((bool) $state));
-                        $set('execution_limit', max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + $this->recoveryCap((bool) $state)));
                     }),
                 TextInput::make('model')->label('仅本次修订使用的模型')->required()->default(fn (): ?string => data_get($this->run()?->config, 'model')),
-                TextInput::make('request_limit')->label('本次请求总上限')->integer()->minValue(2)->maxValue(6)->default(fn (): int => $this->recoveryCap())->required(),
-                TextInput::make('execution_limit')->label('确认本小说执行总上限')->integer()->minValue(1)->maxValue(2147483647)->default(fn (): int => max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + $this->recoveryCap()))->required(),
+                TextInput::make('request_limit')->label('本次请求总上限')->helperText(fn (): string => $this->executionLimitHint())->integer()->minValue(2)->maxValue(6)->default(fn (): int => $this->recoveryCap())->required(),
                 Textarea::make('reason')->label('修订原因')->default('根据独立提交评审修订当前候选')->required(),
                 Checkbox::make('confirm_unknown')->label('若存在未知调用，我已核查并确认独立新请求可能产生额外费用；旧费用保持未知'),
                 Checkbox::make('accept_request')->label('确认上述本次有限请求及可能费用；不代表作者批准或正式提交')->accepted(),
@@ -1044,7 +1089,7 @@ class ViewChapterContent extends Page implements HasTable
                 // 打开弹窗后评审或候选若已变化，服务层按评审绑定的版本与正文摘要拒绝。
                 $this->performContentAction(function () use ($data): void {
                     $review = ChapterReview::where('submission_run_id', $this->submission()?->id)->firstOrFail();
-                    app(ContentGenerationService::class)->recover($this->run()->id, Filament::auth()->user(), $data['reason'], (int) $data['request_limit'], (int) $data['execution_limit'],
+                    app(ContentGenerationService::class)->recover($this->run()->id, Filament::auth()->user(), $data['reason'], (int) $data['request_limit'], $this->executionLimitFor((int) $data['request_limit']),
                         (bool) ($data['confirm_unknown'] ?? false), (bool) ($data['rewrite'] ?? false), $data['model'], submissionReviewId: $review->id);
                 });
                 $this->resolvedRun = null;
@@ -1124,6 +1169,18 @@ class ViewChapterContent extends Page implements HasTable
         ])->all();
     }
 
+    /** 新实体的批准状态：本次准备已正式提交时按提交记录的批准编号判断，尚未提交时待作者批准。 */
+    private function entityApprovalVerdict(?string $key): string
+    {
+        $submission = $this->submission();
+        $commit = $submission === null ? null : CanonicalCommit::where('submission_run_id', $submission->id)->first();
+        if ($commit === null) {
+            return '待批准';
+        }
+
+        return in_array($key, $commit->approvals['approved_entity_keys'] ?? [], true) ? '已批准' : '未批准';
+    }
+
     /** 事件提取四类结果统一成“标题 + 标签 + 说明 + 证据”卡片。
      * @return list<array<string, mixed>>
      */
@@ -1134,7 +1191,7 @@ class ViewChapterContent extends Page implements HasTable
         return match ($kind) {
             'foreshadows' => $items->map(fn (array $item, int $index): array => ['title' => '伏笔'.($index + 1).' · '.$item['title'], 'verdict' => $item['action'],
                 'reason' => $item['explanation'], 'evidence' => $this->evidenceLines($item['quotes'])])->all(),
-            'entities' => $items->map(fn (array $item, int $index): array => ['title' => '新实体'.($index + 1), 'verdict' => '待批准',
+            'entities' => $items->map(fn (array $item, int $index): array => ['title' => '新实体'.($index + 1), 'verdict' => $this->entityApprovalVerdict($item['key'] ?? null),
                 'reason' => $item['label'], 'evidence' => $this->evidenceLines($item['quotes'])])->all(),
             'changes' => $items->map(fn (array $item): array => ['title' => $item['entity'].' · '.$item['property'], 'verdict' => $item['category'] ?? '状态',
                 'reason' => ($item['before'] !== null ? $item['before'].' → ' : '').$item['after']])->all(),
@@ -1204,9 +1261,6 @@ class ViewChapterContent extends Page implements HasTable
                 Textarea::make('issues')->label('指定问题（每行一条，最多10条）')->rows(8)->default(fn (): string => $this->suggestedIssues())
                     ->helperText(fn (): string => (count($this->pendingIssues()) > 10 ? '当前候选共有'.count($this->pendingIssues()).'条待解决问题，已按严重程度预填前10条，其余可在下一轮处理。' : '已预填当前候选所有待解决的问题。')
                         .'可增删改；例如：人物口吻不一致，请引用具体对白并说明人物应有的表达方式。')->required()->maxLength(10000),
-                // 本轮最多三次请求（修订、格式补发、复评），默认上限须容纳全部三次。
-                TextInput::make('execution_limit')->label('确认小说累计执行上限')->integer()->required()->minValue(1)->maxValue(2147483647)->default(fn (): int => max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + 3))
-                    ->helperText(fn (): string => '已用 '.$this->getRecord()->execution_count.' / 上限 '.$this->getRecord()->max_execution_count.'；本轮最多 3 次请求，上限至少为 '.($this->getRecord()->execution_count + 3).'。'),
                 Checkbox::make('extra_round')->label(fn (): string => '已用完'.RevisionWorkbench::ROUND_LIMIT.'轮默认修订，我确认追加第'.(app(RevisionWorkbench::class)->rounds($this->run()->chapter_id) + 1).'轮（最多'.app(RevisionWorkbench::class)->hardLimit($this->run()->chapter_id).'轮）')
                     ->visible(fn (): bool => app(RevisionWorkbench::class)->rounds($this->run()->chapter_id) >= RevisionWorkbench::ROUND_LIMIT)->accepted(),
                 Checkbox::make('accept_request')->label('授权本轮修订与复评及对应费用')->accepted(),
@@ -1218,7 +1272,8 @@ class ViewChapterContent extends Page implements HasTable
                     }
                     $issues = array_values(array_filter(array_map('trim', explode("\n", $data['issues'])), fn (string $issue): bool => $issue !== ''));
                     app(ContentGenerationService::class)->recover($this->run()->id, Filament::auth()->user(), '作者指定问题修订', 3,
-                        (int) $data['execution_limit'], issues: $issues, expectedVersionId: (int) $data['version_id'], extraRound: (bool) ($data['extra_round'] ?? false));
+                        // 本轮最多三次请求（修订、格式补发、复评），本书上限不足时自动补足。
+                        $this->executionLimitFor(3), issues: $issues, expectedVersionId: (int) $data['version_id'], extraRound: (bool) ($data['extra_round'] ?? false));
                 });
                 $this->resolvedRun = null;
                 $this->resolvedFormalVersion = null;
@@ -1262,7 +1317,6 @@ class ViewChapterContent extends Page implements HasTable
                 ->visible(fn (): bool => $this->submission()?->status === 'failed')
                 ->modalDescription('保留旧正文、评审、提取和费用，新建后继准备；最多重新评审和提取各一次，未知费用不冲销。')
                 ->schema([TextInput::make('predecessor_id')->label('失败准备编号')->default(fn (): ?int => $this->submission()?->id)->readOnly()->required(),
-                    TextInput::make('execution_limit')->label('小说累计执行上限')->integer()->minValue(1)->maxValue(2147483647)->required()->default(fn (): int => max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + 2)),
                     Textarea::make('reason')->label('重跑原因')->required(), Checkbox::make('accept_request')->label('已核查旧调用，授权最多两次真实请求及可能重复费用')->accepted()])
                 ->action(function (array $data): void {
                     // 冻结弹窗打开时的失败编号，过期页面不得接管另一次失败。
@@ -1272,14 +1326,13 @@ class ViewChapterContent extends Page implements HasTable
                             throw new InvalidArgumentException('失败准备已变化，请刷新页面');
                         }
                         app(ChapterSubmissionService::class)->prepare($run->version_id, Filament::auth()->user(), $run->expected_state_version,
-                            $data['reason'], (int) $data['execution_limit'], retryOf: $run->id);
+                            $data['reason'], $this->executionLimitFor(2), retryOf: $run->id);
                     });
                     $this->getRecord()->refresh();
                 }), Action::make('submitInOneStep')->label('一键正式提交')->color('success')->visible(fn (): bool => $this->run()?->stop_reason === 'b04_accepted' && $this->submission() === null)
                 ->modalHeading('评审、提取并正式提交')
                 ->modalDescription('当前正文保持冻结，依次做一次独立评审和一次事件提取（最多两次模型请求），任何失败立即停止，不自动重试。评审未通过或有新实体待批准时停下，在本页处理。')
-                ->schema([TextInput::make('execution_limit')->label('小说累计执行上限')->integer()->minValue(1)->maxValue(2147483647)->required()
-                    ->default(fn (): int => max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + 2)),
+                ->schema([
                     // 不勾选时只做评审与提取，之后用“正式提交当前章”逐项批准后提交。
                     Checkbox::make('auto_commit')->label('评审通过且没有新实体待批准时自动正式提交')->default(true)
                         ->helperText('取消勾选则只做评审和事件提取，完成后再点“正式提交当前章”手动提交。'),
@@ -1288,32 +1341,10 @@ class ViewChapterContent extends Page implements HasTable
                     // 提交原因由程序按操作生成并留档，作者无需另填。
                     $reason = ($data['auto_commit'] ?? false) ? '作者一键正式提交第'.$this->chapterNumber.'章' : '作者准备正式提交第'.$this->chapterNumber.'章，评审与提取后手动提交';
                     $this->performContentAction(fn () => app(ChapterSubmissionService::class)->prepare($this->candidate()->id, Filament::auth()->user(),
-                        app(CanonicalBaselines::class)->activeStateBefore($this->getRecord(), $this->candidate()->chapter->number), $reason, (int) $data['execution_limit'],
+                        app(CanonicalBaselines::class)->activeStateBefore($this->getRecord(), $this->candidate()->chapter->number), $reason, $this->executionLimitFor(2),
                         autoCommit: ($data['auto_commit'] ?? false) ? ['reason' => $reason] : null));
                     $this->getRecord()->refresh();
-                }), Action::make('commitChapter')->label('正式提交当前章')->visible(fn (): bool => in_array($this->submission()?->status, ['ready', 'awaiting_approval'], true))
-                ->modalHeading('批准冻结正文、实体并正式提交')->modalDescription(fn (): string => '正文摘要：'.$this->candidate()?->body_hash.'。提交原子保存事件与状态，完成章节数加1；所有硬门禁会再次校验。')
-                ->schema([TextInput::make('submission_id')->label('冻结准备编号')->default(fn (): ?int => $this->submission()?->id)->readOnly()->required(),
-                    TextInput::make('proposal_hash')->label('冻结提议摘要')->default(fn (): string => PlanningJson::hash(ChapterEventExtraction::where('submission_run_id', $this->submission()->id)->sole()->result['proposed_entities']))->readOnly()->required(),
-                    TextInput::make('idempotency_key')->label('提交幂等键')->default(fn (): string => (string) Str::uuid7())->readOnly()->required(),
-                    CheckboxList::make('approved_entities')->label('逐项批准新实体及别名')->options(fn (): array => $this->entityApprovalOptions()),
-                    Checkbox::make('acknowledge')->label('我已核对当前正文及上方评审、事件、状态差异，并批准正式提交')->accepted()])
-                ->action(function (array $data): void {
-                    $this->performContentAction(function () use ($data): void {
-                        $run = $this->submission();
-                        $extraction = ChapterEventExtraction::where('submission_run_id', $run->id)->sole();
-                        if ((int) $data['submission_id'] !== $run->id || $data['proposal_hash'] !== PlanningJson::hash($extraction->result['proposed_entities'])) {
-                            throw new InvalidArgumentException('批准表单已过期，请重新打开');
-                        }
-                        app(CanonicalCommitService::class)->commit($run->version_id, ChapterReview::where('submission_run_id', $run->id)->sole()->id,
-                            $extraction->id, ChapterSubmissionValidation::where('submission_run_id', $run->id)->oldest('id')->firstOrFail()->id,
-                            // 提交原因由程序生成并留档，作者无需另填。
-                            $run->expected_state_version, $data['idempotency_key'], Filament::auth()->user(), '作者批准并正式提交第'.$this->chapterNumber.'章', $data['approved_entities'] ?? [], (bool) $data['acknowledge']);
-                    });
-                    $this->resolvedRun = null;
-                    $this->resolvedFormalVersion = null;
-                    $this->getRecord()->refresh();
-                }), Action::make('recoverContent')->label('追加额度继续生成')->modalHeading('追加额度，继续生成本章')
+                }), $this->commitChapterAction('commitChapter'), Action::make('recoverContent')->label('追加额度继续生成')->modalHeading('追加额度，继续生成本章')
                 ->visible(fn (): bool => data_get($this->run()?->config, 'workbench') === null && in_array($this->run()?->status, ['paused', 'error', 'completed'], true) && $this->run()?->stop_reason !== 'b04_accepted' && ! ChapterGenerationRun::where('parent_run_id', $this->run()?->id)->exists())
                 ->modalDescription('新建一个有限运行，从停下的地方继续：缺细纲先补细纲；已有候选正文时在其上定点修订；还没有候选时继续写正文，复用已合格的场景，只修复未通过的部分。勾选整章重写时按冻结细纲重新生成整章候选。旧版本与费用全部保留；本次请求不超过下方上限，未知结果须明确确认。')
                 ->schema([
@@ -1321,16 +1352,14 @@ class ViewChapterContent extends Page implements HasTable
                     Checkbox::make('rewrite')->label('整章重写：不复用现有正文，按冻结细纲重新生成整章候选')->live()
                         ->afterStateUpdated(function (?bool $state, Set $set): void {
                             $set('request_limit', $this->recoveryCap((bool) $state));
-                            $set('execution_limit', max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + $this->recoveryCap((bool) $state)));
                         }),
                     TextInput::make('model')->label('仅本次恢复使用的模型')->required()->default(fn (): ?string => data_get($this->run()?->config, 'model')),
-                    TextInput::make('request_limit')->label('本次请求总上限')->integer()->minValue(2)->maxValue(6)->default(fn (): int => $this->recoveryCap())->required(),
-                    TextInput::make('execution_limit')->label('确认本小说执行总上限')->integer()->minValue(1)->maxValue(2147483647)->default(fn (): int => max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + $this->recoveryCap()))->required(),
+                    TextInput::make('request_limit')->label('本次请求总上限')->helperText(fn (): string => $this->executionLimitHint())->integer()->minValue(2)->maxValue(6)->default(fn (): int => $this->recoveryCap())->required(),
                     Textarea::make('reason')->label('恢复原因与待解决问题')->required(),
                     Checkbox::make('confirm_unknown')->label('若存在未知调用，我已核查并确认独立新请求可能产生额外费用；旧费用保持未知'),
                     Checkbox::make('accept_request')->label('确认上述本次有限请求及可能费用；不代表作者批准或正式提交')->accepted(),
                 ])->action(function (array $data): void {
-                    $this->performContentAction(fn () => app(ContentGenerationService::class)->recover($this->run()->id, Filament::auth()->user(), $data['reason'], (int) $data['request_limit'], (int) $data['execution_limit'], (bool) ($data['confirm_unknown'] ?? false), (bool) ($data['rewrite'] ?? false), $data['model']));
+                    $this->performContentAction(fn () => app(ContentGenerationService::class)->recover($this->run()->id, Filament::auth()->user(), $data['reason'], (int) $data['request_limit'], $this->executionLimitFor((int) $data['request_limit']), (bool) ($data['confirm_unknown'] ?? false), (bool) ($data['rewrite'] ?? false), $data['model']));
                     $this->resolvedRun = null;
                     $this->resolvedFormalVersion = null;
                     $this->getRecord()->refresh();
@@ -1342,14 +1371,12 @@ class ViewChapterContent extends Page implements HasTable
                 ->modalDescription('定点修订每次只能替换问题附近的几段，跨越多段的重复或时序问题容易越修越乱。整章重写按本章冻结的细纲和最新前文重新生成完整正文，再做独立推进检查；不合格时在本运行额度内修复。旧版本与费用全部保留，不占用修订轮次。')
                 ->schema([
                     TextInput::make('model')->label('仅本次重写使用的模型')->required()->default(fn (): ?string => data_get($this->run()?->config, 'model')),
-                    TextInput::make('request_limit')->label('本次请求总上限')->integer()->minValue(2)->maxValue(6)->default(fn (): int => $this->recoveryCap(true))->required(),
-                    TextInput::make('execution_limit')->label('确认本小说执行总上限')->integer()->minValue(1)->maxValue(2147483647)->default(fn (): int => max($this->getRecord()->max_execution_count, $this->getRecord()->execution_count + $this->recoveryCap(true)))->required()
-                        ->helperText(fn (): string => '已用 '.$this->getRecord()->execution_count.' / 上限 '.$this->getRecord()->max_execution_count.'。'),
+                    TextInput::make('request_limit')->label('本次请求总上限')->helperText(fn (): string => $this->executionLimitHint())->integer()->minValue(2)->maxValue(6)->default(fn (): int => $this->recoveryCap(true))->required(),
                     Textarea::make('reason')->label('重写原因')->default('定点修订多轮未解决跨段重复与时序问题，整章重写')->required(),
                     Checkbox::make('confirm_unknown')->label('若存在未知调用，我已核查并确认独立新请求可能产生额外费用；旧费用保持未知'),
                     Checkbox::make('accept_request')->label('确认上述本次有限请求及可能费用；不代表作者批准或正式提交')->accepted(),
                 ])->action(function (array $data): void {
-                    $this->performContentAction(fn () => app(ContentGenerationService::class)->recover($this->run()->id, Filament::auth()->user(), $data['reason'], (int) $data['request_limit'], (int) $data['execution_limit'], (bool) ($data['confirm_unknown'] ?? false), true, $data['model']));
+                    $this->performContentAction(fn () => app(ContentGenerationService::class)->recover($this->run()->id, Filament::auth()->user(), $data['reason'], (int) $data['request_limit'], $this->executionLimitFor((int) $data['request_limit']), (bool) ($data['confirm_unknown'] ?? false), true, $data['model']));
                     $this->resolvedRun = null;
                     $this->resolvedFormalVersion = null;
                     $this->getRecord()->refresh();

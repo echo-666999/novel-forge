@@ -29,6 +29,7 @@ use App\Services\Pipeline\PlanningJson;
 use App\Services\Pipeline\ProgressionChecker;
 use App\Services\Pipeline\SubmissionContract;
 use App\Services\Pipeline\SubmissionValidator;
+use Filament\Actions\Testing\TestAction;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Http\Client\ConnectionException;
@@ -479,12 +480,15 @@ class ChapterSubmissionTest extends TestCase
         $this->actingAs($operator);
         Filament::setCurrentPanel(Filament::getPanel('admin'));
         $extraction = ChapterEventExtraction::where('submission_run_id', $run->id)->sole();
+        // 有新实体待批准时，事件提取区块就近提供批准入口，页头入口同名。
         Livewire::test(ViewChapterContent::class, ['record' => $run->novel_id])
-            ->assertSee('隔离访客')->assertSee('等待作者批准新实体')
-            ->callAction('commitChapter', ['submission_id' => $run->id, 'proposal_hash' => PlanningJson::hash($extraction->result['proposed_entities']),
+            ->assertSee('隔离访客')->assertSee('等待作者批准新实体')->assertSee('批准新实体并正式提交')->assertDontSee('正式提交当前章')->assertSee('待批准')
+            ->callAction(TestAction::make('commitChapterInline')->schemaComponent('submission-extraction'), ['submission_id' => $run->id, 'proposal_hash' => PlanningJson::hash($extraction->result['proposed_entities']),
                 'idempotency_key' => (string) Str::uuid7(), 'approved_entities' => ['new-1'], 'acknowledge' => true])
             ->assertHasNoActionErrors();
         $this->assertSame(1, CanonicalCommit::count());
+        // 提交后新实体按提交记录显示已批准，不再提示待批准。
+        Livewire::test(ViewChapterContent::class, ['record' => $run->novel_id])->assertSee('已批准')->assertDontSee('待批准')->assertDontSee('新实体（需批准）');
         // 提交原因由程序生成并留档。
         $this->assertSame('作者批准并正式提交第'.ChapterVersion::findOrFail(CanonicalCommit::sole()->version_id)->chapter->number.'章', CanonicalCommit::sole()->reason);
         $this->assertSame(2, StoryEntity::count());
@@ -626,7 +630,7 @@ class ChapterSubmissionTest extends TestCase
         $this->actingAs($operator);
         Filament::setCurrentPanel(Filament::getPanel('admin'));
         Livewire::test(ViewChapterContent::class, ['record' => $run->novel_id])
-            ->callAction('retrySubmission', ['predecessor_id' => $run->id, 'execution_limit' => max($run->novel->max_execution_count, $run->novel->execution_count + 2),
+            ->callAction('retrySubmission', ['predecessor_id' => $run->id,
                 'reason' => 'B08显式重跑', 'accept_request' => true])->assertHasNoActionErrors();
         $successor = ChapterSubmissionRun::where('predecessor_id', $run->id)->sole();
         $this->assertSame('pending', $successor->status);
@@ -658,7 +662,7 @@ class ChapterSubmissionTest extends TestCase
         $parent = ChapterGenerationRun::where('chapter_id', $run->chapter_id)->latest('id')->firstOrFail();
         $page = Livewire::test(ViewChapterContent::class, ['record' => $run->novel_id])->assertActionVisible('reviseFromReview')
             ->mountAction('reviseFromReview')->assertActionDataSet(['request_limit' => 3])
-            ->setActionData(['execution_limit' => max($run->novel->fresh()->max_execution_count, $run->novel->fresh()->execution_count + 3), 'accept_request' => true])->callMountedAction()->assertHasNoActionErrors()->assertNotNotified('首章操作未执行');
+            ->setActionData(['accept_request' => true])->callMountedAction()->assertHasNoActionErrors()->assertNotNotified('首章操作未执行');
         $child = ChapterGenerationRun::where('parent_run_id', $parent->id)->sole();
         $this->assertSame(3, $child->request_limit);
         $this->assertSame('revise', $child->next_step);

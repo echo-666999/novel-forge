@@ -119,6 +119,7 @@ final class SubmissionPresenter
             'quotes' => self::quotes(((array) $item)['evidence'] ?? null),
         ], FieldDiff::listOf($extraction['foreshadows'] ?? null));
         $entities = array_map(fn (mixed $proposal): array => [
+            'key' => FieldDiff::text(((array) $proposal)['key'] ?? null),
             'label' => self::proposalLabel((array) $proposal),
             'quotes' => self::quotes(((array) $proposal)['evidence'] ?? null),
         ], FieldDiff::listOf($extraction['proposed_entities'] ?? null));
