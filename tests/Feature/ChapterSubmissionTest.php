@@ -110,6 +110,10 @@ class ChapterSubmissionTest extends TestCase
                 if ($mode === 'unknown_entity') {
                     $data['events'][0]['target_refs'] = ['entity-999999'];
                 }
+                // 引用超过4个段落：本地证据校验拒绝，记录具体原因。
+                if ($mode === 'too_many_evidence') {
+                    $data['events'][0]['evidence_ids'] = ['p1', 'p2', 'p3', 'p4', 'p5'];
+                }
                 if ($mode === 'invalid_category') {
                     $data['events'][0]['fact_category'] = [];
                 }
@@ -529,9 +533,11 @@ class ChapterSubmissionTest extends TestCase
         for ($i = 0; $i < 2 && $submission->refresh()->status === 'pending'; $i++) {
             app(ChapterSubmissionService::class)->execute($submission->id, $submission->invocation_id, false);
         }
-        Livewire::test(ViewChapterContent::class, ['record' => $novel->id])->assertActionVisible('commitChapter')
+        // 结论随提交准备进度更新：准备完成后指向手动提交，提交后说明已正式提交。
+        Livewire::test(ViewChapterContent::class, ['record' => $novel->id])->assertSee('下一步：点右上角「正式提交当前章」')->assertActionVisible('commitChapter')
             ->callAction('commitChapter', ['acknowledge' => true])->assertHasNoActionErrors();
         $this->assertSame($body->chapter->fresh()->formal_version_id, CanonicalCommit::sole()->version_id);
+        Livewire::test(ViewChapterContent::class, ['record' => $novel->id])->assertSee('本章已正式提交，正式稿只读');
     }
 
     /** 一键提交：评审通过且无新实体时自动正式提交；有新实体待批准或评审未通过时停下，不自动提交。 */
@@ -619,6 +625,31 @@ class ChapterSubmissionTest extends TestCase
         }
         $this->assertContains('placeholder', SubmissionContract::structuralIssues('正文待补充。', ['min_characters' => 1, 'max_characters' => 100]));
         $this->assertContains('possible_truncation', SubmissionContract::structuralIssues('他的话说到这里', ['min_characters' => 1, 'max_characters' => 100]));
+    }
+
+    /** 提取证据无效时记录具体原因：页面显示、重跑弹窗回填，并随重跑反馈给模型；早于记录的失败按保存的响应复验得出同一原因。 */
+    public function test_failed_extraction_reason_is_shown_and_prefilled_for_retry(): void
+    {
+        $this->scenario = 'too_many_evidence';
+        [$run, $operator] = self::prepared();
+        $this->assertSame(['failed', 'EVIDENCE_INVALID'], [$run->status, $run->stop_reason]);
+        $expected = '事件提取失败：评审或提取引用的原文证据无效——有一条evidence_ids引用了5个段落（p1、p2、p3、p4、p5），每条最多4个';
+        $this->assertSame('有一条evidence_ids引用了5个段落（p1、p2、p3、p4、p5），每条最多4个', collect($run->control_history)->last()['detail']);
+        $this->assertSame($expected, app(ChapterSubmissionService::class)->failureReason($run));
+        // 没有失败记录的旧运行按已保存响应复验，不发送请求。
+        $legacy = clone $run;
+        $legacy->control_history = array_values(array_filter($run->control_history, fn (array $entry): bool => $entry['action'] !== 'step_failed'));
+        $sent = CostLog::count();
+        $this->assertSame($expected, app(ChapterSubmissionService::class)->failureReason($legacy));
+        $this->assertSame($sent, CostLog::count());
+        $this->actingAs($operator);
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        Livewire::test(ViewChapterContent::class, ['record' => $run->novel_id])->assertSee('每条最多4个')
+            ->mountAction('retrySubmission')->assertActionDataSet(['reason' => '重跑：'.$expected])
+            ->setActionData(['accept_request' => true])->callMountedAction()->assertHasNoActionErrors();
+        $successor = ChapterSubmissionRun::where('predecessor_id', $run->id)->sole();
+        $this->assertSame('重跑：'.$expected, $successor->config['reason']);
+        $this->assertSame(['stop_reason' => 'EVIDENCE_INVALID', 'detail' => '有一条evidence_ids引用了5个段落（p1、p2、p3、p4、p5），每条最多4个'], $successor->config['repair_feedback']);
     }
 
     /** B08后台显式重跑失败准备，保留旧证据且仅入队新后继。 */

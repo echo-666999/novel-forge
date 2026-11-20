@@ -3,6 +3,7 @@
 namespace App\Services\Pipeline;
 
 use App\Enums\NovelStatus;
+use App\Enums\ProductionFailure;
 use App\Jobs\PrepareChapterSubmissionJob;
 use App\Models\Chapter;
 use App\Models\ChapterEventExtraction;
@@ -34,6 +35,54 @@ use Throwable;
 final class ChapterSubmissionService
 {
     /** 每轮明确授权最多两次请求；只有显式指定失败前驱才建立不可变后继。 */
+    /** 失败准备的作者可读原因：步骤、停止原因与具体说明。具体说明优先取失败时的记录；
+     * 早于记录功能的失败按已保存的模型响应重新校验得出，不发送请求，也不改写任何记录。
+     */
+    public function failureReason(ChapterSubmissionRun $run): ?string
+    {
+        if ($run->status !== 'failed' || $run->stop_reason === null) {
+            return null;
+        }
+        $step = match ($run->step) {
+            'review' => '独立评审', 'extract' => '事件提取', default => '提交准备',
+        };
+        $detail = $this->failureDetail($run);
+
+        return $step.'失败：'.ProductionFailure::detailLabel($run->stop_reason).($detail === null ? '' : '——'.$detail);
+    }
+
+    /** 失败的具体说明：优先取失败时的记录，没有记录时按已保存响应重新校验。 */
+    private function failureDetail(ChapterSubmissionRun $run): ?string
+    {
+        $recorded = collect($run->control_history ?? [])->last(fn (array $entry): bool => ($entry['action'] ?? null) === 'step_failed');
+
+        return $recorded === null ? $this->replayedDetail($run) : ($recorded['detail'] ?? null);
+    }
+
+    /** 按失败步骤保存的成功响应重新执行同一本地校验，取出具体原因；找不到响应或校验未报出具体原因时返回 null。 */
+    private function replayedDetail(ChapterSubmissionRun $run): ?string
+    {
+        if (! in_array($run->step, ['review', 'extract'], true)) {
+            return null;
+        }
+        $log = CostLog::where('novel_id', $run->novel_id)->where('route_version', 'like', 'submission-%-'.$run->step.'-%')->where('status', 'succeeded')
+            ->whereBetween('created_at', [$run->created_at, $run->updated_at])->latest('id')->first();
+        if ($log === null) {
+            return null;
+        }
+        $body = ChapterVersion::findOrFail($run->version_id)->body;
+        try {
+            $data = ContentSchema::decode($log->response_text);
+            $run->step === 'review' ? SubmissionContract::review($data, $body) : app(SubmissionValidator::class)->normalize($data, $body, $run->snapshot['state']);
+        } catch (SubmissionRejection $exception) {
+            return $exception->detail;
+        } catch (Throwable) {
+            return null;
+        }
+
+        return null;
+    }
+
     /**
      * @param  array{reason: string}|null  $autoCommit  作者一并授权的正式提交：评审通过且没有待批准的新实体时自动提交。
      */
@@ -280,6 +329,7 @@ final class ChapterSubmissionService
         $log = null;
         $result = null;
         $error = null;
+        $detail = null;
         try {
             $anchors = ContentSchema::anchors($version->body);
             $context = ['anchors' => $anchors, 'entity_catalog' => $run->snapshot['entity_catalog'], 'run_id' => $run->id, 'version_id' => $version->id, 'body_hash' => $version->body_hash];
@@ -328,8 +378,9 @@ final class ChapterSubmissionService
             };
         } catch (Throwable $exception) {
             $error = $exception instanceof InvalidArgumentException ? $exception->getMessage() : ($log?->status === 'succeeded' ? 'INVALID_RESPONSE' : 'AUDIT_OR_LOCAL_FAILURE');
+            $detail = $exception instanceof SubmissionRejection ? $exception->detail : null;
         }
-        $next = DB::transaction(function () use ($id, $token, $purpose, $result, $log, $error): bool {
+        $next = DB::transaction(function () use ($id, $token, $purpose, $result, $log, $error, $detail): bool {
             $reference = ChapterSubmissionRun::findOrFail($id);
             Novel::lockForUpdate()->findOrFail($reference->novel_id);
             $run = ChapterSubmissionRun::lockForUpdate()->findOrFail($id);
@@ -344,7 +395,9 @@ final class ChapterSubmissionService
                 return false;
             }
             if ($error !== null) {
-                $run->update(['status' => 'failed', 'stop_reason' => $error]);
+                // 具体失败原因随失败记录保存，重跑弹窗据此回填，不必再翻原始响应。
+                $run->update(['status' => 'failed', 'stop_reason' => $error, 'control_history' => [...($run->control_history ?? []),
+                    ['action' => 'step_failed', 'step' => $purpose, 'stop_reason' => $error, 'detail' => $detail, 'cost_log_id' => $log?->id, 'at' => now()->toIso8601String()]]]);
 
                 return false;
             }
@@ -446,7 +499,10 @@ final class ChapterSubmissionService
                 return $this->repairFeedback($ancestor);
             }
 
-            return ['stop_reason' => $predecessor->stop_reason];
+            // 提取结果未通过校验而未保存时，附上具体原因，重跑的模型才知道要避开什么。
+            $detail = $this->failureDetail($predecessor);
+
+            return ['stop_reason' => $predecessor->stop_reason, ...($detail === null ? [] : ['detail' => $detail])];
         }
         if ($extraction->result_hash !== PlanningJson::hash($extraction->result) || $validation->extraction_id !== $extraction->id
             || $extraction->version_id !== $predecessor->version_id || $extraction->body_hash !== $predecessor->body_hash) {

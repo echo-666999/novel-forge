@@ -2,7 +2,6 @@
 
 namespace App\Filament\Resources\Novels\Pages;
 
-use App\Enums\ProductionFailure;
 use App\Filament\Resources\Novels\NovelResource;
 use App\Models\CanonicalCommit;
 use App\Models\Chapter;
@@ -392,8 +391,8 @@ class ViewChapterContent extends Page implements HasTable
     public function stopLabel(): string
     {
         return match ($this->run()?->stop_reason) {
-            'b04_accepted' => ProductionRun::coveringChapter($this->getRecord()->id, $this->chapterNumber) !== null ? '自动授权下的推进检查已通过；不代表人工全文阅读，正式状态以提交回执为准' : '正文、独立检查及全文核对已通过；候选仍待评审及正式提交',
-            'awaiting_review' => '推进检查通过，等待后续评审；尚未正式提交',
+            'b04_accepted' => ProductionRun::coveringChapter($this->getRecord()->id, $this->chapterNumber) !== null ? '自动授权下的推进检查已通过；不代表人工全文阅读，正式状态以提交回执为准' : $this->acceptedNextStep(true),
+            'awaiting_review' => $this->acceptedNextStep(false),
             'execution_limit' => '请求或小说执行额度耗尽，已停止；继续须显式调整额度并填写原因',
             'user_paused' => '作者已暂停，可在原额度内继续未执行步骤',
             'retry_limit' => '推进修订次数耗尽，已停止并保留全部版本',
@@ -413,6 +412,38 @@ class ViewChapterContent extends Page implements HasTable
             'dispatch_failed' => '队列投递失败，尚未发送模型请求，可显式继续',
             'invalid_contract' => '冻结来源或正文摘要变化，拒绝继续',
             default => (string) $this->run()?->stop_reason,
+        };
+    }
+
+    /** 当前失败准备的具体原因（步骤、停止原因与说明），无失败时为 null。 */
+    private function submissionFailureReason(): ?string
+    {
+        $run = $this->submission();
+
+        return $run === null ? null : app(ChapterSubmissionService::class)->failureReason($run);
+    }
+
+    /** 推进检查通过后的结论与下一步：按全文核对、提交准备与正式提交的实际进度给出，而不是停在运行结束时的固定说明。 */
+    private function acceptedNextStep(bool $readingAccepted): string
+    {
+        if ($this->run()?->chapter->formal_version_id !== null) {
+            return '本章已正式提交，正式稿只读；需要修改时走历史修订流程。';
+        }
+        if (! $readingAccepted) {
+            return '推进检查已通过。下一步：读完正文后点右上角「记录全文核对」，通过后即可「一键正式提交」。';
+        }
+        $submission = $this->submission();
+
+        return match ($submission?->status) {
+            null => '正文、推进检查和全文核对都已通过。下一步：点右上角「一键正式提交」，独立评审与事件提取通过后正式提交。',
+            'pending', 'running' => '正在做独立评审与事件提取（约1至2分钟）；通过后按你的选择自动提交，或停下等你处理。',
+            'awaiting_approval' => '评审与事件提取已通过，有新实体待批准。下一步：在下方「事件提取」核对后点「批准新实体并正式提交」。',
+            'ready' => '评审与事件提取已通过。下一步：点右上角「正式提交当前章」。',
+            'failed' => $submission->stop_reason === 'REVIEW_NOT_PASSED'
+                ? '独立评审未通过，意见见下方评审结果。下一步：点「按评审意见修订」，修订后重新提交。'
+                : ($this->submissionFailureReason() ?? '评审或事件提取失败').'。旧结果已保留。下一步：点「重跑失败评审 / 提取」。',
+            'unknown' => '评审或事件提取结果未知，可能已计费；请先在「请求与费用记录」中核查。',
+            default => '候选仍待评审及正式提交。',
         };
     }
 
@@ -543,7 +574,7 @@ class ViewChapterContent extends Page implements HasTable
                             }),
                         ])->verticallyAlignCenter(),
                         // 只有失败才有“停止原因”；已正式提交由右侧状态标签说明，不再显示内部完成码。
-                        TextEntry::make('submission_reason')->label('停止原因')->state(fn (): ?string => ProductionFailure::detailLabel($this->submission()?->stop_reason))->visible(fn (): bool => $this->submission()?->status === 'failed' && $this->submission()?->stop_reason !== null),
+                        TextEntry::make('submission_reason')->label('停止原因')->state(fn (): ?string => $this->submissionFailureReason())->visible(fn (): bool => $this->submission()?->status === 'failed' && $this->submission()?->stop_reason !== null),
                         Section::make('基础评审')->compact()->headerActions([$this->reviewRevisionAction('reviseFromReviewInline')])->schema([
                             TextEntry::make('review_verdict')->hiddenLabel()->badge()->state(fn (): string => $this->submissionView()['review']['verdict'] ?? '尚无记录')
                                 ->color(fn (string $state): string => match ($state) {
@@ -659,14 +690,14 @@ class ViewChapterContent extends Page implements HasTable
                                 ->color(fn (): string => match ($this->run()?->status) {
                                     'completed' => 'success', 'running', 'pending' => 'info', 'paused' => 'warning', 'error' => 'danger', default => 'gray'
                                 }),
-                            TextEntry::make('step')->hiddenLabel()->badge()->grow(false)->color('gray')->visible(fn (): bool => ! $this->runActive())
+                            TextEntry::make('step')->hiddenLabel()->badge()->grow(false)->color('gray')->visible(fn (): bool => ! $this->runActive() && $this->run()?->status !== 'completed')
                                 ->state(fn (): string => '当前步骤：'.self::stepLabel($this->run()?->next_step)),
                             TextEntry::make('reused_fine')->hiddenLabel()->color('gray')->size('sm')->state(fn (): string => $this->fineSourceLabel()),
                         ])->verticallyAlignCenter()->extraAttributes(['style' => 'flex-wrap: wrap']),
                         TextEntry::make('running_hint')->hiddenLabel()->color('gray')->visible(fn (): bool => $this->runActive() && $this->run()?->next_step === 'check' && $this->candidate()?->run_id === $this->run()?->id)
                             ->state(fn (): string => '候选版本 '.$this->candidate()?->version.' 已生成，正在做独立推进检查（通常约 1 分钟）；检查通过才算完成，不通过且修订次数已用完时会停下。'),
                         // 运行中或排队时还没有停止原因，状态标签和当前步骤已说明进度，不显示空的停止原因。
-                        TextEntry::make('stop')->label('停止原因与下一步')->weight('medium')->visible(fn (): bool => filled($this->run()?->stop_reason))->state(fn (): string => $this->stopLabel()),
+                        TextEntry::make('stop')->label(fn (): string => in_array($this->run()?->stop_reason, ['b04_accepted', 'awaiting_review'], true) ? '结论与下一步' : '停止原因与下一步')->weight('medium')->visible(fn (): bool => filled($this->run()?->stop_reason))->state(fn (): string => $this->stopLabel()),
                     ]),
                     EmbeddedTable::make(),
                     Section::make('请求与费用记录')->key('content-attempts')->collapsible()->collapsed()->compact()
@@ -1316,9 +1347,10 @@ class ViewChapterContent extends Page implements HasTable
                 ->visible(fn (): bool => $this->candidate() !== null && $this->run()?->chapter->formal_version_id === null && ! $this->runActive())
                 ->url(fn (): string => NovelResource::getUrl('editor', ['record' => $this->getRecord(), 'chapter' => $this->chapterNumber])), Action::make('retrySubmission')->label('重跑失败评审 / 提取')
                 ->visible(fn (): bool => $this->submission()?->status === 'failed')
-                ->modalDescription('保留旧正文、评审、提取和费用，新建后继准备；最多重新评审和提取各一次，未知费用不冲销。')
+                ->modalDescription(fn (): string => ($this->submissionFailureReason() ?? '准备失败').'。保留旧正文、评审、提取和费用，新建后继准备；最多重新评审和提取各一次，未知费用不冲销。')
                 ->schema([TextInput::make('predecessor_id')->label('失败准备编号')->default(fn (): ?int => $this->submission()?->id)->readOnly()->required(),
-                    Textarea::make('reason')->label('重跑原因')->required(), Checkbox::make('accept_request')->label('已核查旧调用，授权最多两次真实请求及可能重复费用')->accepted()])
+                    // 回填失败原因，作者可直接提交或补充说明。
+                    Textarea::make('reason')->label('重跑原因')->default(fn (): ?string => $this->submissionFailureReason() === null ? null : '重跑：'.$this->submissionFailureReason())->required(), Checkbox::make('accept_request')->label('已核查旧调用，授权最多两次真实请求及可能重复费用')->accepted()])
                 ->action(function (array $data): void {
                     // 冻结弹窗打开时的失败编号，过期页面不得接管另一次失败。
                     $this->performContentAction(function () use ($data): void {

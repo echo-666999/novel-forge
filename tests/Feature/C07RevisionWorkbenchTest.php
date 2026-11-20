@@ -85,7 +85,9 @@ class C07RevisionWorkbenchTest extends B04ExecutionTest
 
         // 另起一次修订运行，弹窗只列新运行自己的请求。
         app(ContentGenerationService::class)->recordReading($first->id, User::firstOrFail(), true, ['原候选已核对']);
-        $page = Livewire::test(ViewChapterContent::class, ['record' => $first->chapter->novel_id])->assertSee('当前步骤：')
+        // 运行已完成时不再显示“当前步骤”，结论按实际进度给出下一步。
+        $page = Livewire::test(ViewChapterContent::class, ['record' => $first->chapter->novel_id])->assertDontSee('当前步骤：')
+            ->assertSee('结论与下一步')->assertSee('全文核对都已通过。下一步：点右上角「一键正式提交」')
             ->callAction('reviseIssues', data: ['parent_id' => $first->id, 'version_id' => ChapterVersion::sole()->id, 'issues' => '人物口吻不一致：请把首段对白改为克制的表达。', 'accept_request' => true]);
         $this->drain();
         $child = ChapterGenerationRun::latest('id')->firstOrFail();
@@ -248,7 +250,9 @@ class C07RevisionWorkbenchTest extends B04ExecutionTest
         $this->assertNull($run->fresh()->stop_reason);
         Livewire::test(ViewChapterContent::class, ['record' => $run->chapter->novel_id])->assertDontSee('停止原因与下一步')->assertDontSee('尚无停止原因');
         $this->drain();
-        Livewire::test(ViewChapterContent::class, ['record' => $run->chapter->novel_id])->assertSee('停止原因与下一步');
+        // 推进检查通过不是“停止”，标题改为结论，并指向全文核对。
+        Livewire::test(ViewChapterContent::class, ['record' => $run->chapter->novel_id])->assertSee('结论与下一步')->assertDontSee('停止原因与下一步')
+            ->assertSee('下一步：读完正文后点右上角「记录全文核对」');
     }
 
     /** 剩余额度只够两次时，弹窗默认上限仍按本轮最多三次请求预留，直接提交不会被额度拦下。 */

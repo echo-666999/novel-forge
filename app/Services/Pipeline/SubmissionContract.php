@@ -140,14 +140,21 @@ final class SubmissionContract
     public static function evidence(array $ids, string $body): array
     {
         ContentSchema::listing($ids);
-        if ($ids === [] || count($ids) > 4 || count(array_unique($ids, SORT_REGULAR)) !== count($ids)) {
-            throw new InvalidArgumentException('EVIDENCE_INVALID');
+        $listed = implode('、', array_map(fn (mixed $id): string => is_scalar($id) ? (string) $id : '?', $ids));
+        if ($ids === []) {
+            throw new SubmissionRejection('EVIDENCE_INVALID', '有一条evidence_ids为空，每条至少引用1个段落');
+        }
+        if (count($ids) > 4) {
+            throw new SubmissionRejection('EVIDENCE_INVALID', '有一条evidence_ids引用了'.count($ids).'个段落（'.$listed.'），每条最多4个');
+        }
+        if (count(array_unique($ids, SORT_REGULAR)) !== count($ids)) {
+            throw new SubmissionRejection('EVIDENCE_INVALID', '有一条evidence_ids重复引用了同一段落（'.$listed.'）');
         }
         $anchors = ContentSchema::anchors($body);
         $result = [];
         foreach ($ids as $id) {
             if (! is_string($id) || ! isset($anchors[$id])) {
-                throw new InvalidArgumentException('EVIDENCE_INVALID');
+                throw new SubmissionRejection('EVIDENCE_INVALID', 'evidence_ids引用了正文中不存在的段落'.(is_scalar($id) ? (string) $id : '').'（正文共'.count($anchors).'段）');
             }
             $a = $anchors[$id];
             $prefix = implode("\n", array_slice(explode("\n", $body), 0, $a['paragraph'] - 1));
