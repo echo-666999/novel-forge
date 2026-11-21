@@ -3,6 +3,8 @@
 namespace App\Services\Search;
 
 use App\Models\CostLog;
+use App\Services\Ai\CostEstimator;
+use App\Services\Ai\ModelPrices;
 use App\Services\Pipeline\PlanningJson;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -43,6 +45,8 @@ final class EmbeddingService
         $log = CostLog::create(['request_uuid' => (string) Str::uuid7(), 'novel_id' => $novelId, 'mode' => 'real', 'requested_provider' => 'openai', 'requested_model' => self::MODEL,
             'route_version' => self::PROFILE, 'prompt_hash' => $hash, 'request_parameters' => ['task' => 'C05', 'purpose' => $purpose, 'dimensions' => 1536, 'input' => $texts], 'status' => 'pending', 'billing_status' => 'unknown', 'started_at' => now()]);
         $started = hrtime(true);
+        // 与正文请求一致，在外部调用前冻结单价集合。
+        $prices = app(ModelPrices::class)->snapshot();
         try {
             // Laravel HTTP默认不重试；每条流水严格对应一次HTTP尝试，保留未知结果。
             $response = Http::withToken($key)->acceptJson()->connectTimeout(15)->timeout(90)->post('https://api.openai.com/v1/embeddings', ['model' => self::MODEL, 'input' => $texts, 'dimensions' => 1536, 'encoding_format' => 'float']);
@@ -73,6 +77,9 @@ final class EmbeddingService
                 throw new RuntimeException('嵌入响应缺少有效用量');
             }
             $log->fill(['status' => 'succeeded', 'provider' => 'openai', 'model' => self::MODEL, 'input_tokens' => $tokens, 'output_tokens' => 0, 'structured_output' => ['vectors' => $vectors]]);
+            // 嵌入只按输入计费；未登记单价时金额保持未知。
+            $log->fill(app(CostEstimator::class)->estimateUsage(['input_tokens' => $tokens, 'output_tokens' => 0, 'cache_read_tokens' => null, 'cache_write_tokens' => null, 'reasoning_tokens' => null],
+                $log->raw_response, 'real', ModelPrices::resolve($prices, self::MODEL), $log->started_at));
         } catch (Throwable $exception) {
             $log->status = $log->status === 'pending' ? 'unknown' : $log->status;
             $log->error_category ??= 'embedding_response_unknown';

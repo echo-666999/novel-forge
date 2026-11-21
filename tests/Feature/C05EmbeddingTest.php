@@ -6,6 +6,7 @@ use App\Filament\Resources\Novels\NovelResource;
 use App\Filament\Resources\Novels\Pages\SearchLab;
 use App\Filament\Resources\Novels\Pages\ViewNovel;
 use App\Models\CostLog;
+use App\Models\ModelPrice;
 use App\Models\Novel;
 use App\Models\ProductionRun;
 use App\Models\User;
@@ -46,6 +47,7 @@ class C05EmbeddingTest extends TestCase
         $this->assertSame(':memory:', DB::connection()->getDatabaseName());
         // 只在已核验的内存库移除自动编排测试授权，生产历史不受影响。
         DB::table('production_runs')->delete();
+        DB::table('model_prices')->delete();
         B04ContentTest::clearFixtures();
         parent::tearDown();
     }
@@ -90,6 +92,16 @@ class C05EmbeddingTest extends TestCase
         // 没有正式章节时不得默认为全书或接受手工伪造的范围，也不能发送请求。
         Livewire::test(SearchLab::class, ['record' => $novel->id])->set('query', '测试')->call('search')->assertHasErrors(['throughChapter'])->assertSet('result', null);
         Http::assertSentCount(2);
+    }
+
+    /** 登记嵌入单价后按输入Token估算，与正文请求一样计入费用。 */
+    public function test_embedding_is_estimated_with_registered_price(): void
+    {
+        config(['ai.providers.openai.key' => 'sk-controlled-test']);
+        $price = ModelPrice::factory()->create(['model' => EmbeddingService::MODEL, 'currency' => 'USD', 'input_per_million' => '0.02', 'output_per_million' => '0']);
+        Http::fake(['api.openai.com/v1/embeddings' => Http::response(['model' => EmbeddingService::MODEL, 'data' => [['index' => 0, 'embedding' => [1.0, ...array_fill(0, 1535, 0.0)]]], 'usage' => ['prompt_tokens' => 500000]])]);
+        $log = CostLog::findOrFail(app(EmbeddingService::class)->embed(Novel::factory()->create()->id, ['检索测试'], 'query')['log_id']);
+        $this->assertSame(['estimated', 'USD', '0.01000000', 'model-price-'.$price->id], [$log->billing_status, $log->currency, $log->estimated_cost, $log->price_version]);
     }
 
     /** 503不重试，响应脱敏且未知费用保留。 */
