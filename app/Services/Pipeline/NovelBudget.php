@@ -94,7 +94,8 @@ final class NovelBudget
         if ($price === null || ($price['currency'] ?? null) !== $novel->budget_currency) {
             throw new AiGenerationException('本书设了'.$novel->budget_currency.'预算，但模型'.$model.'没有登记同币种单价，无法按预算控制，尚未发送请求。', 'budget_price_unknown', 'failed');
         }
-        $amount = bcadd(bcdiv(bcadd(bcmul((string) $inputTokens, $price['input_per_million'], 8), bcmul((string) $maxOutputTokens, $price['output_per_million'], 8), 8), '1000000', 10), '0.000000005', 8);
+        $rates = ModelPrices::ceilingRates($price, $inputTokens);
+        $amount = bcadd(bcdiv(bcadd(bcmul((string) $inputTokens, $rates['input'], 8), bcmul((string) $maxOutputTokens, $rates['output'], 8), 8), '1000000', 10), '0.000000005', 8);
         $summary = $this->summary($novel);
         if (bccomp($amount, $summary['remaining'], 8) > 0) {
             throw new AiGenerationException('预算不足：本次请求最多需要'.self::money($amount, $novel->budget_currency).'，剩余'.self::money($summary['remaining'], $novel->budget_currency).'，尚未发送请求。', 'budget_exhausted', 'failed');

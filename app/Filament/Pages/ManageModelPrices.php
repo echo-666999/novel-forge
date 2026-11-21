@@ -65,8 +65,24 @@ class ManageModelPrices extends Page implements HasTable
         return collect(ModelProfiles::options())->map(function (string $label, string $model) use ($prices): string {
             $price = ModelPrices::resolve($prices, $model);
 
-            return $label.'：'.($price === null ? '未登记，金额显示为“未知”，设了预算的书无法使用' : '输入 '.$price['input_per_million'].' / 输出 '.$price['output_per_million'].' '.$price['currency'].' 每百万Token（'.$price['version'].'）');
+            return $label.'：'.($price === null ? '未登记，金额显示为“未知”，设了预算的书无法使用' : self::describe($price));
         })->values()->all();
+    }
+
+    /** 一条单价的完整说明：缓存命中与未命中输入、输出，以及闲时和长上下文规则。
+     * @param  array<string, mixed>  $price
+     */
+    public static function describe(array $price): string
+    {
+        $text = '输入（未命中缓存）'.$price['input_per_million'].' / 缓存命中 '.($price['cache_read_per_million'] ?? $price['input_per_million']).' / 缓存写入 '.($price['cache_write_per_million'] ?? $price['input_per_million']).' / 输出 '.$price['output_per_million'].' '.$price['currency'].' 每百万Token';
+        if (isset($price['off_peak_ratio'], $price['peak_hours_utc'])) {
+            $text .= '；高峰时段（UTC，工作日）'.implode('、', (array) $price['peak_hours_utc']).'，其余时间按'.rtrim(rtrim((string) $price['off_peak_ratio'], '0'), '.').'倍计';
+        }
+        if (isset($price['long_context_threshold'])) {
+            $text .= '；输入超过'.$price['long_context_threshold'].'Token时整次请求按输入 '.$price['long_input_per_million'].' / 缓存命中 '.($price['long_cache_read_per_million'] ?? $price['long_input_per_million']).(isset($price['long_cache_write_per_million']) ? ' / 缓存写入 '.$price['long_cache_write_per_million'] : '').' / 输出 '.$price['long_output_per_million'];
+        }
+
+        return $text.'（'.$price['version'].'）';
     }
 
     /** 全部登记历史，按时间倒序。 */
@@ -75,9 +91,12 @@ class ManageModelPrices extends Page implements HasTable
         return $table->query(ModelPrice::query())->defaultSort('id', 'desc')->columns([
             TextColumn::make('model')->label('模型标识')->searchable(),
             TextColumn::make('currency')->label('币种'),
-            TextColumn::make('input_per_million')->label('输入 / 百万Token'),
+            TextColumn::make('input_per_million')->label('输入（未命中） / 百万Token'),
+            TextColumn::make('cache_read_per_million')->label('缓存命中')->placeholder('同输入单价'),
             TextColumn::make('output_per_million')->label('输出 / 百万Token'),
-            TextColumn::make('cache_read_per_million')->label('缓存读取')->placeholder('同输入单价'),
+            TextColumn::make('off_peak_ratio')->label('闲时倍率')->placeholder('不分时段'),
+            TextColumn::make('peak_hours_utc')->label('高峰时段（UTC）')->placeholder('-'),
+            TextColumn::make('long_context_threshold')->label('长上下文阈值')->placeholder('不分档'),
             TextColumn::make('source')->label('来源与核实说明')->wrap()->limit(80),
             TextColumn::make('verified_on')->label('核实日期')->date('Y-m-d'),
             TextColumn::make('effective_at')->label('生效时间')->dateTime('Y-m-d H:i'),
@@ -94,9 +113,22 @@ class ManageModelPrices extends Page implements HasTable
                 Select::make('model')->label('模型')->options(ModelProfiles::options())->native(false)->required()
                     ->helperText('如需登记带日期后缀的实际响应模型，可选择基础模型，系统按前缀匹配。'),
                 Select::make('currency')->label('币种')->options(['CNY' => '人民币（CNY）', 'USD' => '美元（USD）'])->default('CNY')->native(false)->required(),
-                TextInput::make('input_per_million')->label('每百万输入Token单价')->required()->regex('/\A\d{1,8}(?:\.\d{1,8})?\z/'),
+                TextInput::make('input_per_million')->label('每百万输入Token单价（缓存未命中）')->required()->regex('/\A\d{1,8}(?:\.\d{1,8})?\z/')
+                    ->helperText('填官方价格表的“缓存未命中”或标准输入价；分时段计价时填高峰价。'),
+                TextInput::make('cache_read_per_million')->label('每百万缓存命中Token单价（可选）')->regex('/\A\d{1,8}(?:\.\d{1,8})?\z/')->helperText('不填时按缓存未命中单价计。'),
                 TextInput::make('output_per_million')->label('每百万输出Token单价（含推理）')->required()->regex('/\A\d{1,8}(?:\.\d{1,8})?\z/'),
-                TextInput::make('cache_read_per_million')->label('每百万缓存命中Token单价（可选）')->regex('/\A\d{1,8}(?:\.\d{1,8})?\z/'),
+                TextInput::make('cache_write_per_million')->label('每百万缓存写入Token单价（可选）')->regex('/\A\d{1,8}(?:\.\d{1,8})?\z/')->helperText('仅对返回缓存写入用量的供应商生效；不填时按缓存未命中单价计。'),
+                Section::make('闲时折扣（可选）')->description('如 DeepSeek：工作日 UTC 01:00-04:00、06:00-10:00 为高峰，其余时间半价。按请求开始时间判断，周六周日全天按闲时。')->collapsible()->collapsed()->schema([
+                    TextInput::make('off_peak_ratio')->label('闲时倍率')->placeholder('0.5')->regex('/\A\d{1,8}(?:\.\d{1,8})?\z/')->requiredWith('peak_hours_utc'),
+                    TextInput::make('peak_hours_utc')->label('高峰时段（UTC，工作日）')->placeholder('01:00-04:00,06:00-10:00')->requiredWith('off_peak_ratio'),
+                ]),
+                Section::make('长上下文档位（可选）')->description('如 OpenAI：输入超过阈值时整次请求按长上下文单价计费。')->collapsible()->collapsed()->schema([
+                    TextInput::make('long_context_threshold')->label('长上下文阈值（输入Token）')->integer()->minValue(1)->placeholder('272000'),
+                    TextInput::make('long_input_per_million')->label('长上下文每百万输入Token单价')->regex('/\A\d{1,8}(?:\.\d{1,8})?\z/')->requiredWith('long_context_threshold'),
+                    TextInput::make('long_cache_read_per_million')->label('长上下文每百万缓存命中Token单价（可选）')->regex('/\A\d{1,8}(?:\.\d{1,8})?\z/'),
+                    TextInput::make('long_cache_write_per_million')->label('长上下文每百万缓存写入Token单价（可选）')->regex('/\A\d{1,8}(?:\.\d{1,8})?\z/'),
+                    TextInput::make('long_output_per_million')->label('长上下文每百万输出Token单价')->regex('/\A\d{1,8}(?:\.\d{1,8})?\z/')->requiredWith('long_context_threshold'),
+                ]),
                 Textarea::make('source')->label('来源与核实说明')->required()->maxLength(2000)->placeholder('例如：官方价格页地址，核实时的页面说明'),
                 DatePicker::make('verified_on')->label('核实日期')->required()->default(now())->maxDate(now()),
             ])->action(function (array $data): void {

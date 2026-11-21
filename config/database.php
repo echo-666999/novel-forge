@@ -97,6 +97,8 @@ return [
             'prefix_indexes' => true,
             'search_path' => 'public',
             'sslmode' => env('DB_SSLMODE', 'prefer'),
+            // 会话时区须与 app.timezone 一致：应用按本地墙钟时间写入不带偏移的时间字符串，由数据库按此时区换算为正确时刻。
+            'timezone' => env('DB_TIMEZONE', 'Asia/Shanghai'),
             // zhparser 的词典参数只能在连接启动时传入，不能在连接后执行 SET。
             'server_options' => array_filter([
                 'zhparser.extra_dicts' => env('DB_ZHPARSER_EXTRA_DICTS'),

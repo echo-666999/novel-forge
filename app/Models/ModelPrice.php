@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\Model;
 use LogicException;
 
 /** 作者登记的已核实单价；只追加，新版本按生效时间替代旧版本。 */
-#[Fillable(['model', 'currency', 'input_per_million', 'output_per_million', 'cache_read_per_million', 'cache_write_per_million', 'source', 'verified_on', 'effective_at', 'created_by', 'created_at'])]
+#[Fillable(['model', 'currency', 'input_per_million', 'output_per_million', 'cache_read_per_million', 'cache_write_per_million', 'off_peak_ratio', 'peak_hours_utc', 'long_context_threshold', 'long_input_per_million', 'long_cache_read_per_million', 'long_cache_write_per_million', 'long_output_per_million', 'source', 'verified_on', 'effective_at', 'created_by', 'created_at'])]
 class ModelPrice extends Model
 {
     /** @use HasFactory<ModelPriceFactory> */
@@ -31,15 +31,20 @@ class ModelPrice extends Model
     protected function casts(): array
     {
         return ['input_per_million' => 'decimal:8', 'output_per_million' => 'decimal:8', 'cache_read_per_million' => 'decimal:8', 'cache_write_per_million' => 'decimal:8',
+            'off_peak_ratio' => 'decimal:8', 'peak_hours_utc' => 'array', 'long_context_threshold' => 'integer',
+            'long_input_per_million' => 'decimal:8', 'long_cache_read_per_million' => 'decimal:8', 'long_cache_write_per_million' => 'decimal:8', 'long_output_per_million' => 'decimal:8',
             'verified_on' => 'immutable_date', 'effective_at' => 'immutable_datetime', 'created_at' => 'immutable_datetime', 'created_by' => 'integer'];
     }
 
-    /** 转为计费器使用的冻结单价结构；版本号绑定记录编号，便于追溯。
-     * @return array<string, string>
+    /** 转为计费器使用的冻结单价结构；版本号绑定记录编号，便于追溯。闲时与长上下文规则未登记时不出现。
+     * @return array<string, mixed>
      */
     public function toPriceSnapshot(): array
     {
         return array_filter(['version' => 'model-price-'.$this->id, 'currency' => $this->currency, 'input_per_million' => $this->input_per_million, 'output_per_million' => $this->output_per_million,
-            'cache_read_per_million' => $this->cache_read_per_million ?? $this->input_per_million, 'cache_write_per_million' => $this->cache_write_per_million ?? $this->input_per_million], fn ($value): bool => $value !== null);
+            'cache_read_per_million' => $this->cache_read_per_million ?? $this->input_per_million, 'cache_write_per_million' => $this->cache_write_per_million ?? $this->input_per_million,
+            'off_peak_ratio' => $this->off_peak_ratio, 'peak_hours_utc' => $this->peak_hours_utc, 'long_context_threshold' => $this->long_context_threshold,
+            'long_input_per_million' => $this->long_input_per_million, 'long_cache_read_per_million' => $this->long_cache_read_per_million ?? $this->long_input_per_million,
+            'long_cache_write_per_million' => $this->long_cache_write_per_million, 'long_output_per_million' => $this->long_output_per_million], fn ($value): bool => $value !== null);
     }
 }

@@ -109,11 +109,16 @@ final class AiTextGenerationService
             $this->validateUsage($result);
             // 先按实际响应模型匹配，未登记时按请求模型匹配（同名带日期后缀的响应模型）。
             $price = ModelPrices::resolve($prices, $result->model) ?? ModelPrices::resolve($prices, $model);
-            $log->fill($this->estimator->estimate($result, $mode, $price));
+            $log->fill($this->estimator->estimate($result, $mode, $price, $log->started_at));
             $log->status = 'succeeded';
         } catch (AiGenerationException $exception) {
             if ($exception->result !== null) {
                 $log->fill($this->resultAttributes($exception->result));
+                // 供应商已返回用量的失败（如输出被截断、结构不合格）同样计费，按同一单价估算，不记为金额未知。
+                if ($exception->category !== 'invalid_usage' && $this->usageIsValid($exception->result)) {
+                    $price = ModelPrices::resolve($prices, $exception->result->model) ?? ModelPrices::resolve($prices, $model);
+                    $log->fill($this->estimator->estimate($exception->result, $mode, $price, $log->started_at));
+                }
             }
             if ($exception->category === 'invalid_usage') {
                 // 非法数值不能写入受约束计量列；完整原始值仍保留在脱敏响应中。
@@ -159,10 +164,17 @@ final class AiTextGenerationService
     /** 拒绝负数或不可能的子集计量，不修改供应商原始响应证据。 */
     private function validateUsage(TextGenerationResult $result): void
     {
-        $usage = $result->usage;
-        $negative = collect($usage)->contains(static fn (?int $value): bool => $value !== null && $value < 0);
-        if ($negative || ($usage['input_tokens'] !== null && ($usage['cache_read_tokens'] ?? 0) + ($usage['cache_write_tokens'] ?? 0) > $usage['input_tokens']) || ($usage['output_tokens'] !== null && ($usage['reasoning_tokens'] ?? 0) > $usage['output_tokens'])) {
+        if (! $this->usageIsValid($result)) {
             throw new AiGenerationException('供应商计量数据不合法，已保留原始响应。', 'invalid_usage');
         }
+    }
+
+    /** 计量没有负数，缓存不超过输入，推理不超过输出。 */
+    private function usageIsValid(TextGenerationResult $result): bool
+    {
+        $usage = $result->usage;
+        $negative = collect($usage)->contains(static fn (?int $value): bool => $value !== null && $value < 0);
+
+        return ! ($negative || ($usage['input_tokens'] !== null && ($usage['cache_read_tokens'] ?? 0) + ($usage['cache_write_tokens'] ?? 0) > $usage['input_tokens']) || ($usage['output_tokens'] !== null && ($usage['reasoning_tokens'] ?? 0) > $usage['output_tokens']));
     }
 }

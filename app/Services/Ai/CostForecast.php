@@ -24,8 +24,13 @@ final class CostForecast
                 'text' => '预计'.$minRequests.'～'.$maxRequests.'次请求；模型'.$model.'尚未登记单价，金额无法估算（不代表免费），可在“模型单价”登记。'];
         }
         [$input, $output] = $this->averageUsage($model);
-        $per = fn (int $in, int $out): string => bcdiv(bcadd(bcmul((string) $in, $price['input_per_million'], 8), bcmul((string) $out, $price['output_per_million'], 8), 8), '1000000', 8);
-        $low = bcmul($per($input, $output), (string) $minRequests, 8);
+        $per = function (int $in, int $out) use ($price): string {
+            $rates = ModelPrices::ceilingRates($price, $in);
+
+            return bcdiv(bcadd(bcmul((string) $in, $rates['input'], 8), bcmul((string) $out, $rates['output'], 8), 8), '1000000', 8);
+        };
+        // 登记了闲时折扣时，下限按闲时价计，上限按标准价计。
+        $low = bcmul(bcmul($per($input, $output), (string) $minRequests, 8), is_string($price['off_peak_ratio'] ?? null) ? $price['off_peak_ratio'] : '1', 8);
         $high = bcmul($per((int) ceil($input * 1.5), max($output, $maxOutputTokens)), (string) $maxRequests, 8);
 
         return ['known' => true, 'low' => $low, 'high' => $high, 'currency' => $price['currency'],
