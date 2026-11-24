@@ -15,6 +15,7 @@ use App\Models\StoryEntity;
 use App\Models\StoryOutboxEvent;
 use App\Models\StoryStateProjection;
 use App\Models\User;
+use App\Services\Pipeline\OutboxPublisher;
 use App\Services\Pipeline\PlanningJson;
 use App\Services\Search\ChapterSearchIndex;
 use App\Services\Search\ContextRetrieval;
@@ -191,6 +192,48 @@ class HybridSearchTest extends TestCase
         $result = app(HybridSearch::class)->search($novel, '观察', 1, true);
         $this->assertStringContainsString('降级', $result['warning']);
         $this->assertArrayNotHasKey('vector', $result['channel_counts']);
+    }
+
+    /** 投递任务更新投影后写投递时间并补向量；再次执行不重复投递、不重复请求。 */
+    public function test_outbox_publisher_delivers_once_and_embeds(): void
+    {
+        [$novel] = $this->source();
+        $this->fakeEmbeddings();
+        $this->assertSame(1, StoryOutboxEvent::whereNull('published_at')->count());
+        $this->artisan('app:publish-outbox')->assertSuccessful();
+        $event = StoryOutboxEvent::sole();
+        $this->assertNotNull($event->published_at);
+        $this->assertSame(0, DB::table('search_documents')->where('novel_id', $novel->id)->whereNull('embedding')->count());
+        $calls = CostLog::where('route_version', EmbeddingService::PROFILE)->count();
+        $this->assertGreaterThan(0, $calls);
+        $result = app(OutboxPublisher::class)->publish();
+        $this->assertSame([[], []], [$result['published'], $result['embedded_novels']]);
+        $this->assertEquals($event->published_at, $event->fresh()->published_at);
+        $this->assertSame($calls, CostLog::where('route_version', EmbeddingService::PROFILE)->count());
+    }
+
+    /** 关闭自动补向量或嵌入失败时仍完成投递；失败只请求一次，下一轮不自动重试。 */
+    public function test_outbox_publisher_embedding_failure_is_not_retried(): void
+    {
+        [$first] = $this->source();
+        [$second] = $this->source();
+        Http::swap(new Factory);
+        Http::preventStrayRequests();
+        Http::fake(['api.openai.com/v1/embeddings' => Http::response(['error' => 'unavailable'], 503)]);
+        $settings = app(GeneralSettings::class);
+        $settings->outbox_auto_embedding = false;
+        $settings->save();
+        $this->assertCount(1, app(OutboxPublisher::class)->publish(limit: 1)['published']);
+        Http::assertNothingSent();
+        $settings->outbox_auto_embedding = true;
+        $settings->save();
+        $result = app(OutboxPublisher::class)->publish();
+        $this->assertSame([1, [$second->id]], [count($result['published']), array_keys($result['embedding_failed'])]);
+        $this->assertSame(0, StoryOutboxEvent::whereNull('published_at')->count());
+        $this->assertSame(1, CostLog::where('route_version', EmbeddingService::PROFILE)->count());
+        app(OutboxPublisher::class)->publish();
+        Http::assertSentCount(1);
+        $this->assertGreaterThan(0, DB::table('search_documents')->where('novel_id', $first->id)->whereNull('embedding')->count());
     }
 
     /** 两章均可命中时，四路召回必须在排名前排除未来章。 */

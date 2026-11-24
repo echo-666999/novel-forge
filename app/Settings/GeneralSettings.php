@@ -55,6 +55,9 @@ class GeneralSettings extends BaseSettings
     /** 前文检索同一章最多取几段。 */
     public int $context_retrieval_per_chapter = 2;
 
+    /** 投递正式提交通知时自动为新正文补向量（产生少量嵌入费用）。 */
+    public bool $outbox_auto_embedding = true;
+
     /** 导出文件生成后保留天数。 */
     public int $export_retention_days = 7;
 

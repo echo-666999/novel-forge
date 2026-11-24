@@ -50,7 +50,7 @@ class SystemHealth extends Page implements HasTable
     /** 仅报告实际观测和积压，不给出没有依据的健康绿灯。 */
     public function content(Schema $schema): Schema
     {
-        return $schema->components([Section::make('系统观测')->compact()->description('消费者心跳、检索投影与通知投递状态。')->headerActions([HelpHint::action('通知投递时间是全局标记；检索订阅者不会更新此字段，不能用它判断检索是否已经消费。')])->schema([
+        return $schema->components([Section::make('系统观测')->compact()->description('消费者心跳、检索投影与通知投递状态。')->headerActions([HelpHint::action('每次正式提交产生一条通知，定时投递任务（每分钟）更新检索投影后写入投递时间；待投递长时间不减少说明投影构建失败或调度器未运行。手动重建检索不会写投递时间。')])->schema([
             TextEntry::make('worker')->label('消费者心跳')->state(fn (): string => app(WorkerHeartbeat::class)->summary()),
             TextEntry::make('watchdog')->label('生产看门狗')->state(fn (): string => app(ProductionWatchdog::class)->summary()),
             TextEntry::make('index')->label('检索投影覆盖')->state(fn (): string => app(SearchIndexStatus::class)->summary()),

@@ -102,6 +102,8 @@ class ManageGeneralSettings extends SettingsPage
                         TextInput::make('context_retrieval_passages')->label('最多片段数')->integer()->minValue(1)->maxValue(ContextRetrieval::MAX_PASSAGES)->suffix('段')->required(),
                         TextInput::make('context_retrieval_per_chapter')->label('同一章最多片段数')->integer()->minValue(1)->suffix('段')
                             ->lte('context_retrieval_passages')->validationMessages(['lte' => '同一章最多片段数不能大于最多片段数。'])->required(),
+                        Toggle::make('outbox_auto_embedding')->label('提交后自动补向量')->inline(false)
+                            ->helperText('章节正式提交后自动为新正文生成语义检索向量，费用计入成本流水；失败不自动重试。前文检索只用词法索引，不受影响。'),
                     ]),
                 Section::make('导出')
                     ->description('只影响之后新建的导出任务；已生成文件按创建时的保留期清理。')

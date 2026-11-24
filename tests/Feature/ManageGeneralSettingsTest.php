@@ -49,6 +49,7 @@ class ManageGeneralSettingsTest extends TestCase
             'context_retrieval_enabled' => false,
             'context_retrieval_passages' => 4,
             'context_retrieval_per_chapter' => 1,
+            'outbox_auto_embedding' => false,
             'export_retention_days' => 30,
             'export_failed_retention_days' => 3,
         ];
@@ -76,7 +77,7 @@ class ManageGeneralSettingsTest extends TestCase
         app()->forgetInstance(GeneralSettings::class);
         $this->assertSame($values, app(GeneralSettings::class)->toArray());
         Livewire::test(ManageGeneralSettings::class)->assertSchemaStateSet($values);
-        $this->assertSame(18, DB::table('settings')->where('group', 'general')->count());
+        $this->assertSame(19, DB::table('settings')->where('group', 'general')->count());
     }
 
     #[DataProvider('invalidSettings')]
@@ -135,7 +136,7 @@ class ManageGeneralSettingsTest extends TestCase
         $settings = app(GeneralSettings::class);
         $this->assertSame('existing-model', $settings->default_model);
         $this->assertSame(0.7, $settings->temperature);
-        $this->assertSame(18, DB::table('settings')->where('group', 'general')->count());
+        $this->assertSame(19, DB::table('settings')->where('group', 'general')->count());
     }
 
     /** 原重试次数按 0 与非 0 转为开关，行为不变；回滚还原为次数。 */
@@ -169,6 +170,6 @@ class ManageGeneralSettingsTest extends TestCase
         app()->forgetInstance(GeneralSettings::class);
         $this->assertSame(4000, app(GeneralSettings::class)->max_tokens_per_chapter);
         $this->assertSame(100, app(GeneralSettings::class)->max_execution_count);
-        $this->assertSame(18, DB::table('settings')->where('group', 'general')->count());
+        $this->assertSame(19, DB::table('settings')->where('group', 'general')->count());
     }
 }

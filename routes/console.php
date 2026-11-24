@@ -9,8 +9,8 @@ Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
 
-// 提交事务之外轮询outbox，检索投影可重复构建；此定时任务不发送付费请求。
-Schedule::command('app:build-search-index')->everyMinute()->withoutOverlapping();
+// 提交事务之外投递outbox：更新检索投影后写投递时间；按通用设置自动补向量，嵌入费用写入成本流水。
+Schedule::command('app:publish-outbox')->everyMinute()->withoutOverlapping();
 
 // 清理到期导出文件，审计与正式正文保留；独立于任何AI调用。
 Artisan::command('app:prune-novel-exports', function (): void {
