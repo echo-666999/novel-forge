@@ -314,7 +314,7 @@ class BudgetAndPricingTest extends TestCase
         $this->assertArrayNotHasKey('long_context_threshold', $snapshot);
         Filament::setCurrentPanel(Filament::getPanel('admin'));
         $this->actingAs($author);
-        Livewire::test(ManageModelPrices::class)->assertSee('其余时间按0.5倍计');
+        Livewire::test(ManageModelPrices::class)->assertSee('闲时 0.5 倍（工作日高峰 UTC 01:00-04:00、06:00-10:00）');
     }
 
     /** 单价登记有误时按当前单价重算：默认只预览，写入须填原因并追加重算记录；已有实际账单的不变。 */
