@@ -43,13 +43,10 @@ class AppServiceProvider extends ServiceProvider
             }
             app(WorkerHeartbeat::class)->observe($event->connectionName, $event->job->getQueue(), true);
         });
-        // 仅注册本地开发进程，不在应用启动时消费队列；每次任务使用新PHP进程加载代码。
+        // 调度器与各队列消费者由本机常驻服务（launchd：local.novelforge.scheduler、worker-*）运行，
+        // 开发入口不再重复启动，避免同一任务被两套进程领取；只保留网页、日志与前端构建。
         if ($this->app->runningInConsole() && $this->app->environment('local')) {
-            // 导出使用独立无付费队列，随标准开发入口启动消费者。
-            DevCommands::artisan('queue:listen database --queue=novel-exports --tries=1 --timeout=75 --memory=256 --no-interaction', 'exports');
-            DevCommands::artisan('queue:listen redis_content_acceptance --queue=content-acceptance --tries=1 --timeout=225 --memory=256 --no-interaction', 'content');
-            // 调度器驱动看门狗（每分钟本地对账）、检索投影与导出清理；均不发送付费请求。
-            DevCommands::artisan('schedule:work --no-interaction', 'schedule');
+            DevCommands::except('queue');
         }
     }
 }

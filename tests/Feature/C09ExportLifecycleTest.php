@@ -172,16 +172,14 @@ class C09ExportLifecycleTest extends TestCase
         $record->update(['history' => []]);
     }
 
-    /** 标准开发入口包含导出专用消费者，不需要借用付费正文队列。 */
-    public function test_local_development_registers_export_consumer(): void
+    /** 导出消费者由本机常驻服务运行，开发入口不重复启动。 */
+    public function test_local_development_does_not_start_export_consumer(): void
     {
         $previous = app()['env'];
         app()->instance('env', 'local');
         try {
             (new AppServiceProvider(app()))->boot();
-            $command = collect(DevCommands::commands())->firstWhere('name', 'exports');
-            $this->assertNotNull($command);
-            $this->assertStringContainsString('queue:listen database --queue=novel-exports', $command['command']);
+            $this->assertNull(collect(DevCommands::commands())->firstWhere('name', 'exports'));
             Http::assertNothingSent();
         } finally {
             app()->instance('env', $previous);

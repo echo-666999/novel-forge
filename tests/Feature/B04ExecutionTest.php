@@ -974,20 +974,16 @@ class B04ExecutionTest extends TestCase
         Http::assertSentCount(3);
     }
 
-    /** 仅注册专用消费者，正常开发启动即可发现新队列，不额外发送HTTP。 */
-    public function test_local_development_registers_content_consumer(): void
+    /** 开发入口不启动调度器与队列消费者，它们由本机常驻服务运行，避免两套进程重复领取任务。 */
+    public function test_local_development_does_not_duplicate_resident_workers(): void
     {
         $previous = app()['env'];
         app()->instance('env', 'local');
         try {
             (new AppServiceProvider(app()))->boot();
             $commands = collect(DevCommands::commands());
-            $content = $commands->firstWhere('name', 'content');
-            $this->assertNotNull($content);
-            $this->assertStringContainsString('queue:listen redis_content_acceptance --queue=content-acceptance', $content['command']);
-            $this->assertStringContainsString('--timeout=225', $content['command']);
-            // 看门狗依赖调度器，本地开发入口须一并启动。
-            $this->assertStringContainsString('schedule:work', $commands->firstWhere('name', 'schedule')['command'] ?? '');
+            $this->assertSame([], $commands->whereIn('name', ['queue', 'content', 'exports', 'schedule'])->pluck('name')->all());
+            $this->assertEmpty($commands->filter(fn (array $command): bool => str_contains($command['command'], 'queue:') || str_contains($command['command'], 'schedule:'))->all());
             Http::assertNothingSent();
         } finally {
             app()->instance('env', $previous);
