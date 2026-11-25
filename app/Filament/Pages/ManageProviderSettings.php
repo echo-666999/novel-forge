@@ -66,7 +66,12 @@ class ManageProviderSettings extends SettingsPage
      */
     protected function mutateFormDataBeforeFill(array $data): array
     {
-        return [...$data, 'openai_api_key' => null, 'deepseek_api_key' => null, 'clear_openai_api_key' => false, 'clear_deepseek_api_key' => false];
+        foreach (array_keys(ProviderCredentials::LABELS) as $provider) {
+            $data[$provider.'_api_key'] = null;
+            $data['clear_'.$provider.'_api_key'] = false;
+        }
+
+        return $data;
     }
 
     /** 留空保持原密钥，勾选清除时置空；清除开关不写入设置。

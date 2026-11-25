@@ -18,7 +18,11 @@ final class ModelProfiles
         return [
             'model' => $model,
             'label' => (string) ($profile['label'] ?? $model),
-            'provider' => (string) ($profile['provider'] ?? (str_starts_with($model, 'deepseek-') ? 'deepseek' : 'openai')),
+            'provider' => (string) ($profile['provider'] ?? match (true) {
+                str_starts_with($model, 'deepseek-') => 'deepseek',
+                str_starts_with($model, 'claude-') => 'anthropic',
+                default => 'openai',
+            }),
             'selectable' => (bool) ($profile['selectable'] ?? false),
             'extended_output_tokens' => isset($profile['extended_output_tokens']) ? (int) $profile['extended_output_tokens'] : null,
             'review_reasoning' => isset($profile['review_reasoning']) ? (string) $profile['review_reasoning'] : null,

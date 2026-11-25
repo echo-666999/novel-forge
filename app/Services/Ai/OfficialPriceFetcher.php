@@ -14,6 +14,7 @@ final class OfficialPriceFetcher
     public const SOURCES = [
         'deepseek' => 'https://api-docs.deepseek.com/quick_start/pricing.md',
         'openai' => 'https://developers.openai.com/api/docs/pricing.md',
+        'anthropic' => 'https://platform.claude.com/docs/en/about-claude/pricing.md',
     ];
 
     /** 不分长短上下文时的空字段，保证切换模型时清掉上一次获取的值。 */
@@ -36,7 +37,11 @@ final class OfficialPriceFetcher
         if (! $response->successful()) {
             throw new RuntimeException('官网价格页返回 HTTP '.$response->status().'，请稍后重试或手工填写。');
         }
-        $result = $provider === 'deepseek' ? $this->deepSeek($response->body(), $model) : $this->openAi($response->body(), $model);
+        $result = match ($provider) {
+            'deepseek' => $this->deepSeek($response->body(), $model),
+            'anthropic' => $this->anthropic($response->body(), $model),
+            default => $this->openAi($response->body(), $model),
+        };
         $result['fields']['source'] = $url.' 自动获取于 '.now()->toDateString().'；'.implode('', $result['notes']);
         $result['fields']['verified_on'] = now()->toDateString();
 
@@ -152,6 +157,61 @@ final class OfficialPriceFetcher
                 'long_cache_read_per_million' => $values['long_cache_read']['amount'] ?? null, 'long_cache_write_per_million' => $values['long_cache_write']['amount'] ?? null,
                 'long_output_per_million' => $values['long_output']['amount']];
             $notes[] = '输入超过'.$threshold[1].'K Token按长上下文价。';
+        }
+
+        return ['fields' => $fields, 'notes' => $notes];
+    }
+
+    /** Claude：“Model pricing”表按模型名称成行（如 claude-opus-5-5 对应 Claude Opus 5.5）；同一模型分短长提示两行时，第二行为长上下文价，阈值取自行内说明。
+     * @return array{fields: array<string, string|null>, notes: list<string>}
+     */
+    public function anthropic(string $markdown, string $model): array
+    {
+        $section = preg_split('/^## /m', $markdown) ?: [];
+        $table = collect($section)->first(fn (string $part): bool => str_starts_with($part, 'Model pricing'));
+        if (! preg_match('/\Aclaude-([a-z]+)-(\d+(?:-\d+)*)\z/', $model, $parts)) {
+            throw new RuntimeException('无法识别 Claude 模型名 '.$model.'，请手工填写。');
+        }
+        $name = 'claude '.$parts[1].' '.str_replace('-', '.', $parts[2]);
+        $rows = [];
+        $header = null;
+        foreach (preg_split('/\R/', (string) $table) ?: [] as $line) {
+            if (! str_starts_with(trim($line), '|')) {
+                continue;
+            }
+            $cells = array_map(fn (string $cell): string => trim(preg_replace('/<sup>.*?<\/sup>|\*/', '', $cell) ?? $cell), self::cells($line));
+            if (collect($cells)->every(fn (string $cell): bool => preg_match('/\A:?-+:?\z/', $cell) === 1)) {
+                continue;
+            }
+            if ($header === null) {
+                $header = array_map('mb_strtolower', $cells);
+
+                continue;
+            }
+            $label = mb_strtolower(trim(preg_replace('/\[([^\]]+)\]\([^)]*\)/', '$1', $cells[0]) ?? $cells[0]));
+            if (count($cells) === count($header) && ($label === $name || str_starts_with($label, $name.' ('))) {
+                $rows[] = ['label' => $label, 'cells' => array_combine($header, $cells)];
+            }
+        }
+        if ($rows === []) {
+            throw new RuntimeException('官网价格表中没有找到 '.$model.'，可能已更名，请手工填写。');
+        }
+        $price = function (array $row, string $column) use ($model): array {
+            $cell = $row['cells'][$column] ?? throw new RuntimeException('官网价格表结构已变化，未能读出 '.$model.' 的'.$column.'，请手工填写。');
+
+            return self::money(trim(str_ireplace(['/ mtok', 'usd'], '', $cell)));
+        };
+        $short = $rows[0];
+        $fields = ['currency' => $price($short, 'base input tokens')['currency'], 'input_per_million' => $price($short, 'base input tokens')['amount'],
+            'cache_read_per_million' => $price($short, 'cache hits and refreshes')['amount'], 'output_per_million' => $price($short, 'output tokens')['amount'],
+            'cache_write_per_million' => $price($short, '5m cache writes')['amount'], 'off_peak_ratio' => null, 'peak_hours_utc' => null, ...self::NO_LONG_CONTEXT];
+        $notes = ['取官网标准价（全球路由）；缓存写入取5分钟档，出现1小时缓存写入时金额记为未知。'];
+        $long = collect($rows)->first(fn (array $row): bool => preg_match('/over ([\d,]+) tokens/', $row['label']) === 1);
+        if ($long !== null && preg_match('/over ([\d,]+) tokens/', $long['label'], $threshold)) {
+            $fields = [...$fields, 'long_context_threshold' => str_replace(',', '', $threshold[1]), 'long_input_per_million' => $price($long, 'base input tokens')['amount'],
+                'long_cache_read_per_million' => $price($long, 'cache hits and refreshes')['amount'], 'long_cache_write_per_million' => $price($long, '5m cache writes')['amount'],
+                'long_output_per_million' => $price($long, 'output tokens')['amount']];
+            $notes[] = '提示超过'.number_format((int) $fields['long_context_threshold']).' Token（含缓存）按长提示价。';
         }
 
         return ['fields' => $fields, 'notes' => $notes];

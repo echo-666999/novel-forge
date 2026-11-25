@@ -15,6 +15,10 @@ class ProviderSettings extends BaseSettings
 
     public string $deepseek_url = 'https://api.deepseek.com';
 
+    public ?string $anthropic_api_key = null;
+
+    public string $anthropic_url = 'https://api.anthropic.com/v1';
+
     /** 设置分组。 */
     public static function group(): string
     {
@@ -26,6 +30,6 @@ class ProviderSettings extends BaseSettings
      */
     public static function encrypted(): array
     {
-        return ['openai_api_key', 'deepseek_api_key'];
+        return ['openai_api_key', 'deepseek_api_key', 'anthropic_api_key'];
     }
 }

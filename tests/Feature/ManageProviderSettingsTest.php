@@ -32,7 +32,7 @@ class ManageProviderSettingsTest extends TestCase
         $this->app->forgetInstance(ProviderCredentials::class);
         // 设置迁移会按本机环境变量初始化密钥，测试先清空，只使用下面的假密钥。
         $settings = app(ProviderSettings::class);
-        $settings->fill(['openai_api_key' => null, 'deepseek_api_key' => null, 'openai_url' => 'https://api.openai.com/v1', 'deepseek_url' => 'https://api.deepseek.com'])->save();
+        $settings->fill(['openai_api_key' => null, 'deepseek_api_key' => null, 'anthropic_api_key' => null, 'openai_url' => 'https://api.openai.com/v1', 'deepseek_url' => 'https://api.deepseek.com', 'anthropic_url' => 'https://api.anthropic.com/v1'])->save();
         config(['ai.providers.openai.key' => 'sk-env-openai-000011112222', 'ai.providers.deepseek.key' => null, 'ai.providers.deepseek.url' => 'https://api.deepseek.com']);
         app(ProviderCredentials::class)->apply();
         Filament::setCurrentPanel(Filament::getPanel('admin'));
@@ -79,5 +79,16 @@ class ManageProviderSettingsTest extends TestCase
             ->callAction(['name' => 'check_openai', 'context' => ['schemaComponent' => 'form.openai_api_key']])->assertNotified('OpenAI 拒绝了该密钥（HTTP 401），请核对。');
         Http::assertSent(fn ($request): bool => $request->url() === 'https://api.deepseek.com/models' && $request->hasHeader('Authorization', 'Bearer sk-typed-deepseek-77778888'));
         Http::assertSent(fn ($request): bool => $request->url() === 'https://api.openai.com/v1/models' && $request->hasHeader('Authorization', 'Bearer sk-env-openai-000011112222'));
+    }
+
+    /** Claude 分区：密钥加密保存后生效，连接测试使用 x-api-key 与版本请求头。 */
+    public function test_claude_key_is_saved_and_checked_with_api_key_header(): void
+    {
+        Http::fake(['api.anthropic.com/v1/models' => Http::response(['data' => [['id' => 'claude-opus-5-5']]])]);
+        Livewire::test(ManageProviderSettings::class)->assertSee('Claude')->fillForm(['anthropic_api_key' => 'sk-ant-admin-99990000'])->call('save')->assertHasNoFormErrors()
+            ->callAction(['name' => 'check_anthropic', 'context' => ['schemaComponent' => 'form.anthropic_api_key']])->assertNotified('Claude 密钥有效，可用模型 1 个。');
+        $this->assertSame(['sk-ant-admin-99990000', 'https://api.anthropic.com/v1'], [config('ai.providers.anthropic.key'), config('ai.providers.anthropic.url')]);
+        $this->assertStringNotContainsString('sk-ant-admin', DB::table('settings')->where('group', 'providers')->where('name', 'anthropic_api_key')->value('payload'));
+        Http::assertSent(fn ($request): bool => $request->hasHeader('x-api-key', 'sk-ant-admin-99990000') && $request->hasHeader('anthropic-version', '2023-06-01') && ! $request->hasHeader('Authorization'));
     }
 }

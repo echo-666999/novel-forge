@@ -48,8 +48,8 @@ final class CostEstimator
         $write = $usage['cache_write_tokens'] ?? 0;
         $threshold = $price['long_context_threshold'] ?? null;
         $long = is_int($threshold) && $threshold > 0 && $usage['input_tokens'] > $threshold;
-        if ($write > 0 && (int) data_get($rawResponse, 'usage.input_tokens_details.cache_write_tokens_details.ttl_12h_tokens', 0) > 0) {
-            // 12小时缓存写入单价高于默认30分钟写入价，只登记了一种写入价，不按低价猜测。
+        if ($write > 0 && ((int) data_get($rawResponse, 'usage.input_tokens_details.cache_write_tokens_details.ttl_12h_tokens', 0) > 0 || (int) data_get($rawResponse, 'usage.cache_creation.ephemeral_1h_input_tokens', 0) > 0)) {
+            // 长时缓存写入（OpenAI 12小时、Claude 1小时）单价高于默认写入价，只登记了一种写入价，不按低价猜测。
             return $snapshot;
         }
         $prefix = $long ? 'long_' : '';

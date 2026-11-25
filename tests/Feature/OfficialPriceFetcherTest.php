@@ -36,6 +36,7 @@ class OfficialPriceFetcherTest extends TestCase
         Http::fake([
             OfficialPriceFetcher::SOURCES['deepseek'] => fn () => Http::response($this->deepSeekStatus === 200 ? self::deepSeekPage() : 'busy', $this->deepSeekStatus, ['Content-Type' => 'text/markdown']),
             OfficialPriceFetcher::SOURCES['openai'] => Http::response(self::openAiPage(), 200, ['Content-Type' => 'text/markdown']),
+            OfficialPriceFetcher::SOURCES['anthropic'] => Http::response(self::anthropicPage(), 200, ['Content-Type' => 'text/markdown']),
         ]);
     }
 
@@ -100,6 +101,44 @@ class OfficialPriceFetcherTest extends TestCase
         | --- | --- | --- | --- | --- | --- | --- |
         | Embedding | text-embedding-3-small | $0.02 | - | - | - | - |
         MD;
+    }
+
+    /** Claude 价格页节选：模型按名称成行，脚注写在单元格里；Haiku 按提示长度分两行；批量价表同名模型价格不同。 */
+    private static function anthropicPage(): string
+    {
+        return <<<'MD'
+        # Pricing
+
+        ## Model pricing
+
+        | Model | Base input tokens | 5m cache writes | 1h cache writes | Cache hits and refreshes | Output tokens |
+        | --- | --- | --- | --- | --- | --- |
+        | Claude Opus 5.5 | $4 / MTok | $5 / MTok | $8 / MTok | $0.20 / MTok<sup>2</sup> | $20 / MTok |
+        | Claude Haiku 5.5 (for prompts up to 100,000 tokens) | $0.10 / MTok | $0.125 / MTok | $0.20 / MTok | $0.01 / MTok | $0.50 / MTok |
+        | Claude Haiku 5.5 (for prompts over 100,000 tokens) | $0.50 / MTok | $0.625 / MTok | $1 / MTok | $0.05 / MTok | $2.50 / MTok |
+
+        ## Feature-specific pricing
+
+        ### Batch processing
+
+        | Model | Batch input | Batch output |
+        | --- | --- | --- |
+        | Claude Opus 5.5 | $2 / MTok | $10 / MTok |
+        MD;
+    }
+
+    /** Claude 取标准价与5分钟缓存写入价，去掉脚注；Haiku 的长提示价与阈值取自第二行；批量价不被误用。 */
+    public function test_anthropic_standard_prices_and_long_prompt_tier(): void
+    {
+        $fetcher = app(OfficialPriceFetcher::class);
+        $opus = $fetcher->fetch('claude-opus-5-5')['fields'];
+        $this->assertSame(['USD', '4', '0.20', '5', '20', null], [$opus['currency'], $opus['input_per_million'], $opus['cache_read_per_million'], $opus['cache_write_per_million'], $opus['output_per_million'], $opus['long_context_threshold']]);
+        $haiku = $fetcher->fetch('claude-haiku-5-5');
+        $this->assertSame(['0.10', '0.01', '0.50', '100000', '0.50', '0.05', '0.625', '2.50'], [$haiku['fields']['input_per_million'], $haiku['fields']['cache_read_per_million'], $haiku['fields']['output_per_million'],
+            $haiku['fields']['long_context_threshold'], $haiku['fields']['long_input_per_million'], $haiku['fields']['long_cache_read_per_million'], $haiku['fields']['long_cache_write_per_million'], $haiku['fields']['long_output_per_million']]);
+        $this->assertStringContainsString('1小时缓存写入', implode('', $haiku['notes']));
+        $this->expectExceptionMessage('没有找到 claude-sonnet-5-5');
+        $fetcher->fetch('claude-sonnet-5-5');
     }
 
     /** DeepSeek 取高峰价，闲时倍率由闲时价除以高峰价得出，高峰时段取自脚注；不带长上下文字段。 */

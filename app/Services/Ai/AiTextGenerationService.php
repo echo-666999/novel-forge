@@ -20,7 +20,7 @@ use Throwable;
 final class AiTextGenerationService
 {
     /** 注入互不污染的固定供应商适配器，Fake 开关不会修改 SDK 全局状态。 */
-    public function __construct(private FakeTextProvider $fake, private OpenAiTextProvider $real, private CostEstimator $estimator, private DeepSeekTextProvider $deepSeek) {}
+    public function __construct(private FakeTextProvider $fake, private OpenAiTextProvider $real, private CostEstimator $estimator, private DeepSeekTextProvider $deepSeek, private AnthropicTextProvider $anthropic) {}
 
     /** 执行一次调用并返回持久化的统一结果；任何失败都不自动重试。 */
     public function generate(string $prompt, string $mode = 'fake', ?string $model = null, ?int $novelId = null, ?int $novelStageId = null, ?string $promptVersion = null, ?TextRequestOptions $options = null): CostLog
@@ -56,7 +56,12 @@ final class AiTextGenerationService
             }
         }
         // 费用审计记录最终模型参数，避免将已移除的温度误记为实际发送。
-        $parameters = $provider === 'deepseek' ? SingleAttemptDeepSeekGateway::modelParameters($options->toArray(), $options->executionContext['deepseek_reasoning_effort'] ?? $options->submissionContext['deepseek_reasoning_effort'] ?? 'none') : SingleAttemptOpenAiGateway::modelParameters($options->toArray(), $model);
+        $reasoning = $options->executionContext['deepseek_reasoning_effort'] ?? $options->submissionContext['deepseek_reasoning_effort'] ?? 'none';
+        $parameters = match ($provider) {
+            'deepseek' => SingleAttemptDeepSeekGateway::modelParameters($options->toArray(), $reasoning),
+            'anthropic' => SingleAttemptAnthropicGateway::modelParameters($options->toArray(), $reasoning),
+            default => SingleAttemptOpenAiGateway::modelParameters($options->toArray(), $model),
+        };
         if ($options->templateSnapshot !== null) {
             $parameters['prompt_templates'] = $options->templateSnapshot;
         }
@@ -103,7 +108,7 @@ final class AiTextGenerationService
         $prices = app(ModelPrices::class)->snapshot();
         try {
             $result = (match ($provider) {
-                'fake' => $this->fake, 'deepseek' => $this->deepSeek, default => $this->real
+                'fake' => $this->fake, 'deepseek' => $this->deepSeek, 'anthropic' => $this->anthropic, default => $this->real
             })->generate($prompt, $model, $options);
             $log->fill($this->resultAttributes($result));
             $this->validateUsage($result);

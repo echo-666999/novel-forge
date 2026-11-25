@@ -13,10 +13,11 @@ final class ProviderCredentials
     public const URLS = [
         'openai' => ['https://api.openai.com/v1'],
         'deepseek' => ['https://api.deepseek.com', 'https://api.deepseek.com/v1'],
+        'anthropic' => ['https://api.anthropic.com/v1'],
     ];
 
     /** 各供应商的显示名称。 */
-    public const LABELS = ['openai' => 'OpenAI', 'deepseek' => 'DeepSeek'];
+    public const LABELS = ['openai' => 'OpenAI', 'deepseek' => 'DeepSeek', 'anthropic' => 'Claude'];
 
     /** 环境变量中的原始值，首次覆盖前记录。
      * @var array<string, array{key: mixed, url: mixed}>
@@ -33,7 +34,7 @@ final class ProviderCredentials
         }
         try {
             $settings = app(ProviderSettings::class);
-            $values = ['openai' => [$settings->openai_api_key, $settings->openai_url], 'deepseek' => [$settings->deepseek_api_key, $settings->deepseek_url]];
+            $values = collect(array_keys(self::URLS))->mapWithKeys(fn (string $provider): array => [$provider => [$settings->{$provider.'_api_key'}, $settings->{$provider.'_url'}]])->all();
         } catch (Throwable) {
             return;
         }
@@ -77,7 +78,9 @@ final class ProviderCredentials
     public function check(string $provider, string $key, string $url): array
     {
         try {
-            $response = Http::withToken($key)->acceptJson()->connectTimeout(10)->timeout(20)->get(rtrim($url, '/').'/models');
+            // Claude 使用 x-api-key 与版本请求头，其余供应商使用 Bearer。
+            $request = $provider === 'anthropic' ? Http::withHeaders(['x-api-key' => $key, 'anthropic-version' => '2023-06-01']) : Http::withToken($key);
+            $response = $request->acceptJson()->connectTimeout(10)->timeout(20)->get(rtrim($url, '/').'/models');
         } catch (Throwable) {
             return ['ok' => false, 'message' => '无法连接 '.self::LABELS[$provider].'，请检查网络。'];
         }
@@ -94,6 +97,6 @@ final class ProviderCredentials
     {
         $value = is_string($value) ? trim($value) : '';
 
-        return $value === '' || in_array($value, ['sk-...', 'your-api-key', 'your_deepseek_api_key'], true) ? null : $value;
+        return $value === '' || in_array($value, ['sk-...', 'sk-ant-...', 'your-api-key', 'your_deepseek_api_key'], true) ? null : $value;
     }
 }

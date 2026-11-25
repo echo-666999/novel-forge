@@ -19,6 +19,12 @@ return [
             'url'    => env('OPENAI_URL', 'https://api.openai.com/v1'),
             'store'  => false,
         ],
+        // Claude使用SDK的Anthropic驱动（Messages协议），密钥与地址同样以后台设置为准。
+        'anthropic' => [
+            'driver' => 'anthropic',
+            'key'    => env('ANTHROPIC_API_KEY'),
+            'url'    => env('ANTHROPIC_URL', 'https://api.anthropic.com/v1'),
+        ],
     ],
     // 模型配置：供应商、可选性与能力在新运行创建时冻结进运行配置，旧运行不受修改影响。
     // extended_output_tokens：正文、修订、复查可用的扩展输出容量（含推理），空值表示保持8192，最大32768。
@@ -40,6 +46,35 @@ return [
             'extended_output_tokens' => 32768,
             'review_reasoning'       => 'low',
             'slot_repair'            => true
+        ],
+        // Claude 5.x：思考始终开启，按请求冻结思考强度；不接受温度参数，SDK不会发送。
+        'claude-opus-5-5' => [
+            'label'                  => 'Claude Opus 5.5',
+            'provider'               => 'anthropic',
+            'selectable'             => true,
+            'extended_output_tokens' => 32768,
+            'review_reasoning'       => 'low'
+        ],
+        'claude-sonnet-5-5' => [
+            'label'                  => 'Claude Sonnet 5.5',
+            'provider'               => 'anthropic',
+            'selectable'             => true,
+            'extended_output_tokens' => 32768,
+            'review_reasoning'       => 'low'
+        ],
+        'claude-haiku-5-5' => [
+            'label'                  => 'Claude Haiku 5.5',
+            'provider'               => 'anthropic',
+            'selectable'             => true,
+            'extended_output_tokens' => 32768,
+            'review_reasoning'       => 'low'
+        ],
+        'claude-fable-5-2' => [
+            'label'                  => 'Claude Fable 5.2',
+            'provider'               => 'anthropic',
+            'selectable'             => true,
+            'extended_output_tokens' => 32768,
+            'review_reasoning'       => 'low'
         ],
         'gpt-6.1-terra' => [
             'label'                  => 'GPT-6.1 Terra',
