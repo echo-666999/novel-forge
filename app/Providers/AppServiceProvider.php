@@ -2,6 +2,7 @@
 
 namespace App\Providers;
 
+use App\Services\Ai\ProviderCredentials;
 use App\Services\Pipeline\FakeStageExecutor;
 use App\Services\Pipeline\StageExecutorInterface;
 use App\Services\Pipeline\WorkerHeartbeat;
@@ -21,6 +22,7 @@ class AppServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->app->bind(StageExecutorInterface::class, FakeStageExecutor::class);
+        $this->app->singleton(ProviderCredentials::class);
     }
 
     /**
@@ -28,6 +30,8 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        // 后台维护的供应商密钥与地址优先于本机环境变量；设置表未就绪时保持环境变量。
+        app(ProviderCredentials::class)->apply();
         // 只有真实消费者循环或领取任务才上报，HTTP页面读取不会制造心跳。
         Queue::looping(function (Looping $event): void {
             app(WorkerHeartbeat::class)->observe($event->connectionName, $event->queue);

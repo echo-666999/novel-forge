@@ -2,8 +2,8 @@
 
 namespace Database\Factories;
 
-use App\Models\ProductionRun;
 use App\Models\Novel;
+use App\Models\ProductionRun;
 use App\Models\User;
 use App\Services\Pipeline\PlanningJson;
 use Illuminate\Database\Eloquent\Factories\Factory;

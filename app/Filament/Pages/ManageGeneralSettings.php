@@ -17,7 +17,7 @@ use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use UnitEnum;
 
-/** 维护新运行默认参数，供应商由模型名称识别，密钥仅保存在本机环境。 */
+/** 维护新运行默认参数，供应商由模型名称识别，密钥在模型供应商页面维护。 */
 class ManageGeneralSettings extends SettingsPage
 {
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedCog6Tooth;
@@ -44,7 +44,7 @@ class ManageGeneralSettings extends SettingsPage
                             ->label('默认模型')
                             ->options(fn (?string $state): array => ModelProfiles::options($state))
                             ->native(false)
-                            ->helperText('可选模型来自 config/ai.php 的 models；DeepSeek 模型需在本机配置 DEEPSEEK_API_KEY。')
+                            ->helperText('可选模型来自 config/ai.php 的 models；各供应商密钥在“模型供应商”页面维护。')
                             ->required(),
                         TextInput::make('temperature')
                             ->label('采样温度')

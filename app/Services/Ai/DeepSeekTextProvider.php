@@ -21,7 +21,7 @@ final class DeepSeekTextProvider implements TextProvider
         $options ??= TextRequestOptions::probe();
         $key = trim((string) config('ai.providers.deepseek.key'));
         if ($key === '' || in_array($key, ['sk-...', 'your-api-key', 'your_deepseek_api_key'], true)) {
-            throw new AiGenerationException('请先在本机配置有效 DEEPSEEK_API_KEY；尚未发送请求。', 'missing_credentials');
+            throw new AiGenerationException('请先在后台“模型供应商”页面填写有效的 DeepSeek 密钥；尚未发送请求。', 'missing_credentials');
         }
         if (! in_array(rtrim((string) config('ai.providers.deepseek.url'), '/'), ['https://api.deepseek.com', 'https://api.deepseek.com/v1'], true)) {
             throw new AiGenerationException('A03 仅允许已批准的 DeepSeek 官方地址。', 'invalid_endpoint');

@@ -14,6 +14,6 @@ class ExampleTest extends TestCase
     {
         $response = $this->get('/');
 
-        $response->assertStatus(200);
+        $response->assertStatus(200)->assertSee('进入管理后台')->assertSee(route('filament.admin.pages.production-overview'), false);
     }
 }
