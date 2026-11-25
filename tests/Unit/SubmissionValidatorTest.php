@@ -91,6 +91,16 @@ class SubmissionValidatorTest extends TestCase
         (new SubmissionValidator)->normalize(['events' => [$event]], '她的世界改变了。');
     }
 
+    /** 单个事件的状态变化超过上限时本地拒绝：Claude 会剥离条数上限、DeepSeek 不执行结构约束。 */
+    public function test_state_changes_per_event_are_capped_locally(): void
+    {
+        $event = $this->extraction()['events'][0];
+        $change = ['entity_ref' => 'entity-1', 'property' => 'location', 'value_ref' => 'entity-2', 'value_text' => '', 'fact_category' => 'objective_confirmed'];
+        $event['state_changes'] = array_fill(0, SubmissionContract::MAX_EVENT_STATE_CHANGES + 1, $change);
+        $this->expectExceptionMessage('EVENT_CHANGES_TOO_MANY');
+        (new SubmissionValidator)->normalize(['events' => [$event]], '林舟走进旧塔。');
+    }
+
     /** 新地点在事件和补丁中内联定义，映射为同一提议，未批准时只停在批准门禁。 */
     public function test_inline_location_definition_is_resolved_without_implicit_approval(): void
     {

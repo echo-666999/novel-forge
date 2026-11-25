@@ -18,6 +18,10 @@ final class EventChangeResolver
         foreach ($data['events'] as &$event) {
             ContentSchema::keys($event, ['key', 'event_type', 'narrative_order', 'actor_ref', 'target_refs', 'time_scope', 'fact_category', 'summary', 'evidence_ids', 'state_changes']);
             ContentSchema::listing($event['state_changes']);
+            // 与供应商Schema同一上限：部分供应商不执行条数约束，本地必须复验。
+            if (count($event['state_changes']) > SubmissionContract::MAX_EVENT_STATE_CHANGES) {
+                throw new InvalidArgumentException('EVENT_CHANGES_TOO_MANY');
+            }
             foreach ($event['state_changes'] as $change) {
                 ContentSchema::keys($change, ['entity_ref', 'property', 'value_ref', 'value_text', 'fact_category']);
                 if (! in_array($change['property'], ['location', 'item_owner', 'life_status'], true)) {

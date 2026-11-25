@@ -6,21 +6,18 @@ use Opis\JsonSchema\Errors\ValidationError;
 use Opis\JsonSchema\Helper;
 use Opis\JsonSchema\Validator;
 
-/** 用发出的完整结构定义校验结构化输出，与供应商无关：
- * OpenAI 严格模式、Claude（SDK 会剥离长度/格式/条数等约束）与 DeepSeek（只保证 JSON 语法）因此受同一套标准约束。
+/** 用发出的完整结构定义校验结构化输出，与供应商无关：OpenAI 严格模式、Claude（SDK 会剥离条数上限/数值范围/正则等约束）
+ * 与 DeepSeek（只保证 JSON 语法）的输出按同一标准检查并留痕；是否接纳由业务契约裁决。
  */
 final class StructuredOutputValidator
 {
-    /** 形状约束：类型、必填、未约定字段。任何业务路径都无法使用形状不对的输出，在请求层统一拒绝。
-     * 其余取值约束（枚举、条数、数值范围、长度、正则）各业务契约有更细的处理（丢弃无效范围、同轮重试、证据无效反馈、按段修复），
-     * 只统一校验并留痕，交由业务契约裁决。
-     */
+    /** 形状约束：类型、必填、未约定字段；其余为取值约束（枚举、条数、数值范围、长度、正则）。两类分开留痕，便于核对；均不在请求层拒绝。 */
     public const SHAPE_KEYWORDS = ['type', 'required', 'additionalProperties'];
 
     /** 最多收集的问题数，足够定位又不让错误信息过长。 */
     private const MAX_ERRORS = 20;
 
-    /** 校验结果：shape 为必须拒绝的形状问题；values 为交由业务契约裁决的取值问题。均为“路径：说明”。
+    /** 校验结果：shape 为形状问题，values 为取值问题，均为“路径：说明”。
      * @param  string  $json  供应商返回的 JSON 原文（规范化后）；对象保持对象，避免空对象被当成数组。
      * @param  array<string, mixed>  $schema
      * @return array{shape: list<string>, values: list<string>}

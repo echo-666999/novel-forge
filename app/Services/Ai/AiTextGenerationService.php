@@ -116,9 +116,9 @@ final class AiTextGenerationService
             })->generate($prompt, $model, $options);
             $log->fill($this->resultAttributes($result));
             $this->validateUsage($result);
-            $violations = [];
             if ($schema !== null) {
-                [$result, $violations] = $this->validateStructure($result, $schema);
+                // 统一结构校验只留痕，是否接纳由业务契约决定（各契约均完整复验，并有各自的容错与修复规则）。
+                $result = $this->recordStructure($result, $schema);
                 $log->raw_response = $result->rawResponse;
             }
             // 先按实际响应模型匹配，未登记时按请求模型匹配（同名带日期后缀的响应模型）。
@@ -147,10 +147,6 @@ final class AiTextGenerationService
         }
         // 结果保存失败必须向调用方报错，不能把仅在内存中的输出宣称为验收成功。
         $log->fill(['duration_ms' => (int) ((hrtime(true) - $started) / 1000000), 'finished_at' => now()])->saveOrFail();
-        // 调用本身成功并已记账；结构不合约定交给业务层按“响应结构无效”处理，与本地解析失败走同一恢复路径。
-        if ($violations !== []) {
-            throw new StructuredOutputException($log->id, $violations);
-        }
 
         return $log->refresh();
     }
@@ -179,21 +175,20 @@ final class AiTextGenerationService
         return [...$result->usage, 'provider' => $result->provider, 'model' => $result->model, 'provider_request_id' => $result->providerRequestId, 'response_text' => $result->text, 'structured_output' => $result->structured, 'raw_response' => $result->rawResponse];
     }
 
-    /** 统一结构校验（各供应商同一标准）：结果写入原始响应留痕；返回形状问题（类型、必填、未约定字段），由调用后统一抛出。
-     * 取值问题（枚举、条数、数值范围、长度、正则）只留痕，由业务契约按各自规则裁决与修复。
+    /** 统一结构校验（各供应商同一标准）：形状问题（类型、必填、未约定字段）与取值问题（枚举、条数、数值范围、长度、正则）
+     * 分别写入原始响应的 _schema_validation 留痕，不改变调用结果；是否接纳输出始终由业务契约裁决。
      *
      * @param  array<string, mixed>  $schema
-     * @return array{TextGenerationResult, list<string>}
      */
-    private function validateStructure(TextGenerationResult $result, array $schema): array
+    private function recordStructure(TextGenerationResult $result, array $schema): TextGenerationResult
     {
         $found = app(StructuredOutputValidator::class)->validate($result->text, $schema);
         if ($found['shape'] === [] && $found['values'] === []) {
-            return [$result, []];
+            return $result;
         }
         $raw = [...($result->rawResponse ?? []), '_schema_validation' => ['version' => 'opis-v1', ...$found]];
 
-        return [new TextGenerationResult($result->text, $result->structured, $result->provider, $result->model, $result->usage, $result->providerRequestId, $raw), $found['shape']];
+        return new TextGenerationResult($result->text, $result->structured, $result->provider, $result->model, $result->usage, $result->providerRequestId, $raw);
     }
 
     /** 拒绝负数或不可能的子集计量，不修改供应商原始响应证据。 */

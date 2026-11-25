@@ -7,7 +7,6 @@ use App\Models\Novel;
 use App\Models\User;
 use App\Services\Ai\AiGenerationException;
 use App\Services\Ai\AiTextGenerationService;
-use App\Services\Ai\StructuredOutputException;
 use App\Services\Ai\TextRequestOptions;
 use App\Services\Pipeline\ProductionRunService;
 use App\Settings\GeneralSettings;
@@ -109,16 +108,10 @@ class DeepSeekAiGenerationTest extends TestCase
     {
         $text = '{"title":"题目","paragraphs":{"p1":"她说：\\"保留,}和,]\\"。","p2":"结束。",},"items":["甲",],}';
         Http::fake(['api.deepseek.com/*' => Http::response($this->response($text))]);
-        try {
-            app(AiTextGenerationService::class)->generate('JSON', 'real', 'deepseek-flash', options: TextRequestOptions::setting(0.5));
-            $this->fail('该样本不是设定结构，统一结构校验必须拒绝');
-        } catch (StructuredOutputException $error) {
-            $this->assertStringContainsString('缺少字段 world', $error->getMessage());
-        }
-        // 调用本身成功并记账；规范化证据与结构校验结果都保留在原始响应中。
-        $log = CostLog::sole();
+        $log = app(AiTextGenerationService::class)->generate('JSON', 'real', 'deepseek-flash', options: TextRequestOptions::setting(0.5));
+        // 该样本不是设定结构：统一结构校验只留痕，调用照常成功，规范化证据同样保留。
         $this->assertSame('succeeded', $log->status);
-        $this->assertStringContainsString('出现未约定的字段 title', implode('', $log->raw_response['_schema_validation']['shape']));
+        $this->assertStringContainsString('缺少字段 world', implode('', $log->raw_response['_schema_validation']['shape']));
         $this->assertSame('她说："保留,}和,]"。', $log->structured_output['paragraphs']['p1']);
         $this->assertSame($text, $log->raw_response['output'][0]['content'][0]['text']);
         $audit = $log->raw_response['_application_json_normalization'];

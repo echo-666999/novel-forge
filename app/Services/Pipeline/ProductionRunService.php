@@ -14,7 +14,6 @@ use App\Models\User;
 use App\Services\Ai\AiGenerationException;
 use App\Services\Ai\AiTextGenerationService;
 use App\Services\Ai\ModelProfiles;
-use App\Services\Ai\StructuredOutputException;
 use App\Services\Ai\TextRequestOptions;
 use App\Services\Search\EmbeddingService;
 use App\Settings\GeneralSettings;
@@ -209,9 +208,6 @@ final class ProductionRunService
                         } catch (AiGenerationException $exception) {
                             // 明确失败（如响应不是有效JSON）归入可自动恢复一次的决策失败；结果未知时保留原错误，等待人工核对。
                             throw $exception->status === 'failed' ? new InvalidArgumentException('SETTING_DECISION_FAILED') : $exception;
-                        } catch (StructuredOutputException) {
-                            // 统一结构校验未通过同属明确失败。
-                            throw new InvalidArgumentException('SETTING_DECISION_FAILED');
                         }
                     }
                     if ($log->status !== 'succeeded') {

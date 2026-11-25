@@ -7,7 +7,6 @@ use App\Models\ModelPrice;
 use App\Services\Ai\AiGenerationException;
 use App\Services\Ai\AiTextGenerationService;
 use App\Services\Ai\ModelProfiles;
-use App\Services\Ai\StructuredOutputException;
 use App\Services\Ai\TextRequestOptions;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Http\Client\Request;
@@ -86,21 +85,14 @@ class AnthropicAiGenerationTest extends TestCase
         Http::assertSentCount(1);
     }
 
-    /** 统一结构校验对 Claude 同样生效：违反约定的输出调用记为成功并计费，业务层收到“响应结构无效”。 */
-    public function test_constraint_stripped_for_claude_is_still_enforced(): void
+    /** 统一结构校验对 Claude 同样生效但只留痕：不符合约定的输出照常返回成功记录，是否接纳由业务契约决定。 */
+    public function test_structure_problems_are_recorded_without_failing_the_call(): void
     {
         $setting = B02SettingTest::setting();
         $setting['tone']['pov'] = 3;
         $setting['invented'] = '未约定';
         Http::fake(['api.anthropic.com/*' => Http::response($this->response(json_encode($setting, JSON_UNESCAPED_UNICODE)))]);
-        try {
-            app(AiTextGenerationService::class)->generate('JSON', 'real', 'claude-sonnet-5-5', options: TextRequestOptions::setting(0.5));
-            $this->fail('类型错误与未约定字段必须被拒绝');
-        } catch (StructuredOutputException $error) {
-            $this->assertStringContainsString('/tone/pov：类型应为 string，实际为 integer', $error->getMessage());
-            $this->assertSame(CostLog::sole()->id, $error->costLogId);
-        }
-        $log = CostLog::sole();
+        $log = app(AiTextGenerationService::class)->generate('JSON', 'real', 'claude-sonnet-5-5', options: TextRequestOptions::setting(0.5));
         $this->assertSame(['succeeded', 50], [$log->status, $log->input_tokens]);
         $this->assertEqualsCanonicalizing(['/tone/pov：类型应为 string，实际为 integer', '/：出现未约定的字段 invented'], $log->raw_response['_schema_validation']['shape']);
         Http::assertSentCount(1);

@@ -15,6 +15,9 @@ final class SubmissionContract
 
     public const ENTITY_TYPES = ['character', 'group', 'location', 'item', 'organization', 'animal'];
 
+    /** 每个事件最多携带的状态变化条数；供应商Schema与本地复验共用。 */
+    public const MAX_EVENT_STATE_CHANGES = 10;
+
     public const EVENT_TYPES = ['action', 'observation', 'statement', 'belief_change', 'location_change', 'acquisition', 'transfer', 'life_change'];
 
     public const PROPERTIES = ['location', 'belief', 'knowledge', 'item_owner', 'life_status'];
@@ -79,7 +82,7 @@ final class SubmissionContract
                 'time_scope' => $schema->string()->enum($scopes)->required(), 'fact_category' => $schema->string()->enum($types === ['statement'] ? array_values(array_diff($categories, ['objective_confirmed'])) : $categories)->required(),
                 'summary' => $schema->string()->required(), 'evidence_ids' => $evidence(),
                 'state_changes' => ($properties === [] ? $schema->array()->max(0)->items($schema->string())
-                    : $schema->array()->max(10)->items(self::patchSchema($schema, $anchors, $catalog, $properties)))->required(),
+                    : $schema->array()->max(self::MAX_EVENT_STATE_CHANGES)->items(self::patchSchema($schema, $anchors, $catalog, $properties)))->required(),
             ])->withoutAdditionalProperties();
         }
 
