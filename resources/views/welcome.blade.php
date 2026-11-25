@@ -15,7 +15,7 @@
         ['title' => '费用清清楚楚', 'body' => '每次请求按官方单价估算，区分缓存、闲时与长上下文；按书设置预算，花了多少、还要多少，一目了然。',
             'icon' => 'M2.25 18.75a60.07 60.07 0 0 1 15.797 2.101c.727.198 1.453-.342 1.453-1.096V18.75M3.75 4.5v.75A.75.75 0 0 1 3 6h-.75m0 0v-.375c0-.621.504-1.125 1.125-1.125H20.25M2.25 6v9m18-10.5v.75c0 .414.336.75.75.75h.75m-1.5-1.5h.375c.621 0 1.125.504 1.125 1.125v9.75c0 .621-.504 1.125-1.125 1.125h-.375m1.5-1.5H21a.75.75 0 0 0-.75.75v.75m0 0H3.75m0 0h-.375a1.125 1.125 0 0 1-1.125-1.125V15m1.5 1.5v-.75A.75.75 0 0 0 3 15h-.75M15 10.5a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm3 0h.008v.008H18V10.5Zm-12 0h.008v.008H6V10.5Z'],
     ];
-    $flow = ['创意', '设定', '大纲', '细纲', '正文', '评审', '提交', '导出'];
+    $flow = [['创意', '一句话的灵感'], ['设定', '人物与规则'], ['大纲', '分卷走向'], ['细纲', '每章的推进点'], ['正文', '逐章生成'], ['评审', '检查与修订'], ['提交', '定稿入档'], ['导出', '成书下载']];
     $stages = [['细纲', '已完成'], ['正文初稿', '已完成'], ['推进检查', '通过'], ['独立评审', '通过'], ['正式提交', '进行中']];
 @endphp
 <!DOCTYPE html>
@@ -160,11 +160,17 @@
             <section id="flow" class="mx-auto max-w-6xl scroll-mt-8 px-6 py-24">
                 <h2 class="font-serif text-3xl font-semibold tracking-tight">从一句话到一本书</h2>
                 <p class="mt-4 max-w-2xl text-stone-600 dark:text-stone-300">每个阶段的结果都会保存，可单独重跑；任何一步出错都停在原地等你处理，不会擅自重试或改写已确认的内容。</p>
-                <ol class="mt-12 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">
-                    @foreach ($flow as $step)
-                        <li class="relative rounded-xl border border-stone-900/10 bg-white px-4 py-5 dark:border-white/10 dark:bg-stone-900">
-                            <span class="font-mono text-xs text-amber-700 dark:text-amber-300">{{ str_pad($loop->iteration, 2, '0', STR_PAD_LEFT) }}</span>
-                            <p class="mt-2 font-serif text-lg font-semibold">{{ $step }}</p>
+                <ol class="relative mt-16 grid grid-cols-4 gap-x-2 gap-y-10 lg:grid-cols-8">
+                    <div aria-hidden="true" class="absolute inset-x-[6.25%] top-7 hidden h-0.5 rounded-full bg-gradient-to-r from-stone-900/10 via-amber-500/60 to-amber-600 lg:block dark:from-white/10 dark:via-amber-300/50 dark:to-amber-300"></div>
+                    @foreach ($flow as [$step, $hint])
+                        <li class="group relative flex flex-col items-center text-center">
+                            @if ($loop->last)
+                                <span class="relative z-10 grid size-14 place-items-center rounded-full bg-amber-600 text-lg font-bold text-white tabular-nums shadow-lg shadow-amber-600/30 ring-4 ring-[#faf7f2] dark:bg-amber-300 dark:text-stone-900 dark:ring-[#12100d]">{{ str_pad($loop->iteration, 2, '0', STR_PAD_LEFT) }}</span>
+                            @else
+                                <span class="relative z-10 grid size-14 place-items-center rounded-full bg-white text-lg font-bold text-amber-600 tabular-nums shadow-sm ring-1 ring-stone-900/10 transition group-hover:-translate-y-0.5 group-hover:ring-amber-500/60 dark:bg-stone-900 dark:text-amber-300 dark:ring-white/10">{{ str_pad($loop->iteration, 2, '0', STR_PAD_LEFT) }}</span>
+                            @endif
+                            <p class="mt-4 font-serif text-lg font-semibold">{{ $step }}</p>
+                            <p class="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">{{ $hint }}</p>
                         </li>
                     @endforeach
                 </ol>
@@ -180,15 +186,15 @@
             </section>
 
             <section class="mx-auto max-w-6xl px-6 pb-24">
-                <div class="relative overflow-hidden rounded-3xl bg-stone-900 px-8 pb-24 pt-14 text-center sm:px-16 dark:bg-stone-800/60">
-                    <div aria-hidden="true" class="absolute inset-0 bg-[radial-gradient(40rem_16rem_at_50%_120%,rgba(251,191,36,0.25),transparent)]"></div>
+                <div class="relative overflow-hidden rounded-3xl border border-amber-700/10 bg-gradient-to-br from-[#fbf3e3] via-amber-50 to-orange-100/70 px-8 pb-20 pt-24 text-center sm:px-16 sm:pb-24 sm:pt-32 dark:border-white/10 dark:from-amber-300/10 dark:via-stone-900 dark:to-[#12100d]">
+                    <div aria-hidden="true" class="absolute inset-0 bg-[radial-gradient(36rem_14rem_at_50%_0%,rgba(255,255,255,0.7),transparent)] dark:bg-[radial-gradient(36rem_14rem_at_50%_0%,rgba(251,191,36,0.08),transparent)]"></div>
                     <svg aria-hidden="true" class="absolute inset-x-0 bottom-0 h-24 w-full sm:h-32" viewBox="0 0 1200 160" preserveAspectRatio="none" fill="none">
-                        <path d="M0 110 C120 70 220 40 320 70 C420 100 480 50 600 45 C720 40 780 100 900 95 C1020 90 1100 60 1200 70 V160 H0Z" fill="#ffffff" fill-opacity="0.04" />
-                        <path d="M0 140 C160 110 300 100 440 120 C580 140 700 100 860 110 C1000 118 1100 140 1200 130 V160 H0Z" fill="#ffffff" fill-opacity="0.06" />
+                        <path class="fill-amber-900/[0.06] dark:fill-white/[0.04]" d="M0 110 C120 70 220 40 320 70 C420 100 480 50 600 45 C720 40 780 100 900 95 C1020 90 1100 60 1200 70 V160 H0Z" />
+                        <path class="fill-amber-900/[0.08] dark:fill-white/[0.06]" d="M0 140 C160 110 300 100 440 120 C580 140 700 100 860 110 C1000 118 1100 140 1200 130 V160 H0Z" />
                     </svg>
-                    <h2 class="relative font-serif text-3xl font-semibold tracking-tight text-white">下一章，从这里开始</h2>
-                    <p class="relative mx-auto mt-4 max-w-xl text-stone-300">打开后台，查看每本书的进度、阻塞原因与下一步操作。</p>
-                    <a href="{{ $adminUrl }}" class="relative mt-8 inline-flex items-center gap-2 rounded-full bg-amber-400 px-6 py-3 text-sm font-medium text-stone-900 transition hover:bg-amber-300">
+                    <h2 class="relative font-serif text-3xl font-semibold tracking-tight sm:text-4xl">下一章，从这里开始</h2>
+                    <p class="relative mx-auto mt-4 max-w-xl text-stone-600 dark:text-stone-300">打开后台，查看每本书的进度、阻塞原因与下一步操作。</p>
+                    <a href="{{ $adminUrl }}" class="relative mt-8 inline-flex items-center gap-2 rounded-full bg-stone-900 px-6 py-3 text-sm font-medium text-white shadow-lg shadow-stone-900/10 transition hover:bg-amber-700 dark:bg-amber-400 dark:text-stone-900 dark:hover:bg-amber-300">
                         {{ $signedIn ? '继续创作' : '进入管理后台' }}
                         <svg class="size-4" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" /></svg>
                     </a>
