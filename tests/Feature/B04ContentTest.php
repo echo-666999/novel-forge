@@ -27,7 +27,7 @@ class B04ContentTest extends TestCase
      */
     public static function validResponse(Request $request, bool $met = true): array
     {
-        $payload = json_decode(explode('冻结输入：', $request['input'][1]['content'][0]['text'], 2)[1], true, flags: JSON_THROW_ON_ERROR);
+        $payload = self::requestPayload($request, '冻结输入：');
         $step = CostLog::latest('id')->firstOrFail()->request_parameters['step'];
         if ($step === 'fine') {
             $data = self::fine();

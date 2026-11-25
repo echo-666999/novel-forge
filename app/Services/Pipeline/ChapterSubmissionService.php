@@ -56,7 +56,8 @@ final class ChapterSubmissionService
     {
         $recorded = collect($run->control_history ?? [])->last(fn (array $entry): bool => ($entry['action'] ?? null) === 'step_failed');
 
-        return $recorded === null ? $this->replayedDetail($run) : ($recorded['detail'] ?? null);
+        // 旧失败记录未保存具体原因时，按已保存的响应重放当前校验补出原因。
+        return ($recorded['detail'] ?? null) ?? $this->replayedDetail($run);
     }
 
     /** 按失败步骤保存的成功响应重新执行同一本地校验，取出具体原因；找不到响应或校验未报出具体原因时返回 null。 */

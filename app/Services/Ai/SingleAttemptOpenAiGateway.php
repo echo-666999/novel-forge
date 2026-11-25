@@ -18,7 +18,14 @@ final class SingleAttemptOpenAiGateway extends OpenAiGateway
      */
     protected function mergeSharedResponsesRequestOptions(array $body, array $tools, ?array $schema, ?TextGenerationOptions $options, Provider $provider): array
     {
-        return self::modelParameters(parent::mergeSharedResponsesRequestOptions($body, $tools, $schema, $options, $provider), $body['model']);
+        $body = parent::mergeSharedResponsesRequestOptions($body, $tools, $schema, $options, $provider);
+        // 共享资料前置时把系统指令移到共享资料之后，供应商可按前缀复用缓存。
+        $layout = SharedContextLayout::responsesInput($body['input'] ?? []);
+        if ($layout !== null) {
+            $body['input'] = $layout;
+        }
+
+        return self::modelParameters($body, $body['model']);
     }
 
     /** 仅适配已核实参数要求的Sol与Terra型号；低推理替代旧非推理调用，预留短探测的推理输出预算。

@@ -190,7 +190,7 @@ class BudgetAndPricingTest extends TestCase
         $this->assertSame(['5.00000000', 'CNY'], [$novel->budget_amount, $novel->budget_currency]);
         $this->assertCount(1, $novel->budget_history);
         Http::fake(['https://api.openai.com/v1/responses' => function (Request $request) {
-            $this->assertStringContainsString('不写穿越和重生', $request['input'][1]['content'][0]['text']);
+            $this->assertStringContainsString('不写穿越和重生', self::requestPrompt($request));
 
             return Http::response(B02SettingTest::response(json_encode(B02SettingTest::setting(), JSON_UNESCAPED_UNICODE)));
         }]);

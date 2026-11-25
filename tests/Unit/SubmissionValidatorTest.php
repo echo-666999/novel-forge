@@ -3,6 +3,7 @@
 namespace Tests\Unit;
 
 use App\Services\Pipeline\SubmissionContract;
+use App\Services\Pipeline\SubmissionRejection;
 use App\Services\Pipeline\SubmissionValidator;
 use Illuminate\JsonSchema\JsonSchemaTypeFactory;
 use InvalidArgumentException;
@@ -127,6 +128,37 @@ class SubmissionValidatorTest extends TestCase
         $data['events'][0]['actor_ref'] = 'new-1';
         $this->expectExceptionMessage('INLINE_REFERENCE_INVALID');
         (new SubmissionValidator)->normalize($data, '林舟走进旧塔。');
+    }
+
+    /** 模型在事件里只写了名称、在补丁中才给出完整定义时，名称按同一提议引用，不新增也不批准实体。 */
+    public function test_bare_name_resolves_to_definition_given_later_in_output(): void
+    {
+        $data = $this->extraction();
+        unset($data['proposed_entities']);
+        $location = ['type' => 'location', 'name' => '旧塔', 'aliases' => [], 'description' => '林舟进入的旧塔', 'core' => false, 'evidence_ids' => ['p1']];
+        $data['events'][0]['target_refs'] = [' 旧塔 '];
+        $data['patch'][0]['value_ref'] = $location;
+        $normalized = (new SubmissionValidator)->normalize($data, '林舟走进旧塔。');
+        $this->assertCount(1, $normalized['proposed_entities']);
+        $this->assertSame(['new-1'], $normalized['events'][0]['target_refs']);
+        $this->assertSame('new-1', $normalized['patch'][0]['value_ref']);
+    }
+
+    /** 名称在整份输出中都没有完整定义时仍然拒绝，不能借名称引用躲避定义。 */
+    public function test_bare_name_without_definition_is_rejected(): void
+    {
+        $data = $this->extraction();
+        unset($data['proposed_entities']);
+        $data['events'][0]['target_refs'] = ['旧塔', '旧塔'];
+        $data['patch'][0]['value_ref'] = '守塔人';
+        try {
+            (new SubmissionValidator)->normalize($data, '林舟走进旧塔。');
+            $this->fail('未定义的名称必须拒绝');
+        } catch (SubmissionRejection $exception) {
+            $this->assertSame('INLINE_REFERENCE_INVALID', $exception->getMessage());
+            $this->assertStringContainsString('「旧塔」「守塔人」', $exception->detail);
+            $this->assertStringContainsString('首次引用处写完整对象', $exception->detail);
+        }
     }
 
     /** 同名对象的不同定义不能静默覆盖或合并。 */

@@ -248,7 +248,7 @@ class AcceptanceBranchTest extends B04ExecutionTest
         Http::preventStrayRequests();
         Http::fake(['*' => function ($request) use (&$original, &$repairAttempts) {
             $log = CostLog::latest('id')->firstOrFail();
-            $payload = json_decode(explode('冻结输入：', $log->request_parameters['prompt_audit']['user_prompt'], 2)[1], true);
+            $payload = self::promptPayload($log->request_parameters['prompt_audit']['user_prompt'], '冻结输入：');
             $parts = [];
             foreach ($payload['budget']['slots'] as $slot) {
                 $parts[$slot] = B04ContentTest::sceneParagraphs(intdiv($payload['budget']['min'] + $payload['budget']['max'], 2), '甲');
@@ -322,7 +322,7 @@ class AcceptanceBranchTest extends B04ExecutionTest
         Http::preventStrayRequests();
         Http::fake(['*' => function ($request) use (&$original, &$repairs) {
             $log = CostLog::latest('id')->firstOrFail();
-            $payload = json_decode(explode('冻结输入：', $log->request_parameters['prompt_audit']['user_prompt'], 2)[1], true);
+            $payload = self::promptPayload($log->request_parameters['prompt_audit']['user_prompt'], '冻结输入：');
             $parts = [];
             foreach ($payload['budget']['slots'] as $slot) {
                 $parts[$slot] = B04ContentTest::sceneParagraphs(intdiv($payload['budget']['min'] + $payload['budget']['max'], 2), '甲');
@@ -376,7 +376,7 @@ class AcceptanceBranchTest extends B04ExecutionTest
         Http::preventStrayRequests();
         Http::fake(['*' => function ($request) use (&$repairs) {
             $log = CostLog::latest('id')->firstOrFail();
-            $payload = json_decode(explode('冻结输入：', $log->request_parameters['prompt_audit']['user_prompt'], 2)[1], true);
+            $payload = self::promptPayload($log->request_parameters['prompt_audit']['user_prompt'], '冻结输入：');
             $parts = [];
             foreach ($payload['budget']['slots'] as $slot) {
                 $parts[$slot] = B04ContentTest::sceneParagraphs(intdiv($payload['budget']['min'] + $payload['budget']['max'], 2), '乙');
@@ -421,7 +421,7 @@ class AcceptanceBranchTest extends B04ExecutionTest
         Http::preventStrayRequests();
         Http::fake(['*' => function ($request) use (&$repairs) {
             $log = CostLog::latest('id')->firstOrFail();
-            $payload = json_decode(explode('冻结输入：', $log->request_parameters['prompt_audit']['user_prompt'], 2)[1], true);
+            $payload = self::promptPayload($log->request_parameters['prompt_audit']['user_prompt'], '冻结输入：');
             $parts = [];
             foreach ($payload['budget']['slots'] as $slot) {
                 $parts[$slot] = B04ContentTest::sceneParagraphs(intdiv($payload['budget']['min'] + $payload['budget']['max'], 2), '甲');
@@ -474,7 +474,7 @@ class AcceptanceBranchTest extends B04ExecutionTest
         Http::preventStrayRequests();
         Http::fake(['*' => function ($request) use (&$repairs, &$original) {
             $log = CostLog::latest('id')->firstOrFail();
-            $payload = json_decode(explode('冻结输入：', $log->request_parameters['prompt_audit']['user_prompt'], 2)[1], true);
+            $payload = self::promptPayload($log->request_parameters['prompt_audit']['user_prompt'], '冻结输入：');
             $parts = [];
             foreach ($payload['budget']['slots'] as $slot) {
                 $parts[$slot] = B04ContentTest::sceneParagraphs(intdiv($payload['budget']['min'] + $payload['budget']['max'], 2), '甲');
@@ -537,7 +537,7 @@ class AcceptanceBranchTest extends B04ExecutionTest
         Http::preventStrayRequests();
         Http::fake(['*' => function ($request) use (&$repairs) {
             $log = CostLog::latest('id')->firstOrFail();
-            $payload = json_decode(explode('冻结输入：', $log->request_parameters['prompt_audit']['user_prompt'], 2)[1], true);
+            $payload = self::promptPayload($log->request_parameters['prompt_audit']['user_prompt'], '冻结输入：');
             $middle = intdiv($payload['budget']['min'] + $payload['budget']['max'], 2);
             $parts = [];
             foreach ($payload['budget']['slots'] as $slot) {

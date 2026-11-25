@@ -32,12 +32,19 @@ final class SingleAttemptDeepSeekGateway extends OpenAiGateway
         $body = parent::mergeSharedResponsesRequestOptions($body, $tools, $schema, $options, $provider);
         $body['reasoning'] = ['effort' => $this->reasoningEffort];
         $body['store'] = false;
+        $contract = null;
         if ($schema !== null && $schema !== []) {
             // 实测json_schema模式仍返回非法JSON；改用官方JSON模式，并显式传入完整结构契约。
-            $contract = $body['text']['format']['schema'];
+            $contract = '只输出有效JSON对象，严格遵守以下JSON Schema，不输出代码围栏或说明：'
+                .json_encode($body['text']['format']['schema'], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
             $body['text'] = ['format' => ['type' => 'json_object']];
-            $body['instructions'] = '只输出有效JSON对象，严格遵守以下JSON Schema，不输出代码围栏或说明：'
-                .json_encode($contract, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+        }
+        // 共享资料前置时，结构契约随步骤指令放在共享资料之后；instructions 位于请求最前，会让每次请求的前缀都不同。
+        $layout = SharedContextLayout::responsesInput($body['input'] ?? [], $contract);
+        if ($layout !== null) {
+            $body['input'] = $layout;
+        } elseif ($contract !== null) {
+            $body['instructions'] = $contract;
         }
 
         return $body;

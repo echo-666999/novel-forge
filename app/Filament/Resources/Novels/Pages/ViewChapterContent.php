@@ -27,6 +27,7 @@ use App\Services\Pipeline\ContentQualityContract;
 use App\Services\Pipeline\ContentReadabilityMetrics;
 use App\Services\Pipeline\ContentReadingAudit;
 use App\Services\Pipeline\ContentSchema;
+use App\Services\Pipeline\ContextBuilder;
 use App\Services\Pipeline\NovelProgressQuery;
 use App\Services\Pipeline\PlanningJson;
 use App\Services\Pipeline\RevisionWorkbench;
@@ -985,8 +986,16 @@ class ViewChapterContent extends Page implements HasTable
             $trusted = is_string($audit['user_prompt'] ?? null);
             // 用户提示形如“本次步骤 x；冻结输入：{JSON}”，JSON 部分格式化后更易读。
             $user = $audit['user_prompt'] ?? null;
-            if (is_string($user) && preg_match('/^(.*?冻结输入：)(\{.*\})$/su', $user, $parts) === 1 && is_array($decoded = json_decode($parts[2], true))) {
-                $user = $parts[1]."\n".$pretty($decoded);
+            // 共享资料前置的提示先拆出共享资料，两部分分别格式化。
+            $shared = is_string($user) ? ContextBuilder::splitShared($user) : null;
+            if ($shared !== null && is_array($decoded = json_decode(mb_substr($shared[0], mb_strlen(ContextBuilder::SHARED_MARKER)), true))) {
+                $user = $shared[1];
+            }
+            if (is_string($user) && preg_match('/^(.*?冻结输入：)(\{.*\})$/su', $user, $parts) === 1 && is_array($request = json_decode($parts[2], true))) {
+                $user = $parts[1]."\n".$pretty($request);
+            }
+            if ($shared !== null && is_array($decoded)) {
+                $user = ContextBuilder::SHARED_MARKER."\n".$pretty($decoded)."\n\n".$user;
             }
 
             return ['cost_log_id' => $log->id, 'step' => match (data_get($stages[$log->novel_stage_id] ?? [], 'step')) {

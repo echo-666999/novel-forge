@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Services\Ai\AiGenerationException;
 use App\Services\Ai\AiTextGenerationService;
 use App\Services\Ai\TextRequestOptions;
+use App\Services\Pipeline\ContextBuilder;
 use App\Services\Pipeline\ProductionRunService;
 use App\Settings\GeneralSettings;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
@@ -90,6 +91,28 @@ class DeepSeekAiGenerationTest extends TestCase
         $this->assertSame('responses', $log->request_parameters['protocol']);
         $this->assertSame('b02-deepseek-setting-v1', $log->route_version);
         $this->assertSame('deepseek-request', $log->provider_request_id);
+        Http::assertSentCount(1);
+    }
+
+    /** 共享资料前置时，共享资料排在最前，步骤指令与结构契约随后，本次输入最后；不再使用位于请求最前的instructions。 */
+    public function test_shared_material_is_sent_before_step_instructions(): void
+    {
+        $shared = ContextBuilder::SHARED_MARKER.'{"confirmed_setting":{"禁忌":"不可复活"}}';
+        $request = '本次步骤 check；冻结输入：{"body_hash":"abc"}';
+        Http::fake(['https://api.deepseek.com/v1/responses' => function (Request $request) use ($shared) {
+            $this->assertArrayNotHasKey('instructions', $request->data());
+            $this->assertCount(3, $request['input']);
+            $this->assertSame(['user', 'system', 'user'], array_column($request['input'], 'role'));
+            $this->assertSame($shared, $request['input'][0]['content'][0]['text']);
+            $this->assertStringContainsString('JSON Schema', $request['input'][1]['content']);
+            $this->assertStringContainsString('"properties"', $request['input'][1]['content']);
+            $this->assertSame('本次步骤 check；冻结输入：{"body_hash":"abc"}', $request['input'][2]['content'][0]['text']);
+            $this->assertSame('json_object', $request['text']['format']['type']);
+
+            return Http::response($this->response());
+        }]);
+        $log = app(AiTextGenerationService::class)->generate($shared.ContextBuilder::SHARED_SEPARATOR.$request, 'real', 'deepseek-flash', options: TextRequestOptions::setting(0.5));
+        $this->assertSame('succeeded', $log->status);
         Http::assertSentCount(1);
     }
 
@@ -240,7 +263,7 @@ class DeepSeekAiGenerationTest extends TestCase
     public function test_draft_schema_carries_explicit_length_limits(): void
     {
         Http::fake(['api.deepseek.com/*' => function (Request $request) {
-            $schema = json_decode(explode('说明：', $request['instructions'], 2)[1], true, flags: JSON_THROW_ON_ERROR);
+            $schema = self::promptPayload($request['instructions'], '说明：');
             $field = $schema['properties']['paragraphs']['properties']['scene_1'];
             $this->assertSame('array', $field['type']);
             $this->assertSame(['narration', 'dialogue'], $field['items']['properties']['kind']['enum']);

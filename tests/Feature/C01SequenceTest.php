@@ -122,9 +122,9 @@ class C01SequenceTest extends TestCase
             // C04清单与供应商实际载荷逐字一致，生成和提交准备均走统一入口。
             if (isset($log->request_parameters['context_manifest_id'])) {
                 $manifest = ContextManifest::findOrFail($log->request_parameters['context_manifest_id']);
-                $this->assertSame($manifest->document['user_prompt'], $request['input'][1]['content'][0]['text']);
+                $this->assertSame($manifest->document['user_prompt'], self::requestPrompt($request));
                 $this->assertSame($manifest->document_hash, PlanningJson::hash($manifest->document));
-                $this->assertSame($manifest->document['system_prompt'], $request['input'][0]['content']);
+                $this->assertSame($manifest->document['system_prompt'], self::requestSystem($request));
                 $this->assertSame(PlanningJson::hash($manifest->document['response_schema']), PlanningJson::hash($request['text']['format']['schema']));
             }
             $version = $log->request_parameters['schema_version'];
@@ -149,7 +149,7 @@ class C01SequenceTest extends TestCase
                 $data = $this->formalRevisionResponse($request, $log);
             } elseif (isset($log->request_parameters['purpose'])) {
                 if ($this->assertForeshadows) {
-                    $payload = json_decode(explode('冻结提交输入：', $request['input'][1]['content'][0]['text'], 2)[1], true, flags: JSON_THROW_ON_ERROR);
+                    $payload = self::requestPayload($request, '冻结提交输入：');
                     $this->assertCount(3, $payload['foreshadow_context']['items']);
                     $this->assertSame([true, true, true], array_column($payload['foreshadow_context']['items'], 'must_address'));
                 }
@@ -169,7 +169,7 @@ class C01SequenceTest extends TestCase
                         $this->rejectNinthExtraction = false;
                     }
                     // 长程伏笔：按冻结上下文的义务报告埋设、强化与回收，可注入故障。
-                    $submitted = json_decode(explode('冻结提交输入：', $request['input'][1]['content'][0]['text'], 2)[1], true, flags: JSON_THROW_ON_ERROR);
+                    $submitted = self::requestPayload($request, '冻结提交输入：');
                     $longRange = array_filter($submitted['foreshadow_context']['items'] ?? [], fn (array $item): bool => isset($item['payoff_to']));
                     if ($longRange !== []) {
                         $number = $submission->chapter->number;
@@ -194,7 +194,7 @@ class C01SequenceTest extends TestCase
                     }
                 }
             } else {
-                $payload = json_decode(explode('冻结输入：', $request['input'][1]['content'][0]['text'], 2)[1], true, flags: JSON_THROW_ON_ERROR);
+                $payload = self::requestPayload($request, '冻结输入：');
                 $this->assertSame(B02SettingTest::input()['premise_raw'], $payload['author_idea']);
                 // 检查供应商实际收到的输入，不能仅凭数据库有摘要就宣称已注入。
                 $number = $payload['chapter_number'];
@@ -1243,7 +1243,7 @@ class C01SequenceTest extends TestCase
      */
     private function formalRevisionResponse(Request $request, CostLog $log): array
     {
-        $payload = json_decode(explode('冻结输入：', $request['input'][1]['content'][0]['text'], 2)[1], true, flags: JSON_THROW_ON_ERROR);
+        $payload = self::requestPayload($request, '冻结输入：');
         if ($log->request_parameters['revision_purpose'] === 'suggest') {
             $first = $payload['paragraphs'][0]['text'];
 

@@ -34,6 +34,7 @@ final class SingleAttemptAnthropicGateway extends AnthropicGateway
     {
         $body = parent::buildTextRequestBody($provider, $model, $instructions, $messages, $tools, $schema, $options);
         $body['output_config'] = [...($body['output_config'] ?? []), 'effort' => self::EFFORTS[$this->reasoningEffort]];
+        $body['messages'] = SharedContextLayout::anthropicMessages($body['messages']);
 
         return $body;
     }

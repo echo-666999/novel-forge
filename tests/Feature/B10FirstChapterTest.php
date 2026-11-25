@@ -100,7 +100,7 @@ class B10FirstChapterTest extends TestCase
                     }
                 }
             } else {
-                $payload = json_decode(explode('冻结输入：', $request['input'][1]['content'][0]['text'], 2)[1], true, flags: JSON_THROW_ON_ERROR);
+                $payload = self::requestPayload($request, '冻结输入：');
                 $this->assertSame(B02SettingTest::input()['premise_raw'], $payload['author_idea']);
                 $response = B04ContentTest::validResponse($request);
                 if (($log->request_parameters['step'] ?? null) === 'draft') {

@@ -9,6 +9,7 @@ use App\Models\CostLog;
 use App\Models\Novel;
 use App\Models\User;
 use App\Services\Ai\AiTextGenerationService;
+use App\Services\Ai\SharedContextLayout;
 use App\Services\Pipeline\ContentExecutionService;
 use App\Services\Pipeline\ContentGenerationService;
 use App\Services\Pipeline\ContextBuilder;
@@ -59,8 +60,8 @@ class C04ContextTest extends TestCase
         $this->assertSame('ready', $document['status']);
         $this->assertArrayNotHasKey('style_examples', $document['payload']);
         $this->assertArrayNotHasKey('long_term_memory', $document['payload']);
-        $this->assertSame($payload['foreshadow_context'], $document['payload']['foreshadow_context']);
-        $this->assertSame($payload['confirmed_setting'], $document['payload']['confirmed_setting']);
+        $this->assertSame($payload['foreshadow_context'], $document['shared_payload']['foreshadow_context']);
+        $this->assertSame($payload['confirmed_setting'], $document['shared_payload']['confirmed_setting']);
         $priorities = array_column($document['entries'], 'priority');
         $sorted = $priorities;
         sort($sorted);
@@ -69,7 +70,7 @@ class C04ContextTest extends TestCase
         $this->assertCount(3, array_filter($document['entries'], fn ($entry) => ! $entry['selected']));
         $blocked = $builder->build($payload, '冻结输入：', str_repeat('系统硬约束', 4000), [], [...$builder->policy(), 'capacity' => 7000], 100, ['input_hash' => 'frozen-v1']);
         $this->assertSame('blocked', $blocked['status']);
-        $this->assertSame($payload['foreshadow_context'], $blocked['payload']['foreshadow_context']);
+        $this->assertSame($payload['foreshadow_context'], $blocked['shared_payload']['foreshadow_context']);
         $this->assertSame(PlanningJson::hash($document), PlanningJson::hash(json_decode(json_encode($document), true)));
     }
 
@@ -106,6 +107,69 @@ class C04ContextTest extends TestCase
         $this->assertSame(15000, $document['policy']['capacity']);
         $unique = $builder->build(['events' => [['quote' => str_repeat('唯一证据', 4000)]]], '', '', [], $policy, 100, []);
         $this->assertSame('blocked', $unique['status']);
+    }
+
+    /** 新协议把同章各步骤共用的资料放在最前且逐字节一致；发给模型的前文去掉编号与坐标，保留事件、类别与原文引用。 */
+    public function test_shared_material_leads_and_is_identical_across_steps(): void
+    {
+        $builder = app(ContextBuilder::class);
+        $prior = ['version' => 'c01-canonical-context-v2', 'state' => ['entities' => []], 'entities' => ['entity-1' => ['name' => '沈禾']], 'previous_ending' => '她合上箱子。',
+            'evidence_window' => ['full_evidence_from_chapter' => 2, 'note' => '旧说明'],
+            'chapters' => [
+                ['number' => 1, 'title' => '锉口', 'commit_id' => 7, 'version_id' => 9, 'body_hash' => str_repeat('a', 64), 'events' => [['event_id' => 31, 'type' => 'observation', 'fact_category' => 'objective_confirmed', 'summary' => '发现锉痕', 'evidence' => [['paragraph' => 1, 'start' => 0, 'end' => 12]]]]],
+                ['number' => 2, 'title' => '回执', 'commit_id' => 8, 'version_id' => 10, 'body_hash' => str_repeat('b', 64), 'events' => [['event_id' => 32, 'type' => 'statement', 'fact_category' => 'rumor', 'summary' => '母亲转述', 'evidence' => [['paragraph' => 3, 'start' => 40, 'end' => 52, 'quote' => '“锉口有规矩。”']]]]],
+            ]];
+        $common = ['prior_context' => $prior, 'confirmed_setting' => ['禁忌' => '不可复活'], 'author_decisions' => [['answer' => '保留旧信']], 'rule_catalog' => ['world-1' => '只能凭档案推进'], 'word_policy' => ['min' => 2000], 'foreshadow_context' => ['items' => []]];
+        $review = $builder->build([...$common, 'body_hash' => 'h1', 'evidence_catalog' => ['p1' => '甲']], '冻结提交输入：', '评审指令', ['type' => 'object', 'enum' => ['p1']], $builder->policy(), 100, []);
+        $draft = $builder->build([...$common, 'chapter_plan' => ['goal' => '找回旧信'], 'author_idea' => '原始创意'], '本次步骤 draft；冻结输入：', '正文指令', ['type' => 'object'], $builder->policy(), 100, []);
+
+        $this->assertSame('c04-context-v2', $review['version']);
+        $this->assertSame('shared-first', $review['layout']);
+        [$reviewShared, $reviewRequest] = ContextBuilder::splitShared($review['user_prompt']);
+        [$draftShared] = ContextBuilder::splitShared($draft['user_prompt']);
+        $this->assertSame($reviewShared, $draftShared);
+        $this->assertSame(['author_decisions', 'confirmed_setting', 'rule_catalog', 'word_policy', 'prior_context', 'canonical_entities', 'canonical_state', 'foreshadow_context'], array_keys($review['shared_payload']));
+        $this->assertStringStartsWith('冻结提交输入：', $reviewRequest);
+        $this->assertSame(['body_hash' => 'h1', 'evidence_catalog' => ['p1' => '甲']], $review['payload']);
+        $this->assertSame(['body_hash' => 'h1', 'evidence_catalog' => ['p1' => '甲']], json_decode(explode('冻结提交输入：', $reviewRequest, 2)[1], true));
+
+        $chapters = $review['shared_payload']['prior_context']['chapters'];
+        $this->assertSame(['number' => 1, 'title' => '锉口', 'events' => [['type' => 'observation', 'fact_category' => 'objective_confirmed', 'summary' => '发现锉痕']]], $chapters[0]);
+        $this->assertSame(['“锉口有规矩。”'], $chapters[1]['events'][0]['quotes']);
+        $this->assertArrayNotHasKey('evidence', $chapters[1]['events'][0]);
+        $this->assertStringNotContainsString('段落位置', $review['user_prompt']);
+        $this->assertSame(['name' => '沈禾'], $review['shared_payload']['canonical_entities']['entity-1']);
+
+        // 清单顺序与实际发送一致：共享资料、系统任务、输出契约，再到本次输入。
+        $order = array_column(array_filter($review['entries'], fn (array $entry): bool => $entry['final_order'] !== null), 'final_order', 'id');
+        asort($order);
+        $this->assertSame(['author_decisions', 'confirmed_setting', 'rule_catalog', 'word_policy', 'prior_context', 'canonical_entities', 'canonical_state', 'foreshadow_context', 'system', 'response_schema', 'body_hash', 'evidence_catalog'], array_keys($order));
+        $this->assertSame('shared', collect($review['entries'])->firstWhere('id', 'prior_context')['tier']);
+    }
+
+    /** 已冻结旧协议的运行保持原排列与原前文字段，单条用户输入不含共享资料。 */
+    public function test_legacy_policy_keeps_original_layout(): void
+    {
+        $builder = app(ContextBuilder::class);
+        $policy = [...$builder->policy(), 'version' => ContextBuilder::LEGACY_VERSION];
+        $prior = ['chapters' => [['number' => 1, 'commit_id' => 7, 'events' => [['event_id' => 31, 'evidence' => [['paragraph' => 1, 'start' => 0, 'end' => 3]]]]]]];
+        $document = $builder->build(['prior_context' => $prior, 'confirmed_setting' => ['禁忌' => '不可复活'], 'body_hash' => 'h1'], '冻结输入：', '系统', [], $policy, 100, []);
+
+        $this->assertSame('c04-context-v1', $document['version']);
+        $this->assertNull(ContextBuilder::splitShared($document['user_prompt']));
+        $this->assertArrayNotHasKey('shared_payload', $document);
+        $this->assertSame('冻结输入：{"body_hash":"h1","confirmed_setting":{"禁忌":"不可复活"},"prior_context":'.json_encode($prior, JSON_UNESCAPED_UNICODE).'}', $document['user_prompt']);
+        $this->assertSame(SharedContextLayout::anthropicMessages([['role' => 'user', 'content' => [['type' => 'text', 'text' => $document['user_prompt']]]]]), [['role' => 'user', 'content' => [['type' => 'text', 'text' => $document['user_prompt']]]]]);
+        $this->assertNull(SharedContextLayout::responsesInput([['role' => 'system', 'content' => '系统'], ['role' => 'user', 'content' => [['type' => 'input_text', 'text' => $document['user_prompt']]]]]));
+    }
+
+    /** Claude 的系统指令固定在顶层，共享资料与本次输入拆成两个文本块，内容不变。 */
+    public function test_anthropic_messages_split_shared_material_into_blocks(): void
+    {
+        $prompt = ContextBuilder::SHARED_MARKER.'{"a":1}'.ContextBuilder::SHARED_SEPARATOR.'冻结输入：{"b":2}';
+        $messages = SharedContextLayout::anthropicMessages([['role' => 'user', 'content' => [['type' => 'text', 'text' => $prompt]]]]);
+
+        $this->assertSame([['type' => 'text', 'text' => ContextBuilder::SHARED_MARKER.'{"a":1}'], ['type' => 'text', 'text' => '冻结输入：{"b":2}']], $messages[0]['content']);
     }
 
     /** 真正执行正文入口，预算在启动时冻结；阻塞持久化且没有HTTP或成本流水。 */

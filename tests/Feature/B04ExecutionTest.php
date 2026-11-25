@@ -91,11 +91,11 @@ class B04ExecutionTest extends TestCase
             $this->assertSame(0, DB::transactionLevel());
             $this->assertSame('pending', $log->status);
             $audit = $log->request_parameters['prompt_audit'];
-            $this->assertSame($audit['user_prompt'], $request['input'][1]['content'][0]['text']);
-            $this->assertSame($audit['system_prompt'], $request['input'][0]['content']);
+            $this->assertSame($audit['user_prompt'], self::requestPrompt($request));
+            $this->assertSame($audit['system_prompt'], self::requestSystem($request));
             $this->assertSame($audit['schema_hash'], PlanningJson::hash($request['text']['format']['schema']));
             $this->assertSame(ContentExecutionContract::VERSION, $log->request_parameters['schema_version']);
-            $payload = json_decode(explode('冻结输入：', $audit['user_prompt'], 2)[1], true, flags: JSON_THROW_ON_ERROR);
+            $payload = self::promptPayload($audit['user_prompt'], '冻结输入：');
             $step = $log->request_parameters['step'];
             $data = [];
             if ($this->scenario === 'unknown') {
@@ -319,7 +319,7 @@ class B04ExecutionTest extends TestCase
         $this->assertSame(ContentExecutionService::IN_RUN_REPAIR, $fines[0]->output['data']['outcome']);
         $this->assertStringStartsWith(ContentExecutionContract::PLAN_ACTION_ERROR.'：scene_2实际', $fines[0]->output['data']['validation_error']);
         $this->assertSame('completed', $fines[1]->status->value);
-        $retry = json_decode(explode('冻结输入：', CostLog::where('request_parameters->step', 'fine')->latest('id')->firstOrFail()->request_parameters['prompt_audit']['user_prompt'], 2)[1], true);
+        $retry = self::promptPayload(CostLog::where('request_parameters->step', 'fine')->latest('id')->firstOrFail()->request_parameters['prompt_audit']['user_prompt'], '冻结输入：');
         $this->assertStringStartsWith(ContentExecutionContract::PLAN_ACTION_ERROR, $retry['previous_response_failure']);
         $this->assertArrayHasKey('retry_instruction', $retry);
         $this->assertEquals(B04ContentTest::fine()['scenes'], $run->fresh()->plan_data['scenes']);
@@ -364,7 +364,7 @@ class B04ExecutionTest extends TestCase
         $this->assertCount(2, $revisions);
         $this->assertSame(ContentExecutionService::IN_RUN_REPAIR, $revisions[0]->output['data']['outcome']);
         $this->assertStringContainsString('是叙述段却夹带人物原话', $revisions[1]->output['data']['validation_error']);
-        $retry = json_decode(explode('冻结输入：', CostLog::where('request_parameters->step', 'revise')->latest('id')->firstOrFail()->request_parameters['prompt_audit']['user_prompt'], 2)[1], true);
+        $retry = self::promptPayload(CostLog::where('request_parameters->step', 'revise')->latest('id')->firstOrFail()->request_parameters['prompt_audit']['user_prompt'], '冻结输入：');
         $this->assertStringContainsString('是叙述段却夹带人物原话', $retry['previous_response_failure']);
         $this->assertArrayHasKey('retry_instruction', $retry);
         $this->assertSame(1, $run->fresh()->retry_count);
@@ -469,7 +469,7 @@ class B04ExecutionTest extends TestCase
         $this->drain();
         $next = CostLog::where('id', '>', $failed->id)->oldest('id')->firstOrFail();
         $prompt = $next->request_parameters['prompt_audit']['user_prompt'];
-        $payload = json_decode(explode('冻结输入：', $prompt, 2)[1], true, flags: JSON_THROW_ON_ERROR);
+        $payload = self::promptPayload($prompt, '冻结输入：');
         $this->assertSame($failed->id, $payload['previous_failed_draft']['cost_log_id']);
         $this->assertSame($original, $failed->fresh()->response_text);
         $this->assertSame('invalid_schema', $parent->fresh()->stop_reason);
@@ -502,7 +502,7 @@ class B04ExecutionTest extends TestCase
         DB::table('chapter_generation_runs')->where('id', $child->id)->update(['config' => PlanningJson::encode($childConfig), 'input_hash' => PlanningJson::hash([$child->snapshot, $childConfig])]);
         $this->drain();
         $next = CostLog::where('id', '>', $failed->id)->oldest('id')->firstOrFail();
-        $payload = json_decode(explode('冻结输入：', $next->request_parameters['prompt_audit']['user_prompt'], 2)[1], true, flags: JSON_THROW_ON_ERROR);
+        $payload = self::promptPayload($next->request_parameters['prompt_audit']['user_prompt'], '冻结输入：');
         $this->assertArrayNotHasKey('draft_repair_slot', $payload);
         $this->assertSame(['section_1', 'section_2', 'section_3'], $payload['budget']['slots']);
         $this->assertEquals($legacy, $payload['previous_failed_draft']['response']);
@@ -530,7 +530,7 @@ class B04ExecutionTest extends TestCase
         $this->assertNull($child->fine_stage_id);
         $this->drain();
         $fine = CostLog::where('request_parameters->step', 'fine')->latest('id')->firstOrFail();
-        $payload = json_decode(explode('冻结输入：', $fine->request_parameters['prompt_audit']['user_prompt'], 2)[1], true, flags: JSON_THROW_ON_ERROR);
+        $payload = self::promptPayload($fine->request_parameters['prompt_audit']['user_prompt'], '冻结输入：');
         $this->assertEquals(['min' => 3, 'max' => 3], $payload['scene_range']);
         $this->assertStringContainsString('emotional_beat', $fine->request_parameters['prompt_audit']['system_prompt']);
         $child->refresh();
