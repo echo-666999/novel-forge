@@ -23,6 +23,7 @@ use App\Models\User;
 use App\Services\Ai\AiGenerationException;
 use App\Services\Ai\AiTextGenerationService;
 use App\Services\Ai\ModelProfiles;
+use App\Services\Ai\StructuredOutputException;
 use App\Services\Ai\TextRequestOptions;
 use App\Settings\GeneralSettings;
 use Illuminate\Support\Facades\Bus;
@@ -377,7 +378,13 @@ final class ChapterSubmissionService
                 default => 'PROVIDER_FAILED',
             };
         } catch (Throwable $exception) {
-            $error = $exception instanceof InvalidArgumentException ? $exception->getMessage() : ($log?->status === 'succeeded' ? 'INVALID_RESPONSE' : 'AUDIT_OR_LOCAL_FAILURE');
+            // 统一结构校验未通过：调用已成功记账，归为无效响应。
+            $log ??= $exception instanceof StructuredOutputException ? CostLog::find($exception->costLogId) : null;
+            $error = match (true) {
+                $exception instanceof StructuredOutputException => 'INVALID_RESPONSE',
+                $exception instanceof InvalidArgumentException => $exception->getMessage(),
+                default => $log?->status === 'succeeded' ? 'INVALID_RESPONSE' : 'AUDIT_OR_LOCAL_FAILURE',
+            };
             $detail = $exception instanceof SubmissionRejection ? $exception->detail : null;
         }
         $next = DB::transaction(function () use ($id, $token, $purpose, $result, $log, $error, $detail): bool {

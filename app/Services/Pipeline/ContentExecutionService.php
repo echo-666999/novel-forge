@@ -17,6 +17,7 @@ use App\Models\ProductionRun;
 use App\Models\User;
 use App\Services\Ai\AiGenerationException;
 use App\Services\Ai\AiTextGenerationService;
+use App\Services\Ai\StructuredOutputException;
 use App\Services\Ai\TextRequestOptions;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
@@ -897,6 +898,8 @@ final class ContentExecutionService
                 }
             }
         } catch (Throwable $exception) {
+            // 统一结构校验未通过时调用已成功记账，取回记录后同样归为响应结构无效。
+            $log ??= $exception instanceof StructuredOutputException ? CostLog::find($exception->costLogId) : null;
             // 采用已保存响应时没有新请求：复验失败同样归为响应结构无效。
             $failure = $log?->status === 'succeeded' || $reusedDraft !== null || $reusedRevision !== null ? 'invalid_schema' : (CostLog::where('novel_stage_id', $stage->id)->exists() ? 'unknown' : 'audit_failed');
             $error = $exception instanceof InvalidArgumentException ? $exception->getMessage() : '本地处理异常，保留证据后显式恢复';

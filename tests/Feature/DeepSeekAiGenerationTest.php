@@ -7,6 +7,7 @@ use App\Models\Novel;
 use App\Models\User;
 use App\Services\Ai\AiGenerationException;
 use App\Services\Ai\AiTextGenerationService;
+use App\Services\Ai\StructuredOutputException;
 use App\Services\Ai\TextRequestOptions;
 use App\Services\Pipeline\ProductionRunService;
 use App\Settings\GeneralSettings;
@@ -51,8 +52,10 @@ class DeepSeekAiGenerationTest extends TestCase
     /** 返回官方Responses协议样本，缺失用量不得被SDK默认零值掩盖。
      * @return array<string, mixed>
      */
-    private function response(string $content = '{"ok":true}', string $finish = 'stop'): array
+    private function response(?string $content = null, string $finish = 'stop'): array
     {
+        $content ??= json_encode(B02SettingTest::setting(), JSON_UNESCAPED_UNICODE);
+
         return ['id' => 'resp-test', 'object' => 'response', 'model' => 'deepseek-flash',
             'status' => $finish === 'stop' ? 'completed' : 'incomplete',
             'output' => [['id' => 'msg-test', 'type' => 'message', 'role' => 'assistant', 'status' => 'completed', 'content' => [['type' => 'output_text', 'text' => $content, 'annotations' => []]]]],
@@ -106,8 +109,16 @@ class DeepSeekAiGenerationTest extends TestCase
     {
         $text = '{"title":"题目","paragraphs":{"p1":"她说：\\"保留,}和,]\\"。","p2":"结束。",},"items":["甲",],}';
         Http::fake(['api.deepseek.com/*' => Http::response($this->response($text))]);
-        $log = app(AiTextGenerationService::class)->generate('JSON', 'real', 'deepseek-flash', options: TextRequestOptions::setting(0.5));
+        try {
+            app(AiTextGenerationService::class)->generate('JSON', 'real', 'deepseek-flash', options: TextRequestOptions::setting(0.5));
+            $this->fail('该样本不是设定结构，统一结构校验必须拒绝');
+        } catch (StructuredOutputException $error) {
+            $this->assertStringContainsString('缺少字段 world', $error->getMessage());
+        }
+        // 调用本身成功并记账；规范化证据与结构校验结果都保留在原始响应中。
+        $log = CostLog::sole();
         $this->assertSame('succeeded', $log->status);
+        $this->assertStringContainsString('出现未约定的字段 title', implode('', $log->raw_response['_schema_validation']['shape']));
         $this->assertSame('她说："保留,}和,]"。', $log->structured_output['paragraphs']['p1']);
         $this->assertSame($text, $log->raw_response['output'][0]['content'][0]['text']);
         $audit = $log->raw_response['_application_json_normalization'];

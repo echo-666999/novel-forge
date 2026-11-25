@@ -18,6 +18,7 @@ use App\Models\StoryEvent;
 use App\Models\User;
 use App\Services\Ai\AiGenerationException;
 use App\Services\Ai\AiTextGenerationService;
+use App\Services\Ai\StructuredOutputException;
 use App\Services\Ai\TextRequestOptions;
 use App\Settings\GeneralSettings;
 use Illuminate\Support\Facades\Bus;
@@ -304,7 +305,11 @@ final class FormalRevisionService
             DB::transaction(fn () => $handle($response));
             $stage->update(['status' => StageStatus::Completed, 'output' => ['simulation' => false, 'stage' => 'content', 'data' => ['step' => $stage->input['step'], 'cost_log_id' => $log->id]], 'finished_at' => now()]);
         } catch (Throwable $exception) {
-            $log ??= $exception instanceof AiGenerationException && $exception->costLogId !== null ? CostLog::find($exception->costLogId) : null;
+            $log ??= match (true) {
+                $exception instanceof AiGenerationException && $exception->costLogId !== null => CostLog::find($exception->costLogId),
+                $exception instanceof StructuredOutputException => CostLog::find($exception->costLogId),
+                default => null,
+            };
             $message = $exception instanceof InvalidArgumentException || $exception instanceof AiGenerationException ? $exception->getMessage() : '本地处理异常，结果已保留';
             $stage->update(['status' => StageStatus::Failed, 'error_message' => $message, 'output' => ['simulation' => false, 'stage' => 'content', 'data' => ['step' => $stage->input['step'], 'cost_log_id' => $log?->id]], 'finished_at' => now()]);
             $record->refresh()->update(['error' => $message]);

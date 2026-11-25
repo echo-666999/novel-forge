@@ -65,8 +65,9 @@ final class AiTextGenerationService
         if ($options->templateSnapshot !== null) {
             $parameters['prompt_templates'] = $options->templateSnapshot;
         }
-        if ($options->settingDecision || $options->chapterStep !== null || $options->submissionPurpose !== null || $options->formalRevisionPurpose !== null || $options->templateSnapshot !== null) {
-            // 同一不可变选项构造实际Agent和调用前审计；写入失败时绝不发送HTTP。
+        // 结构化请求一律用同一不可变选项构造实际Agent与完整结构定义：既用于调用前审计，也用于响应后的统一结构校验。
+        $schema = null;
+        if ($options->isStructured()) {
             $agent = match (true) {
                 $options->settingDecision => new SettingDecisionAgent($options),
                 $options->formalRevisionPurpose !== null => new FormalRevisionAgent($options),
@@ -76,6 +77,9 @@ final class AiTextGenerationService
                 default => new SettingGenerationAgent($options),
             };
             $schema = (new JsonSchemaTypeFactory)->object($agent->schema(new JsonSchemaTypeFactory))->withoutAdditionalProperties()->toArray();
+        }
+        if ($schema !== null && ($options->settingDecision || $options->chapterStep !== null || $options->submissionPurpose !== null || $options->formalRevisionPurpose !== null || $options->templateSnapshot !== null)) {
+            // 写入失败时绝不发送HTTP。
             // C04先组装并持久化清单，阻塞时不建立成本流水、不发送供应商请求。
             $context = $options->submissionContext ?? $options->executionContext;
             if (isset($context['context_policy'])) {
@@ -112,6 +116,11 @@ final class AiTextGenerationService
             })->generate($prompt, $model, $options);
             $log->fill($this->resultAttributes($result));
             $this->validateUsage($result);
+            $violations = [];
+            if ($schema !== null) {
+                [$result, $violations] = $this->validateStructure($result, $schema);
+                $log->raw_response = $result->rawResponse;
+            }
             // 先按实际响应模型匹配，未登记时按请求模型匹配（同名带日期后缀的响应模型）。
             $price = ModelPrices::resolve($prices, $result->model) ?? ModelPrices::resolve($prices, $model);
             $log->fill($this->estimator->estimate($result, $mode, $price, $log->started_at));
@@ -138,6 +147,10 @@ final class AiTextGenerationService
         }
         // 结果保存失败必须向调用方报错，不能把仅在内存中的输出宣称为验收成功。
         $log->fill(['duration_ms' => (int) ((hrtime(true) - $started) / 1000000), 'finished_at' => now()])->saveOrFail();
+        // 调用本身成功并已记账；结构不合约定交给业务层按“响应结构无效”处理，与本地解析失败走同一恢复路径。
+        if ($violations !== []) {
+            throw new StructuredOutputException($log->id, $violations);
+        }
 
         return $log->refresh();
     }
@@ -164,6 +177,23 @@ final class AiTextGenerationService
     private function resultAttributes(TextGenerationResult $result): array
     {
         return [...$result->usage, 'provider' => $result->provider, 'model' => $result->model, 'provider_request_id' => $result->providerRequestId, 'response_text' => $result->text, 'structured_output' => $result->structured, 'raw_response' => $result->rawResponse];
+    }
+
+    /** 统一结构校验（各供应商同一标准）：结果写入原始响应留痕；返回形状问题（类型、必填、未约定字段），由调用后统一抛出。
+     * 取值问题（枚举、条数、数值范围、长度、正则）只留痕，由业务契约按各自规则裁决与修复。
+     *
+     * @param  array<string, mixed>  $schema
+     * @return array{TextGenerationResult, list<string>}
+     */
+    private function validateStructure(TextGenerationResult $result, array $schema): array
+    {
+        $found = app(StructuredOutputValidator::class)->validate($result->text, $schema);
+        if ($found['shape'] === [] && $found['values'] === []) {
+            return [$result, []];
+        }
+        $raw = [...($result->rawResponse ?? []), '_schema_validation' => ['version' => 'opis-v1', ...$found]];
+
+        return [new TextGenerationResult($result->text, $result->structured, $result->provider, $result->model, $result->usage, $result->providerRequestId, $raw), $found['shape']];
     }
 
     /** 拒绝负数或不可能的子集计量，不修改供应商原始响应证据。 */

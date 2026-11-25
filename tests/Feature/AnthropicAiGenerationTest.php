@@ -7,6 +7,7 @@ use App\Models\ModelPrice;
 use App\Services\Ai\AiGenerationException;
 use App\Services\Ai\AiTextGenerationService;
 use App\Services\Ai\ModelProfiles;
+use App\Services\Ai\StructuredOutputException;
 use App\Services\Ai\TextRequestOptions;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Http\Client\Request;
@@ -47,8 +48,10 @@ class AnthropicAiGenerationTest extends TestCase
      * @param  array<string, mixed>  $usage
      * @return array<string, mixed>
      */
-    private function response(string $text = '{"ok":true}', string $stop = 'end_turn', array $usage = ['input_tokens' => 30, 'output_tokens' => 10, 'cache_read_input_tokens' => 15, 'cache_creation_input_tokens' => 5]): array
+    private function response(?string $text = null, string $stop = 'end_turn', array $usage = ['input_tokens' => 30, 'output_tokens' => 10, 'cache_read_input_tokens' => 15, 'cache_creation_input_tokens' => 5]): array
     {
+        $text ??= json_encode(B02SettingTest::setting(), JSON_UNESCAPED_UNICODE);
+
         return ['id' => 'msg_test', 'type' => 'message', 'role' => 'assistant', 'model' => 'claude-sonnet-5-5', 'stop_reason' => $stop, 'stop_details' => null,
             'content' => [['type' => 'thinking', 'thinking' => '', 'signature' => 'sig'], ['type' => 'text', 'text' => $text]], 'usage' => $usage];
     }
@@ -73,13 +76,33 @@ class AnthropicAiGenerationTest extends TestCase
             return Http::response($this->response(), 200, ['request-id' => 'req_claude']);
         }]);
         $log = app(AiTextGenerationService::class)->generate('测试JSON设定', 'real', 'claude-sonnet-5-5', options: TextRequestOptions::setting(0.5));
-        $this->assertSame(['succeeded', 'anthropic', 'req_claude', ['ok' => true]], [$log->status, $log->provider, $log->provider_request_id, $log->structured_output]);
+        $this->assertSame(['succeeded', 'anthropic', 'req_claude', B02SettingTest::setting()], [$log->status, $log->provider, $log->provider_request_id, $log->structured_output]);
         $this->assertSame([50, 10, 15, 5, null], [$log->input_tokens, $log->output_tokens, $log->cache_read_tokens, $log->cache_write_tokens, $log->reasoning_tokens]);
         // 30 未缓存 × $2 + 15 命中 × $0.10 + 5 写入 × $2.50 + 10 输出 × $10 = 0.000174
         $this->assertSame(['estimated', '0.00017400'], [$log->billing_status, $log->estimated_cost]);
         $this->assertSame(['messages', 'json_schema', 'low', false], [$log->request_parameters['protocol'], $log->request_parameters['output_format'], $log->request_parameters['effort'], $log->request_parameters['refusal_fallback']]);
         $this->assertArrayNotHasKey('temperature', $log->request_parameters);
         $this->assertSame('b02-anthropic-setting-v1', $log->route_version);
+        Http::assertSentCount(1);
+    }
+
+    /** 统一结构校验对 Claude 同样生效：违反约定的输出调用记为成功并计费，业务层收到“响应结构无效”。 */
+    public function test_constraint_stripped_for_claude_is_still_enforced(): void
+    {
+        $setting = B02SettingTest::setting();
+        $setting['tone']['pov'] = 3;
+        $setting['invented'] = '未约定';
+        Http::fake(['api.anthropic.com/*' => Http::response($this->response(json_encode($setting, JSON_UNESCAPED_UNICODE)))]);
+        try {
+            app(AiTextGenerationService::class)->generate('JSON', 'real', 'claude-sonnet-5-5', options: TextRequestOptions::setting(0.5));
+            $this->fail('类型错误与未约定字段必须被拒绝');
+        } catch (StructuredOutputException $error) {
+            $this->assertStringContainsString('/tone/pov：类型应为 string，实际为 integer', $error->getMessage());
+            $this->assertSame(CostLog::sole()->id, $error->costLogId);
+        }
+        $log = CostLog::sole();
+        $this->assertSame(['succeeded', 50], [$log->status, $log->input_tokens]);
+        $this->assertEqualsCanonicalizing(['/tone/pov：类型应为 string，实际为 integer', '/：出现未约定的字段 invented'], $log->raw_response['_schema_validation']['shape']);
         Http::assertSentCount(1);
     }
 
