@@ -614,7 +614,7 @@ final class ContentGenerationService
             throw new InvalidArgumentException('模型或修订设置无效');
         }
         $config = ['version' => ContentExecutionContract::VERSION, 'model' => trim($model), 'temperature' => $temperature,
-            'enable_fine_outline' => $fine, 'scene_state' => true, 'max_output_tokens' => $tokens, 'max_retries' => min(1, $retries), 'author_id' => $authorId,
+            'enable_fine_outline' => $fine, 'scene_state' => true, 'style_rules' => ContentStyleRules::VERSION, 'max_output_tokens' => $tokens, 'max_retries' => min(1, $retries), 'author_id' => $authorId,
             'authorization' => ['scope' => 'bounded_content', 'reason' => $reason, 'at' => now()->toIso8601String()],
             'protocol' => array_combine(['fine', 'draft', 'revise', 'check'], array_map(fn (string $step): string => hash('sha256', ContentExecutionContract::instructions($step)), ['fine', 'draft', 'revise', 'check']))];
 

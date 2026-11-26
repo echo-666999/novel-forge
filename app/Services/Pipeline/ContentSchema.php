@@ -253,8 +253,9 @@ final class ContentSchema
 
     /** 细纲必须完整映射原推进点，不能新增或替换作者契约。
      * @param  list<string>  $pointIds
+     * @param  int  $minScenes  场景数下限；冻结文风规则的运行为2，其余为3
      */
-    public static function fine(array $data, array $pointIds, ?string $invalidHook = null): array
+    public static function fine(array $data, array $pointIds, ?string $invalidHook = null, int $minScenes = 3): array
     {
         self::keys($data, ['scenes', 'hook', 'adjustments', 'hook_transition']);
         self::keys($data['hook_transition'], ['completed_state', 'trigger', 'next_question', 'point_ids']);
@@ -271,8 +272,8 @@ final class ContentSchema
         self::text($data['hook']);
         self::listing($data['scenes']);
         self::listing($data['adjustments']);
-        if (count($data['scenes']) < 3 || count($data['scenes']) > 5) {
-            throw new InvalidArgumentException('首章应包含3至5个场景');
+        if (count($data['scenes']) < $minScenes || count($data['scenes']) > 5) {
+            throw new InvalidArgumentException('首章应包含'.$minScenes.'至5个场景');
         }
         $covered = [];
         foreach ($data['scenes'] as $scene) {

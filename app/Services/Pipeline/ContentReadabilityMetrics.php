@@ -5,7 +5,7 @@ namespace App\Services\Pipeline;
 /** 正文可读性本地指标：每章计算并展示，只在明显偏离小说写法的极端值上触发修订；阈值依据历史正文分布设定，不替代模型评审。 */
 final class ContentReadabilityMetrics
 {
-    public const VERSION = 'b04-readability-v1';
+    public const VERSION = 'b04-readability-v2';
 
     /** 直接对白占全文可见字数的下限；历史上的流程记录式正文为零到百分之五。 */
     public const MIN_DIALOGUE_SHARE = 0.05;
@@ -19,8 +19,8 @@ final class ContentReadabilityMetrics
     /** 引出转述而非直接引语的说话动词，用于估计转述对白的多少。 */
     private const REPORTING_VERBS = '说|问|告诉|提醒|叮嘱|催|答应|解释|交代';
 
-    /** 计算本章指标；只读正文，不改动任何文本。
-     * @return array{version: string, characters: int, dialogue_share: float, process_density: float, disclaimers: int, reported_speech: int}
+    /** 计算本章指标；只读正文，不改动任何文本。dialogue_process_words统计人物说出口的话里的流程词：人物反复念“核对、登记、签字”是流程化观感的来源之一，只作观察。
+     * @return array{version: string, characters: int, dialogue_share: float, process_density: float, disclaimers: int, reported_speech: int, dialogue_process_words: int}
      */
     public static function measure(string $body): array
     {
@@ -38,6 +38,7 @@ final class ContentReadabilityMetrics
             'process_density' => $characters === 0 ? 0.0 : round(1000 * preg_match_all('/'.self::PROCESS_WORDS.'/u', $body) / $characters, 1),
             'disclaimers' => preg_match_all('/没有?[^。！？，“”]{0,12}[，、]?也没/u', $body),
             'reported_speech' => preg_match_all('/(?:'.self::REPORTING_VERBS.')(?:了一句|了声|着|道)?[^。！？：:“”\n]{2,}/u', $withoutQuotes),
+            'dialogue_process_words' => preg_match_all('/'.self::PROCESS_WORDS.'/u', implode('', $quotes[0])),
         ];
     }
 

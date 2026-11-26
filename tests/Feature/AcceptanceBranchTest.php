@@ -461,6 +461,47 @@ class AcceptanceBranchTest extends B04ExecutionTest
         $this->assertSame(0, NovelStage::where('input->run_id', $run->id)->where('input->step', 'revise')->count());
     }
 
+    /** 冻结文风规则的运行：章首以时间起句只在首稿送一次场景修复；修复后仍以时间起句也直接接受，不进入整章修订，也不让运行停下。 */
+    public function test_time_led_opening_gets_one_scene_repair_and_never_stops_the_run(): void
+    {
+        $novel = B04ContentTest::readyNovel(true, 50);
+        $novel->update(['chapter_length_policy' => ['min_characters' => 2500, 'max_characters' => 3500], 'generation_config' => [...($novel->generation_config ?? []), 'acceptance_branch' => ['key' => 'test']]]);
+        $run = app(ContentGenerationService::class)->start($novel, User::firstOrFail());
+        app(ContentExecutionService::class)->runStep($run->id, $run->invocation_id, app(AiTextGenerationService::class));
+        $repairs = [];
+        Http::swap(new Factory);
+        Http::preventStrayRequests();
+        Http::fake(['*' => function ($request) use (&$repairs) {
+            $log = CostLog::latest('id')->firstOrFail();
+            $payload = self::promptPayload($log->request_parameters['prompt_audit']['user_prompt'], '冻结输入：');
+            $parts = [];
+            foreach ($payload['budget']['slots'] as $slot) {
+                $parts[$slot] = B04ContentTest::sceneParagraphs(intdiv($payload['budget']['min'] + $payload['budget']['max'], 2), '甲');
+            }
+            if (count($parts) === 1) {
+                $repairs[] = $payload['repair_measurement']['direction'];
+                $this->assertStringContainsString('以时间起句', $payload['previous_response_failure']);
+                $this->assertStringContainsString('按本章开场方式重写第一段', $log->request_parameters['prompt_audit']['system_prompt']);
+            }
+            // 首稿与修复都以钟点起句：模拟改不掉开头写法的模型。
+            $first = array_key_first($parts);
+            $parts[$first][0]['text'] = '上午九点刚过，'.mb_substr($parts[$first][0]['text'], 7);
+            $response = B02SettingTest::response(json_encode(['title' => '开头测试', 'paragraphs' => $parts], JSON_UNESCAPED_UNICODE));
+            $response['model'] = $request['model'];
+
+            return Http::response($response);
+        }]);
+        $run->refresh();
+        for ($step = 0; $step < 4 && $run->status === 'pending' && $run->next_step === 'draft'; $step++) {
+            app(ContentExecutionService::class)->runStep($run->id, $run->invocation_id, app(AiTextGenerationService::class));
+            $run->refresh();
+        }
+        $this->assertSame(['quality'], $repairs);
+        $this->assertStringStartsWith('上午九点刚过，', ChapterVersion::findOrFail($run->chapter->fresh()->current_candidate_version_id)->body);
+        $this->assertSame('check', $run->next_step);
+        $this->assertSame(0, NovelStage::where('input->run_id', $run->id)->where('input->step', 'revise')->count());
+    }
+
     /** 多个场景只有文字问题时合并为一次修复请求：只返回这些场景，其余场景逐字保留，额度不再按场景逐个消耗。 */
     public function test_quality_issues_in_several_scenes_are_repaired_in_one_request(): void
     {

@@ -21,12 +21,14 @@ use App\Services\Pipeline\CanonicalBaselines;
 use App\Services\Pipeline\CanonicalCommitService;
 use App\Services\Pipeline\ChapterSubmissionService;
 use App\Services\Pipeline\ContentExecutionContract;
+use App\Services\Pipeline\ContentExecutionService;
 use App\Services\Pipeline\ContentGenerationService;
 use App\Services\Pipeline\ContentPromptAudit;
 use App\Services\Pipeline\ContentQualityContract;
 use App\Services\Pipeline\ContentReadabilityMetrics;
 use App\Services\Pipeline\ContentReadingAudit;
 use App\Services\Pipeline\ContentSchema;
+use App\Services\Pipeline\ContentStyleRules;
 use App\Services\Pipeline\ContextBuilder;
 use App\Services\Pipeline\NovelProgressQuery;
 use App\Services\Pipeline\PlanningJson;
@@ -188,6 +190,7 @@ class ViewChapterContent extends Page implements HasTable
             'repeated_text' => '重复原文', 'echoed_dialogue' => '叙述转述对白', 'possible_time_order' => '可能的时序倒退', 'check' => '独立检查问题',
             'review' => '上轮复核遗留', 'progression' => '推进不足', 'meta_text' => '写作说明混入正文', 'plan_copy' => '照抄细纲',
             'length' => '篇幅问题', 'readability_dialogue' => '对白占比偏低', 'readability_process' => '流程词偏多', 'whole_chapter' => '全章核对',
+            'time_opening' => '章首以时间起句',
         ];
 
         return collect(data_get($this->run()?->chapter->progression_result, 'reading_reviews', []))->values()->map(function (array $review, int $index) use ($findings, $types): array {
@@ -799,10 +802,11 @@ class ViewChapterContent extends Page implements HasTable
             $local = [...ContentQualityContract::planCopies($candidate->body, $run->plan_data),
                 ...ContentQualityContract::echoedDialogue($candidate->body, ContentQualityContract::characterNames($run->snapshot)),
                 ...array_filter(ContentQualityContract::issues($candidate->body, ['min_characters' => 0, 'max_characters' => PHP_INT_MAX]), fn (array $issue): bool => $issue['type'] === 'meta_text'),
-                ...ContentReadabilityMetrics::issues(ContentReadabilityMetrics::measure($candidate->body))];
+                ...ContentReadabilityMetrics::issues(ContentReadabilityMetrics::measure($candidate->body)),
+                ...($run !== null && ContentExecutionService::styleRules($run) ? ContentStyleRules::openingIssues($candidate->body) : [])];
             foreach ($local as $issue) {
                 $lines[] = match ($issue['type']) {
-                    'echoed_dialogue' => $issue['reason'],
+                    'echoed_dialogue', 'time_opening' => $issue['reason'],
                     'meta_text' => '第'.$issue['paragraph'].'段混入写作说明「'.implode('」「', $issue['quotes']).'」，须删去',
                     'plan_copy' => '第'.$issue['paragraph'].'段'.$issue['reason'],
                     default => '全章'.$issue['reason'],
@@ -878,6 +882,7 @@ class ViewChapterContent extends Page implements HasTable
         }
         $metrics = ContentReadabilityMetrics::measure($body);
         $issues = collect(ContentReadabilityMetrics::issues($metrics))->keyBy('type');
+        $cliches = ContentStyleRules::overusedCliches($body);
 
         return [
             ['title' => '直接对白占比：'.round(100 * $metrics['dialogue_share'], 1).'%', 'verdict' => $issues->has('readability_dialogue') ? '过低' : '正常',
@@ -886,6 +891,10 @@ class ViewChapterContent extends Page implements HasTable
                 'note' => $issues->get('readability_process')['reason'] ?? '核对、登记、编号等流程词每千字不超过'.ContentReadabilityMetrics::MAX_PROCESS_DENSITY.'个即可，超过时自动送修订'],
             ['title' => '“没……也没……”句式：'.$metrics['disclaimers'].'处', 'verdict' => '仅观察', 'note' => '连续否定句过多会显得拖沓，只作观察，不触发修订'],
             ['title' => '转述对白：约'.$metrics['reported_speech'].'处', 'verdict' => '仅观察', 'note' => '按“说、问、提醒”等动词估算，转述多可考虑改成直接对白；只作观察，不触发修订'],
+            ['title' => '台词里的流程词：'.$metrics['dialogue_process_words'].'个', 'verdict' => '仅观察', 'note' => '人物说出口的话里出现“核对、登记、签字、交接”等词的次数；人物反复念流程会显得像办案记录，只作观察，不触发修订'],
+            ...array_map(fn (string $label, int $count): array => ['title' => '高频套话「'.$label.'」：'.$count.'次', 'verdict' => '仅观察',
+                'note' => '整章超过'.ContentStyleRules::CHAPTER_CLICHE_LIMIT.'次；可换成本场景独有的反应，只作观察，不触发修订'],
+                array_keys($cliches), $cliches),
         ];
     }
 

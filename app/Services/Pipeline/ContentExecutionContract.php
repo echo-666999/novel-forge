@@ -94,14 +94,14 @@ final class ContentExecutionContract
         return $version === self::VERSION || (is_string($version) && isset(self::FROZEN_PROTOCOLS[$version]));
     }
 
-    /** 场景数随篇幅变化：至少3个，篇幅每多约800字才允许多一个场景，最多5个。
+    /** 场景数随篇幅变化：至少3个（冻结文风规则的运行至少2个），篇幅每多约800字才允许多一个场景，最多5个。
      * @return array{min: int, max: int}
      */
-    public static function sceneRange(array $policy): array
+    public static function sceneRange(array $policy, bool $styleRules = false): array
     {
         $target = intdiv($policy['min_characters'] + $policy['max_characters'], 2);
 
-        return ['min' => 3, 'max' => max(3, min(5, intdiv($target, self::SCENE_CHARACTERS)))];
+        return ['min' => $styleRules ? ContentStyleRules::MIN_SCENES : 3, 'max' => max(3, min(5, intdiv($target, self::SCENE_CHARACTERS)))];
     }
 
     /** 细纲场景结束状态的填写要求。 */
@@ -175,6 +175,7 @@ final class ContentExecutionContract
             $limit = max(3, intdiv($count + self::REVISION_SHARE - 1, self::REVISION_SHARE));
             $instructions .= '问题带有段号时，范围只能落在这些段及前后'.self::REVISION_SLACK.'段之内；所有范围合计最多覆盖'.$limit.'段，超出整次修订无效。';
             $instructions .= self::textRules();
+            $instructions .= ($context['style_rules'] ?? false) === true ? ContentStyleRules::reviseInstructions() : '';
             $instructions .= '每个range的text是替换后的自然段列表，与正文分段规则相同：叙述段写完一个动作、场面或情绪节拍再分段，不要一句一段，不夹带人物说出口的原话；对白段是一个人的一次发言，用中文引号写出原话，只带说话人紧邻的一两句动作或神态，引号外不超过'.self::DIALOGUE_ACTION.'字，换人开口另起一段。每段text不含换行和Markdown，以完整句末标点结束。前文固定指令把text说成整段正文时，以此处的段落列表为准。';
         }
         if ($step === 'fine' && isset($context['scene_range'])) {
@@ -184,6 +185,7 @@ final class ContentExecutionContract
                 // 细纲写成成段叙述时，正文会逐字照搬而被质量门禁拦下，因此细纲只给节拍。
                 .'细纲是写作提纲，不是正文：action只按先后列出本场事件节拍（谁做了什么、得到什么结果），约'.self::PLAN_ACTION_CHARACTERS.'字以内，超过'.self::PLAN_ACTION_LIMIT.'字整份细纲无效；不写神态、小动作、环境描写和成句台词，这些留给正文。goal、obstacle、emotional_beat、change各用一两句概括，不写成可以直接放进正文的叙述句。正文与细纲连续'.ContentQualityContract::PLAN_COPY_CHARACTERS.'字相同会被判为照搬。前文固定指令中的场景数量或字段与此处不一致时，以此处为准。'
                 .(($context['scene_state'] ?? false) === true ? self::SCENE_STATE_FINE : '')
+                .(isset($context['opening_mode']) ? ContentStyleRules::fineInstructions($context['opening_mode']) : '')
                 .self::foreshadowInstructions('fine', $context['foreshadow_obligations'] ?? [])
                 .self::openItemInstructions('fine', $context);
         }
@@ -211,7 +213,8 @@ final class ContentExecutionContract
                     // 只改叙述而保留相邻对白时，新写的叙述最容易与未改动的对白再次重合。
                     .'改写后的叙述要再对照前后相邻的对白段自检，包括本次没有改动的对白段，不能形成新的转述，也不能换用提纲里的其他句子。'
                     // 文字问题修复的slot_plan已去掉叙述字段，照搬判定改按清单逐句对照。
-                    .'本次slot_plan只保留时间、地点、台词要点和推进点；plan_sentences_to_avoid列出细纲中所有会被判为照搬的分句，改写和保留的每一句都不能原样包含清单中的任何一句。';
+                    .'本次slot_plan只保留时间、地点、台词要点和推进点；plan_sentences_to_avoid列出细纲中所有会被判为照搬的分句，改写和保留的每一句都不能原样包含清单中的任何一句。'
+                    .(isset($context['opening_mode']) ? ContentStyleRules::repairInstructions($context['opening_mode']) : '');
             }
             // 多场景篇幅修复：各场景给出各自的实测字数与净增或净删范围。
             if (($context['repair_direction'] ?? null) === 'length') {
@@ -244,6 +247,7 @@ final class ContentExecutionContract
                 // 推理与正文共用输出上限：在思考中先写一遍整章再自查会耗尽容量，导致正文截断。
                 .'思考与正文共用同一输出上限：思考时只列每个场景的节拍、对白要点和篇幅分配，不要在思考中先写出正文或逐段起草，也不要在思考中逐段复查；正文直接写在输出里，边写边按上述规则自检。'
                 .(($context['scene_state'] ?? false) === true ? self::SCENE_STATE_DRAFT : '')
+                .(isset($context['opening_mode']) ? ContentStyleRules::draftInstructions($context['opening_mode']) : '')
                 .self::foreshadowInstructions('draft', $context['foreshadow_obligations'] ?? [])
                 .self::openItemInstructions('draft', $context);
         }
@@ -399,12 +403,13 @@ final class ContentExecutionContract
      * @param  array<string, mixed>  $paragraphs
      * @param  list<string>  $slots
      * @param  list<string>  $names  本书人物名，用于区分转述与不同人物之间的接话
+     * @param  bool  $openingRules  是否检查章首以时间起句：只对冻结文风规则且还能修复的首稿检查第一个场景
      * @return array<string, list<string>>
      */
-    public static function slotQuality(array $paragraphs, array $slots, ?array $plan, array $names = []): array
+    public static function slotQuality(array $paragraphs, array $slots, ?array $plan, array $names = [], bool $openingRules = false): array
     {
         $errors = [];
-        foreach ($slots as $slot) {
+        foreach ($slots as $index => $slot) {
             if (! is_array($paragraphs[$slot] ?? null)) {
                 continue;
             }
@@ -413,11 +418,13 @@ final class ContentExecutionContract
                 ...ContentQualityContract::planCopies($text, $plan),
                 ...ContentQualityContract::echoedDialogue($text, $names),
                 ...array_filter(ContentQualityContract::issues($text, ['min_characters' => 0, 'max_characters' => PHP_INT_MAX]), fn (array $issue): bool => $issue['type'] === 'meta_text'),
+                ...($openingRules && $index === 0 ? ContentStyleRules::openingIssues($text) : []),
             ];
             foreach ($issues as $issue) {
                 $errors[$slot][] = $slot.'第'.$issue['paragraph'].'段'.match ($issue['type']) {
                     'plan_copy' => '逐字照搬细纲句子「'.implode('」「', $issue['quotes']).'」，须改写为人物的言行、反应或自然叙述',
                     'echoed_dialogue' => '叙述把第'.$issue['dialogue_paragraph'].'段对白的原话先转述了一遍（「'.$issue['quotes'][0].'」），删去叙述里的转述',
+                    'time_opening' => $issue['reason'],
                     default => '混入写作说明「'.implode('」「', $issue['quotes']).'」，须删去',
                 };
             }
@@ -614,10 +621,10 @@ final class ContentExecutionContract
      * @param  list<string>  $pointIds
      * @return array<string, mixed>
      */
-    public static function fine(array $data, array $pointIds, array $policy, bool $sceneState = false): array
+    public static function fine(array $data, array $pointIds, array $policy, bool $sceneState = false, bool $styleRules = false): array
     {
-        $data = ContentSchema::fine($data, $pointIds);
-        $range = self::sceneRange($policy);
+        $range = self::sceneRange($policy, $styleRules);
+        $data = ContentSchema::fine($data, $pointIds, minScenes: $range['min']);
         if (count($data['scenes']) < $range['min'] || count($data['scenes']) > $range['max']) {
             throw new InvalidArgumentException('本章篇幅应规划'.$range['min'].'至'.$range['max'].'个场景，实际'.count($data['scenes']).'个');
         }

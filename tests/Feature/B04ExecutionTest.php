@@ -25,6 +25,7 @@ use App\Services\Pipeline\ContentExecutionService;
 use App\Services\Pipeline\ContentGenerationService;
 use App\Services\Pipeline\ContentPromptAudit;
 use App\Services\Pipeline\ContentSchema;
+use App\Services\Pipeline\ContentStyleRules;
 use App\Services\Pipeline\PlanningJson;
 use App\Services\Pipeline\ProgressionChecker;
 use App\Services\Pipeline\RunControlService;
@@ -56,6 +57,9 @@ class B04ExecutionTest extends TestCase
 
     /** 夹具细纲obstacle中的叙述句，用于模拟正文照搬提纲。 */
     protected const COPIED_PLAN = '守塔人劝她别多管闲事并提醒旧航线的事早就没人在意';
+
+    /** 以钟点起句的章首，用于模拟近章雷同的时间开头。 */
+    protected const TIME_OPENING = '上午九点刚过，';
 
     /** 仅迁移隔离库及设置。 */
     protected function migrateFreshUsing(): array
@@ -127,6 +131,9 @@ class B04ExecutionTest extends TestCase
                     if ($this->scenario === 'copy' && $i === 0) {
                         $items[0]['text'] = self::COPIED_PLAN.mb_substr($items[0]['text'], mb_strlen(self::COPIED_PLAN));
                     }
+                    if ($this->scenario === 'time_open' && $i === 0) {
+                        $items[0]['text'] = self::TIME_OPENING.mb_substr($items[0]['text'], mb_strlen(self::TIME_OPENING));
+                    }
                     $paragraphs[$slot] = $items;
                 }
                 $data = ['title' => '隔离首章候选', 'paragraphs' => array_reverse($paragraphs, true)];
@@ -136,7 +143,7 @@ class B04ExecutionTest extends TestCase
             } elseif ($step === 'revise') {
                 $id = array_key_first($payload['available_anchors']);
                 $text = $payload['available_anchors'][$id]['text'];
-                $text = str_replace(['此段约350字。', self::COPIED_PLAN], ['核对原档完成调查。', '守塔人摆摆手说那条航线早没人管'], $text).'修订后取得新证据。';
+                $text = str_replace(['此段约350字。', self::COPIED_PLAN, self::TIME_OPENING], ['核对原档完成调查。', '守塔人摆摆手说那条航线早没人管', '门一推开，'], $text).'修订后取得新证据。';
                 $data = ['ranges' => [['start_id' => $id, 'end_id' => $id, 'text' => [['kind' => 'narration', 'text' => $text]], 'reason' => '隔离修复待解决问题', 'addresses' => array_keys($payload['findings'])]]];
                 // 模拟模型顺手改写无问题段落：该范围没有问题编号，应被丢弃留档。
                 // 模拟修订把对白重新塞回叙述段：替换文本同样受分段规则约束。
@@ -305,6 +312,24 @@ class B04ExecutionTest extends TestCase
         $this->assertSame('awaiting_review', $run->fresh()->stop_reason);
         $this->assertStringContainsString(self::COPIED_PLAN, ChapterVersion::oldest('id')->firstOrFail()->body);
         $this->assertStringNotContainsString(self::COPIED_PLAN, ChapterVersion::latest('id')->firstOrFail()->body);
+    }
+
+    /** 新运行冻结文风规则：首稿指令带本章开场方式与防火墙；章首以时间起句时先交修订改写，独立检查只看改写后的正文。 */
+    public function test_time_led_opening_is_revised_for_style_runs(): void
+    {
+        $this->scenario = 'time_open';
+        $run = $this->start();
+        $this->assertSame(ContentStyleRules::VERSION, $run->config['style_rules']);
+        $this->drain();
+        $system = CostLog::where('request_parameters->step', 'draft')->sole()->request_parameters['prompt_audit']['system_prompt'];
+        $this->assertStringContainsString('本章开场方式：'.ContentStyleRules::OPENING_MODES[ContentStyleRules::openingMode(1)], $system);
+        $this->assertStringContainsString('人物并不知道这些规则', $system);
+        $draft = NovelStage::where('input->run_id', $run->id)->where('input->step', 'draft')->sole();
+        $this->assertSame(['time_opening'], array_column($draft->output['data']['quality_issues'], 'type'));
+        $this->assertStringContainsString('人物并不知道这些规则', CostLog::where('request_parameters->step', 'revise')->sole()->request_parameters['prompt_audit']['system_prompt']);
+        $this->assertSame('awaiting_review', $run->fresh()->stop_reason);
+        $this->assertStringStartsWith(self::TIME_OPENING, ChapterVersion::oldest('id')->firstOrFail()->body);
+        $this->assertStringStartsWith('门一推开，', ChapterVersion::latest('id')->firstOrFail()->body);
     }
 
     /** 细纲action写成成段叙述时，同一运行内带着实测字数补发一次细纲，合格后照常写正文。 */
@@ -531,8 +556,10 @@ class B04ExecutionTest extends TestCase
         $this->drain();
         $fine = CostLog::where('request_parameters->step', 'fine')->latest('id')->firstOrFail();
         $payload = self::promptPayload($fine->request_parameters['prompt_audit']['user_prompt'], '冻结输入：');
-        $this->assertEquals(['min' => 3, 'max' => 3], $payload['scene_range']);
+        // 新运行冻结文风规则：场景数可少至两个，细纲指令带上本章开场方式。
+        $this->assertEquals(['min' => 2, 'max' => 3], $payload['scene_range']);
         $this->assertStringContainsString('emotional_beat', $fine->request_parameters['prompt_audit']['system_prompt']);
+        $this->assertStringContainsString('本章开场方式：', $fine->request_parameters['prompt_audit']['system_prompt']);
         $child->refresh();
         $this->assertNotSame($parent->fine_stage_id, $child->fine_stage_id);
         $this->assertArrayHasKey('key_dialogue', $child->plan_data['scenes'][0]);

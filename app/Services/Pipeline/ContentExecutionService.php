@@ -32,7 +32,7 @@ final class ContentExecutionService
     public const IN_RUN_REPAIR = 'draft_repair_in_run';
 
     /** 由程序对当前正文重新检测的问题类型；与产生它的正文版本绑定。 */
-    private const LOCAL_FINDING_TYPES = ['plan_copy', 'echoed_dialogue', 'meta_text', 'length', 'readability_dialogue', 'readability_process', 'repeated_text', 'possible_time_order'];
+    private const LOCAL_FINDING_TYPES = ['plan_copy', 'echoed_dialogue', 'meta_text', 'length', 'readability_dialogue', 'readability_process', 'repeated_text', 'possible_time_order', 'time_opening'];
 
     /** 每次领用和回写均核对规划、版本、预算、细纲及受检正文。 */
     public function validate(ChapterGenerationRun $run): void
@@ -85,7 +85,7 @@ final class ContentExecutionService
                 || ($run->parent_run_id === null && data_get($fine->input, 'run_id') !== $run->id)) {
                 throw new InvalidArgumentException('细纲产物与来源不一致');
             }
-            ContentSchema::fine($run->plan_data, array_column($run->snapshot['source_chapter']['progression_points'], 'id'));
+            ContentSchema::fine($run->plan_data, array_column($run->snapshot['source_chapter']['progression_points'], 'id'), minScenes: self::styleRules($run) ? ContentStyleRules::MIN_SCENES : 3);
         } elseif (! $run->config['enable_fine_outline'] && PlanningJson::hash($run->plan_data) !== PlanningJson::hash($run->snapshot['source_chapter'])) {
             throw new InvalidArgumentException('关闭细纲时必须直接沿用B03章计划');
         }
@@ -152,25 +152,28 @@ final class ContentExecutionService
     }
 
     /** 确定性质量问题；照搬细纲与可读性极端值只对当前协议运行检查，冻结运行的已保存结论不因新规则改变。
+     * 章首以时间起句只在$openingRules为真时列出：它只值得一次修复机会，修不掉也不能让运行停下。
+     *
      * @return list<array<string, mixed>>
      */
-    private function qualityIssues(ChapterGenerationRun $run, string $body): array
+    private function qualityIssues(ChapterGenerationRun $run, string $body, bool $openingRules = false): array
     {
         $issues = ContentQualityContract::issues($body, $run->snapshot['novel']['chapter_length_policy']);
         if (($run->config['version'] ?? null) === ContentExecutionContract::VERSION) {
             $issues = [...$issues, ...ContentQualityContract::planCopies($body, $run->plan_data), ...ContentQualityContract::echoedDialogue($body, ContentQualityContract::characterNames($run->snapshot)),
-                ...ContentReadabilityMetrics::issues(ContentReadabilityMetrics::measure($body))];
+                ...ContentReadabilityMetrics::issues(ContentReadabilityMetrics::measure($body)),
+                ...($openingRules && self::styleRules($run) ? ContentStyleRules::openingIssues($body) : [])];
         }
 
         return $issues;
     }
 
-    /** 合并当前风险和已保存意见；规则提示不直接裁定语义错误。
+    /** 合并当前风险和已保存意见；规则提示不直接裁定语义错误。章首问题只在送修订时列出，检查步骤不据此判定。
      * @return array<string, array<string, mixed>>
      */
-    public function findings(ChapterGenerationRun $run, ?ChapterVersion $version): array
+    public function findings(ChapterGenerationRun $run, ?ChapterVersion $version, bool $openingRules = false): array
     {
-        $issues = $version === null ? [] : [...$this->qualityIssues($run, $version->body), ...ContentReadingAudit::inspect($version->body)['issues']];
+        $issues = $version === null ? [] : [...$this->qualityIssues($run, $version->body, $openingRules), ...ContentReadingAudit::inspect($version->body)['issues']];
         foreach ($run->control_history as $control) {
             if (($control['action'] ?? null) === 'automated_finding' && ($control['body_hash'] ?? null) === $version?->body_hash) {
                 $issues[] = ['type' => 'automated_finding', 'reason' => $control['reason'], 'quote' => $control['quote']];
@@ -233,7 +236,7 @@ final class ContentExecutionService
             $budget['complete_paragraphs'] = true;
         }
         $context = ['chapter_number' => $run->chapter->number, 'accepted_branch_continuation' => $run->chapter->number > 1 && isset($run->snapshot['acceptance_branch']), 'anchors' => $version === null ? [] : ContentSchema::anchors($version->body), 'rules' => ContentQualityContract::rules($run->snapshot),
-            'findings' => $this->findings($run, $version), 'budget' => $budget];
+            'findings' => $this->findings($run, $version, $step === 'revise'), 'budget' => $budget];
         // 冻结了待核台账的运行在细纲、正文、修订与检查指令中说明台账约束。
         if (array_key_exists('open_items', $run->snapshot)) {
             $context['open_items'] = true;
@@ -241,6 +244,13 @@ final class ContentExecutionService
         // 新运行冻结场景状态：细纲为每个场景给出在场人物与物件持有，正文按上一场结束状态衔接并自检。
         if (($run->config['scene_state'] ?? false) === true) {
             $context['scene_state'] = true;
+        }
+        // 新运行冻结文风规则：细纲与正文按章轮换开场方式，正文与修订避开套话、人物不念写作规则。
+        if (self::styleRules($run)) {
+            $context['style_rules'] = true;
+            if (in_array($step, ['fine', 'draft'], true)) {
+                $context['opening_mode'] = ContentStyleRules::openingMode($run->chapter->number);
+            }
         }
         // 细纲与正文首稿把到期伏笔写进系统指令；单场景修复只改一个场景，不重复要求。
         if (in_array($step, ['fine', 'draft'], true)) {
@@ -274,7 +284,7 @@ final class ContentExecutionService
         }
         if ($step === 'fine') {
             // 场景数随冻结篇幅确定，细纲不能排出每场只够写流程摘要的密集场景。
-            $context['scene_range'] = ContentExecutionContract::sceneRange($run->snapshot['novel']['chapter_length_policy']);
+            $context['scene_range'] = ContentExecutionContract::sceneRange($run->snapshot['novel']['chapter_length_policy'], self::styleRules($run));
             $payload['scene_range'] = $context['scene_range'];
             // 细纲action过长后的补发：给出实测字数，要求压缩为事件节拍。
             if (($fineError = $this->inRunRetry($run, 'fine')) !== null) {
@@ -357,7 +367,7 @@ final class ContentExecutionService
             $draft = $recovery['draft']['response'];
             $repairSlot = null;
             // 照搬细纲、转述对白等文字问题同样按场景修复，与正文校验使用同一检查，避免合格判定前后不一致。
-            $quality = self::draftQualityGate($run) ? ContentExecutionContract::slotQuality($draft['paragraphs'], $budget['slots'], $run->plan_data, ContentQualityContract::characterNames($run->snapshot)) : [];
+            $quality = self::draftQualityGate($run) ? ContentExecutionContract::slotQuality($draft['paragraphs'], $budget['slots'], $run->plan_data, ContentQualityContract::characterNames($run->snapshot), self::styleRules($run) && $this->hasRepairQuota($run, $run->chapter->novel)) : [];
             $bodyFailed = [];
             $lengthOnly = [];
             foreach ($budget['slots'] as $slot) {
@@ -684,11 +694,11 @@ final class ContentExecutionService
      * @param  array<string, mixed>  $budget
      * @return array{title: string, body: string}
      */
-    private function draftBody(ChapterGenerationRun $run, array $response, array $budget): array
+    private function draftBody(ChapterGenerationRun $run, array $response, array $budget, bool $openingRules = false): array
     {
         $data = ContentExecutionContract::body($response, $budget);
         if (self::draftQualityGate($run)) {
-            $quality = ContentExecutionContract::slotQuality($response['paragraphs'], $budget['slots'], $run->plan_data, ContentQualityContract::characterNames($run->snapshot));
+            $quality = ContentExecutionContract::slotQuality($response['paragraphs'], $budget['slots'], $run->plan_data, ContentQualityContract::characterNames($run->snapshot), $openingRules);
             if ($quality !== []) {
                 throw new InvalidArgumentException('正文场景预算或格式无效：'.implode('；', array_merge(...array_values($quality))));
             }
@@ -720,6 +730,12 @@ final class ContentExecutionService
     private static function draftQualityGate(ChapterGenerationRun $run): bool
     {
         return self::slotRepair($run) && ($run->config['version'] ?? null) === ContentExecutionContract::VERSION;
+    }
+
+    /** 运行是否冻结了当前文风规则；旧运行没有该值，保持原协议。 */
+    public static function styleRules(ChapterGenerationRun $run): bool
+    {
+        return ($run->config['style_rules'] ?? null) === ContentStyleRules::VERSION;
     }
 
     /** 按冻结的模型能力或验收分支启用单场景修复，与恢复运行的判定一致。 */
@@ -894,8 +910,10 @@ final class ContentExecutionService
                 $response = $repairedDraft;
             }
             $data = match ($step) {
-                'fine' => ContentExecutionContract::fine($response, array_column($run->snapshot['source_chapter']['progression_points'], 'id'), $run->snapshot['novel']['chapter_length_policy'], ($run->config['scene_state'] ?? false) === true),
-                'draft' => $this->draftBody($run, $response, $request['context']['full_draft_budget'] ?? $request['context']['budget']),
+                'fine' => ContentExecutionContract::fine($response, array_column($run->snapshot['source_chapter']['progression_points'], 'id'), $run->snapshot['novel']['chapter_length_policy'], ($run->config['scene_state'] ?? false) === true, self::styleRules($run)),
+                // 章首以时间起句只拦首稿一次：修复响应不再据此判定，没有修复额度时直接接受。
+                'draft' => $this->draftBody($run, $response, $request['context']['full_draft_budget'] ?? $request['context']['budget'],
+                    self::styleRules($run) && ! isset($request['context']['draft_repair_slot']) && $this->hasRepairQuota($run, $novel)),
                 'revise' => $this->revisionBody($response, $source, $request, $droppedRanges),
                 'check' => ContentContinuationContract::check($response, $source->body, array_column($run->snapshot['source_chapter']['progression_points'], 'id'), $request['context']['rules'], $request['context']['findings']),
             };
@@ -984,7 +1002,8 @@ final class ContentExecutionService
                         'version' => (int) ChapterVersion::where('chapter_id', $run->chapter_id)->max('version') + 1, 'title' => $data['title'], 'body' => $data['body'],
                         'body_hash' => hash('sha256', $data['body']), 'character_count' => ContentSchema::count($data['body']), 'count_version' => ContentSchema::COUNT_VERSION, 'created_at' => now()]);
                     $run->chapter->update(['title' => $version->title, 'current_candidate_version_id' => $version->id, 'progression_result' => null, 'status' => ChapterStatus::Checking]);
-                    $issues = $this->qualityIssues($run, $version->body);
+                    // 不能逐场景修复的运行，首稿章首以时间起句时在修订额度内送一次修订；修订后的正文不再据此送修。
+                    $issues = $this->qualityIssues($run, $version->body, $step === 'draft' && ! self::draftQualityGate($run) && $this->canRevise($run));
                     $output += ['version_id' => $version->id, 'quality_issues' => $issues, 'reading_audit' => ContentReadingAudit::inspect($version->body),
                         'readability' => ContentReadabilityMetrics::measure($version->body)];
                     if ($issues !== [] || $source?->body_hash === $version->body_hash) {
