@@ -334,6 +334,11 @@ final class ContentExecutionService
         }
         if (array_key_exists('open_items', $run->snapshot)) {
             $payload['open_items'] = $run->snapshot['open_items'];
+            // 已揭示事实埋在共享资料里时容易被忽略：按本章计划挑出最相关的几条连同原文单列，供写作与检查逐条对照。
+            $focus = OpenItemLedger::relevantRevealed($run->snapshot['open_items'], PlanningJson::encode($run->plan_data ?? $run->snapshot['source_chapter']));
+            if ($focus !== []) {
+                $payload['revealed_focus'] = $focus;
+            }
         }
         // 跨章文风信号只给写作和修订作避免模板化的提示，检查步骤不据此判定问题。
         if (array_key_exists('style_signals', $run->snapshot) && in_array($step, ['draft', 'revise'], true)) {

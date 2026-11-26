@@ -15,6 +15,7 @@ use App\Models\ChapterSubmissionValidation;
 use App\Models\ChapterVersion;
 use App\Models\CostLog;
 use App\Models\NovelSettingConfirmation;
+use App\Models\OpenItemBackfill;
 use App\Models\StoryEntity;
 use App\Models\StoryEvent;
 use App\Models\StoryOutboxEvent;
@@ -25,8 +26,10 @@ use App\Services\Pipeline\CanonicalCommitService;
 use App\Services\Pipeline\ChapterSubmissionService;
 use App\Services\Pipeline\ContentGenerationService;
 use App\Services\Pipeline\ContentSchema;
+use App\Services\Pipeline\OpenItemLedger;
 use App\Services\Pipeline\PlanningJson;
 use App\Services\Pipeline\ProgressionChecker;
+use App\Services\Pipeline\RevealBackfill;
 use App\Services\Pipeline\SubmissionContract;
 use App\Services\Pipeline\SubmissionValidator;
 use Filament\Actions\Testing\TestAction;
@@ -88,6 +91,16 @@ class ChapterSubmissionTest extends TestCase
             }
             if (DB::transactionLevel() !== 0) {
                 throw new \RuntimeException('外部请求不应持有事务');
+            }
+            // 已揭示事实补录不属于任何准备运行：返回一条揭示和一条应被丢弃的新开项。
+            if ($log->prompt_version === RevealBackfill::PROMPT_VERSION) {
+                $response = B02SettingTest::response(PlanningJson::encode(['open_items' => [
+                    ['action' => 'reveal', 'item_id' => '', 'claim' => '隔离揭示：林澈在档案室找到被篡改的原始航海图。', 'evidence_ids' => ['p1']],
+                    ['action' => 'open', 'item_id' => '', 'claim' => '补录不应保留的新开项', 'evidence_ids' => ['p1']],
+                ]]));
+                $response['model'] = $request['model'].'-2025-04-14';
+
+                return Http::response($response);
             }
             $mode = $scenario === null ? 'pass' : $scenario();
             if ($mode === 'unknown') {
@@ -270,6 +283,30 @@ class ChapterSubmissionTest extends TestCase
     {
         // 事件确定性错误在台账请求后统一验证时发现，共三次；提取结构本身无效时在台账前停止，共两次。
         return [['unknown', 1], ['review_reject', 1], ['bad_fact', 3], ['unknown_entity', 3], ['invalid_category', 2], ['ledger_unknown', 3]];
+    }
+
+    /** 补录只保留揭示、按原始提交保存并进入下一章的已揭示清单；重跑跳过已补录的章节，不重复请求。 */
+    public function test_backfill_keeps_only_reveals_and_feeds_the_ledger(): void
+    {
+        [$run, $operator] = self::prepared();
+        $commit = self::commit($run, $operator);
+        $novel = $run->novel->fresh();
+
+        $this->artisan('app:backfill-revealed-facts', ['novel' => $novel->id, '--through' => '1', '--author' => (string) $operator->id, '--model' => $run->config['model']])
+            ->expectsOutputToContain('第1章补录 1 条')->assertSuccessful();
+        $backfill = OpenItemBackfill::sole();
+        $this->assertSame($commit->id, $backfill->commit_id);
+        $this->assertSame(['reveal'], array_column($backfill->entries, 'action'));
+        $this->assertNotSame('', $backfill->entries[0]['evidence'][0]['quote']);
+
+        $revealed = app(OpenItemLedger::class)->context($novel, 2)['revealed'];
+        $this->assertSame(['reveal-bf-'.$commit->id.'-1'], array_column($revealed, 'id'));
+        $this->assertSame(1, $revealed[0]['chapter']);
+
+        $requests = CostLog::where('prompt_version', RevealBackfill::PROMPT_VERSION)->count();
+        $this->artisan('app:backfill-revealed-facts', ['novel' => $novel->id, '--through' => '1', '--author' => (string) $operator->id, '--model' => $run->config['model']])
+            ->expectsOutputToContain('本次补录 0 章')->assertSuccessful();
+        $this->assertSame($requests, CostLog::where('prompt_version', RevealBackfill::PROMPT_VERSION)->count());
     }
 
     /** 显式后继使用新额度，原失败产物不变；同前驱重复命令不重复请求。 */

@@ -5,6 +5,7 @@ namespace App\Services\Pipeline;
 use App\Enums\ProductionFailure;
 use App\Models\ChapterEventExtraction;
 use App\Models\ChapterGenerationRun;
+use App\Models\ChapterProgressionCheck;
 use App\Models\ChapterReview;
 use App\Models\ChapterSubmissionRun;
 use App\Models\ChapterSubmissionValidation;
@@ -59,9 +60,10 @@ final class ChapterProductionStepper
                     $artifacts['version_id'] = $body->chapter->current_candidate_version_id;
                     $run->step = 'submission';
                 } elseif ($body->status !== 'pending') {
-                    // 按独立评审定点修订后又未通过推进或钩子检查：评审与章纲互相否决，直接交作者修订章纲，不再消耗自动重试。
+                    // 按独立评审定点修订后仍未通过检查：只有推进点或钩子确实未达标才是评审与章纲互相否决，交作者修订章纲；
+                    // 推进与钩子已达标、只剩连续性或文字问题时，是修订额度不够，允许自动再修一次。
                     if (isset($body->config['submission_review']) && in_array($body->stop_reason, ['retry_limit', 'progression_insufficient'], true)) {
-                        throw new InvalidArgumentException(ProductionFailure::OutlineCanonConflict->value);
+                        throw new InvalidArgumentException(self::progressionMet($body) ? ProductionFailure::RevisionIssuesUnresolved->value : ProductionFailure::OutlineCanonConflict->value);
                     }
                     throw new InvalidArgumentException('CONTENT_STOPPED:'.$body->stop_reason);
                 }
@@ -159,5 +161,14 @@ final class ChapterProductionStepper
                 }
             }
         }
+    }
+
+    /** 本章最近一次推进检查是否所有推进点与钩子都已达标；没有检查记录时按未达标处理。 */
+    private static function progressionMet(ChapterGenerationRun $body): bool
+    {
+        $check = ChapterProgressionCheck::where('chapter_id', $body->chapter_id)->latest('id')->first();
+        $points = $check?->result['points'] ?? [];
+
+        return $points !== [] && collect($points)->every(fn (mixed $point): bool => ($point['met'] ?? false) === true) && ($check->result['hook']['met'] ?? false) === true;
     }
 }

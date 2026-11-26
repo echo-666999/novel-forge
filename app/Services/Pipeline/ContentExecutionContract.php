@@ -119,9 +119,13 @@ final class ContentExecutionContract
             return '';
         }
 
-        return $step === 'check'
+        $focus = $step === 'check'
+            ? 'revealed_focus列出与本章最相关的已揭示事实及原文quote：逐条对照本章正文，凡涉及同一物证、文字或信息却与quote不一致（例如原文无签名而本章写出签名、原文已取出而本章重新取出），必须记入continuity_issues并同时引用本章段落。'
+            : 'revealed_focus列出与本章最相关的已揭示事实及原文quote：写到这些物证、文字或信息时必须与quote一致，人物已经知道它们，只能承接，不能改写或重新发现。';
+
+        return $focus.($step === 'check'
             ? '把open_items.pending中的事项在没有写出核实动作与依据时写成已确认事实，或改写open_items.resolved中的结论，或把open_items.revealed中已揭示的事实当作第一次发现重新演示（人物重新找到、初次读到、为之震惊），记入continuity_issues并引证；人物以推测、怀疑语气提及，或明确承接已知事实，不算。'
-            : 'open_items.pending是前文尚未核实的事项：正文只能把它们写成待核、怀疑或推测，不能当作已确认的事实陈述；本章若要核实或推翻，必须写出核实的动作、依据和结果。open_items.resolved是已核实的结论，不能改写。open_items.revealed是前文已经揭示的事实，人物已经知道：需要时直接承接（拿出已有的物证、提起已知的日期），不能写成重新发现、初次读到或为之震惊。';
+            : 'open_items.pending是前文尚未核实的事项：正文只能把它们写成待核、怀疑或推测，不能当作已确认的事实陈述；本章若要核实或推翻，必须写出核实的动作、依据和结果。open_items.resolved是已核实的结论，不能改写。open_items.revealed是前文已经揭示的事实，人物已经知道：需要时直接承接（拿出已有的物证、提起已知的日期），不能写成重新发现、初次读到或为之震惊。');
     }
 
     /** 本章必须处理的伏笔（埋设、回收或逾期）；只取编号、标题与义务，完整内容仍在 foreshadow_context。

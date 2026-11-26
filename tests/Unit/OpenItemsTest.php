@@ -81,6 +81,24 @@ class OpenItemsTest extends TestCase
         $this->assertArrayNotHasKey('open_items', SubmissionContract::schema(new JsonSchemaTypeFactory, 'extract', $anchors));
     }
 
+    /** 按本章计划挑出相关的已揭示事实：按相关度排序、低于下限的不带入、最多8条，只保留编号、事实、章号与原文。 */
+    public function test_relevant_revealed_facts_are_ranked_and_capped(): void
+    {
+        $plan = '沈禾拿着物业寄来的旧库房暂存清单，对照第三格柜体一栏的接收人签字，去找陈启山的女儿。';
+        $facts = [
+            ['id' => 'reveal-1-1', 'fact' => '暂存清单第三格柜体一栏备注接收人签字，但该栏无签名无日期。', 'chapter' => 42, 'quote' => '到此为止，没有签名。', 'repeated_in' => [43]],
+            ['id' => 'reveal-2-1', 'fact' => '母亲把外婆的蓝布包锁进五斗橱。', 'chapter' => 30, 'quote' => '锁进五斗橱。'],
+            ['id' => 'reveal-3-1', 'fact' => '陈启山的女儿说父亲上个月去世。', 'chapter' => 43, 'quote' => '上个月走的。'],
+        ];
+
+        $focus = OpenItemLedger::relevantRevealed(['revealed' => $facts], $plan);
+        $this->assertSame(['reveal-1-1', 'reveal-3-1'], array_column($focus, 'id'));
+        $this->assertSame(['id', 'fact', 'chapter', 'quote'], array_keys($focus[0]));
+        $many = array_map(fn (int $i): array => [...$facts[0], 'id' => 'reveal-9-'.$i], range(1, 12));
+        $this->assertCount(OpenItemLedger::FOCUS_LIMIT, OpenItemLedger::relevantRevealed(['revealed' => $many], $plan));
+        $this->assertSame([], OpenItemLedger::relevantRevealed(null, $plan));
+    }
+
     /** 超过15章未被提起的待核项转为长期悬置；被重复报告后恢复跟进。 */
     public function test_items_go_dormant_after_fifteen_quiet_chapters_and_revive_when_reported(): void
     {
@@ -113,6 +131,8 @@ class OpenItemsTest extends TestCase
         $this->assertStringContainsString('open_items.pending是前文尚未核实的事项', $draft);
         $this->assertStringContainsString('不能写成重新发现', $draft);
         $this->assertStringContainsString('当作第一次发现重新演示', ContentExecutionContract::outputInstructions('check', ['open_items' => true]));
+        $this->assertStringContainsString('revealed_focus列出与本章最相关的已揭示事实及原文quote：逐条对照本章正文', ContentExecutionContract::outputInstructions('check', ['open_items' => true]));
+        $this->assertStringContainsString('写到这些物证、文字或信息时必须与quote一致', $draft);
         $this->assertStringContainsString('open_items.revealed中前文已揭示的事实', SubmissionAgent::openItemInstructions('review'));
         $this->assertStringContainsString('reveal：本章首次揭示', SubmissionContract::instructions('ledger'));
         $this->assertStringNotContainsString('open_items', ContentExecutionContract::outputInstructions('draft', ['budget' => $budget]));

@@ -32,6 +32,9 @@ enum ProductionFailure: string
     /** 按评审定点修订后又未通过推进或钩子检查：章纲要求与已提交正文互相否决，需作者修订章纲。 */
     case OutlineCanonConflict = 'OUTLINE_CANON_CONFLICT';
 
+    /** 按评审定点修订后推进点与钩子已达标，但修订额度用完时仍有连续性或文字问题：不是章纲冲突，再做一次定点修订即可。 */
+    case RevisionIssuesUnresolved = 'REVISION_ISSUES_UNRESOLVED';
+
     /** 领取超时后已完成本地对账。 */
     case InterruptedReconciled = 'INTERRUPTED_RECONCILED';
 
@@ -50,7 +53,7 @@ enum ProductionFailure: string
     /** 明确失败且换一次请求可能成功的错误，每种错误在同一章最多自动恢复一次。 */
     private const AUTOMATIC = [
         'CONTENT_STOPPED:invalid_schema', 'CONTENT_STOPPED:provider_failed', 'CONTENT_STOPPED:output_truncated', 'CONTENT_STOPPED:retry_limit', 'CONTENT_PARAGRAPH_INCOMPLETE',
-        'SUBMISSION_STOPPED:EVENT_VALIDATION_BLOCKED', 'SUBMISSION_STOPPED:INVALID_RESPONSE', 'SETTING_DECISION_FAILED',
+        'SUBMISSION_STOPPED:EVENT_VALIDATION_BLOCKED', 'SUBMISSION_STOPPED:INVALID_RESPONSE', 'SETTING_DECISION_FAILED', 'REVISION_ISSUES_UNRESOLVED',
     ];
 
     /** 详情码的中文说明；未列出的详情显示原码。 */
@@ -113,6 +116,7 @@ enum ProductionFailure: string
             self::ContentParagraphIncomplete => '正文有段落在句中截断',
             self::SubmissionStopped => '评审与事件提取停止'.$detailLabel,
             self::OutlineCanonConflict => '章纲要求与已提交正文冲突：按评审修订后仍未通过推进检查',
+            self::RevisionIssuesUnresolved => '按评审修订后推进与钩子已达标，但仍有连续性或文字问题未修好（不是章纲冲突，无需修改章纲）',
             self::InterruptedReconciled => '运行超时中断，已完成本地对账（在途请求记为结果未知）',
             self::WorkerInterrupted => '队列消费者中断，需要对账后恢复',
             self::DispatchFailed => '任务投递失败，尚未发送模型请求',

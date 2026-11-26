@@ -7,6 +7,7 @@ use App\Models\ChapterEventExtraction;
 use App\Models\ChapterOpenItemExtraction;
 use App\Models\ChapterSubmissionValidation;
 use App\Models\Novel;
+use App\Models\OpenItemBackfill;
 use InvalidArgumentException;
 
 /** 待核事项台账：沿活动基线的正式提交链重放各章提取中的 open_items，不另存可变状态，基线切换与重挂后自然一致。 */
@@ -37,6 +38,11 @@ final class OpenItemLedger
     /** 连续这么多章没有被提起（新开或重复报告）的待核项转为长期悬置，不再每章带入；再次被报告时恢复。 */
     public const DORMANT_AFTER = 15;
 
+    /** 单列给本章的已揭示事实条数与最低相关度。 */
+    public const FOCUS_LIMIT = 8;
+
+    public const FOCUS_MIN = 0.15;
+
     /** 已揭示事实用于防止远距离重演，保留较多条目。 */
     private const REVEALED_LIMIT = 120;
 
@@ -56,6 +62,17 @@ final class OpenItemLedger
             $root = CanonicalCommit::findOrFail($lineage[array_key_last($lineage)]);
             $opened = 0;
             $revealCount = 0;
+            // 前文补录的揭示先并入本章，独立编号；与实时记录重复时由去重合并。
+            foreach ($this->backfill($root) as $index => $entry) {
+                $id = 'reveal-bf-'.$root->id.'-'.($index + 1);
+                $duplicate = $this->duplicateOf($entry['claim'], $revealed, false);
+                if ($duplicate !== null) {
+                    $revealed[$duplicate]['repeated_in'] = [...($revealed[$duplicate]['repeated_in'] ?? []), $commit->chapter_number];
+
+                    continue;
+                }
+                $revealed[$id] = ['id' => $id, 'fact' => $entry['claim'], 'chapter' => $commit->chapter_number, 'quote' => $entry['evidence'][0]['quote'] ?? null];
+            }
             foreach ($this->changes($root) as $change) {
                 if ($change['action'] === 'reveal') {
                     // 揭示独立编号，不影响待核项编号；与已揭示事实重复时并入并留痕。
@@ -100,6 +117,21 @@ final class OpenItemLedger
             'instruction' => 'pending是前文尚未核实的事项，正文只能写成待核、怀疑或推测；要核实或推翻必须写出核实的动作、依据和结果。resolved是已核实的结论，后文不能改写。revealed是前文已经揭示的事实，人物已经知道，后文只能承接，不能当作第一次发现重新演示。',
             'pending' => array_slice($pending, -self::PENDING_LIMIT), 'resolved' => array_slice($resolved, -self::RESOLVED_LIMIT), 'revealed' => array_values(array_slice($revealed, -self::REVEALED_LIMIT)),
             'dormant_pending' => $dormant, 'omitted_pending' => max(0, count($pending) - self::PENDING_LIMIT)];
+    }
+
+    /** 与本章计划相关度最高的已揭示事实（至多 FOCUS_LIMIT 条、相关度不低于 FOCUS_MIN），保留原文引文。
+     * 2026-11 第22本实测：真正相关的一对为0.29，其余0.11至0.31，固定阈值切不干净，故按相关度取前几条。
+     *
+     * @param  array<string, mixed>|null  $context
+     * @return list<array<string, mixed>>
+     */
+    public static function relevantRevealed(?array $context, string $plan): array
+    {
+        $scored = array_map(fn (array $fact): array => [self::similarity($fact['fact'], $plan), $fact], $context['revealed'] ?? []);
+        $scored = array_values(array_filter($scored, fn (array $pair): bool => $pair[0] >= self::FOCUS_MIN));
+        usort($scored, fn (array $a, array $b): int => $b[0] <=> $a[0]);
+
+        return array_map(fn (array $pair): array => array_intersect_key($pair[1], array_flip(['id', 'fact', 'chapter', 'quote'])), array_slice($scored, 0, self::FOCUS_LIMIT));
     }
 
     /** 按最近一次被提起的章节（开立章或之后被重复报告的章）拆出仍在跟进的待核项与长期悬置的数量。
@@ -159,6 +191,22 @@ final class OpenItemLedger
     public static function pendingIds(?array $context): array
     {
         return array_values(array_map(fn (array $item): string => $item['id'], $context['pending'] ?? []));
+    }
+
+    /** 原始提交的前文补录揭示；没有补录时为空。
+     * @return list<array<string, mixed>>
+     */
+    private function backfill(CanonicalCommit $root): array
+    {
+        $backfill = OpenItemBackfill::where('commit_id', $root->id)->first();
+        if ($backfill === null) {
+            return [];
+        }
+        if ($backfill->entries_hash !== PlanningJson::hash($backfill->entries)) {
+            throw new InvalidArgumentException('已揭示事实补录已变化');
+        }
+
+        return $backfill->entries;
     }
 
     /** 原始提交在提交时通过验证的台账变化：独立台账请求的结果优先，早期运行取事件提取中的字段；都没有时为空。

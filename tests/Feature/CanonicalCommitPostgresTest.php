@@ -191,6 +191,8 @@ class CanonicalCommitPostgresTest extends TestCase
         // A-09 基线依赖正式提交与伏笔证据，最先撤销、最后重建。
         // 待核台账表依附准备运行，最先撤销、最后重建。
         $openItemMigration = require database_path('migrations/2026_11_26_161013_create_chapter_open_item_extractions_table.php');
+        $backfillMigration = require database_path('migrations/2026_11_26_222031_create_open_item_backfills_table.php');
+        $backfillMigration->down();
         $openItemMigration->down();
         $formalRevisionMigration = require database_path('migrations/2026_11_12_140653_create_formal_revisions_table.php');
         $formalRevisionMigration->down();
@@ -211,6 +213,7 @@ class CanonicalCommitPostgresTest extends TestCase
         $baselineMigration->up();
         $formalRevisionMigration->up();
         $openItemMigration->up();
+        $backfillMigration->up();
         $this->assertSame($beforeNovel, Novel::findOrFail($stage->novel_id)->getRawOriginal());
         $this->assertSame($beforeStage, $stage->fresh()->getRawOriginal());
         ChapterSubmissionRun::factory()->create();

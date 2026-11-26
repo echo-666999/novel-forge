@@ -77,7 +77,7 @@ class B04ContentTest extends TestCase
         }
         if (Schema::hasTable('chapter_submission_runs')) {
             DB::table('chapters')->update(['formal_version_id' => null, 'canonical_commit_id' => null, 'committed_at' => null]);
-            foreach (['story_outbox_events', 'story_state_projections', 'story_events', 'canonical_commits', 'chapter_submission_validations', 'chapter_open_item_extractions', 'chapter_event_extractions', 'chapter_reviews', 'chapter_submission_runs', 'story_entities'] as $table) {
+            foreach (['story_outbox_events', 'story_state_projections', 'story_events', 'open_item_backfills', 'canonical_commits', 'chapter_submission_validations', 'chapter_open_item_extractions', 'chapter_event_extractions', 'chapter_reviews', 'chapter_submission_runs', 'story_entities'] as $table) {
                 // 隔离夹具先删除后继再删除前驱，保持真实外键约束开启。
                 // 修订与重挂提交引用来源提交，同样按编号倒序删除。
                 if (in_array($table, ['chapter_submission_runs', 'canonical_commits'], true)) {

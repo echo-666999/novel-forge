@@ -9,7 +9,9 @@ use App\Jobs\AdvanceProductionRunJob;
 use App\Jobs\RunChapterStepJob;
 use App\Models\CanonicalCommit;
 use App\Models\ChapterGenerationRun;
+use App\Models\ChapterProgressionCheck;
 use App\Models\ChapterSubmissionRun;
+use App\Models\ChapterVersion;
 use App\Models\CostLog;
 use App\Models\Novel;
 use App\Models\ProductionRun;
@@ -495,8 +497,10 @@ class B10FirstChapterTest extends TestCase
         $run = $service->retry($run->id, User::findOrFail($run->author_id));
         $body = ChapterGenerationRun::findOrFail($run->artifacts['body_run_id']);
         $this->assertArrayHasKey('submission_review', $body->config);
-        // 模拟修订稿在推进与钩子检查上用尽修订次数。
+        // 模拟修订稿在推进与钩子检查上用尽修订次数：最近一次检查有推进点未达标。
         ChapterGenerationRun::whereKey($body->id)->update(['status' => 'paused', 'stop_reason' => 'retry_limit']);
+        $version = ChapterVersion::findOrFail($body->chapter->current_candidate_version_id);
+        ChapterProgressionCheck::factory()->create(['version_id' => $version->id, 'result' => ['points' => [['id' => 'chapter-1-point-1', 'met' => false]], 'hook' => ['met' => true]]]);
         $requests = $service->requestCount($run);
 
         $run = $service->advance($run->id);
@@ -506,6 +510,30 @@ class B10FirstChapterTest extends TestCase
         $this->assertFalse(collect($run->history)->contains(fn (array $entry): bool => ($entry['action'] ?? null) === 'automatic_recovery' && ($entry['reason'] ?? null) === 'OUTLINE_CANON_CONFLICT'));
         $this->assertSame($requests, $service->requestCount($run));
         $this->assertStringContainsString('修订本章章纲', ProductionFailure::describe($run->error, $run->step)['advice']);
+    }
+
+    /** 修订后推进与钩子已达标、只剩连续性问题：不是章纲冲突，按明确失败自动恢复一次。 */
+    public function test_review_revision_with_only_continuity_left_is_not_outline_conflict(): void
+    {
+        $service = app(ProductionRunService::class);
+        $run = $this->start();
+        $this->rejectReview = true;
+        for ($i = 0; $i < 20 && $run->status === 'pending'; $i++) {
+            $run = $service->advance($run->id);
+        }
+        $this->rejectReview = false;
+        $run = $service->retry($run->id, User::findOrFail($run->author_id));
+        $body = ChapterGenerationRun::findOrFail($run->artifacts['body_run_id']);
+        ChapterGenerationRun::whereKey($body->id)->update(['status' => 'paused', 'stop_reason' => 'retry_limit']);
+        $version = ChapterVersion::findOrFail($body->chapter->current_candidate_version_id);
+        ChapterProgressionCheck::factory()->create(['version_id' => $version->id, 'result' => ['points' => [['id' => 'chapter-1-point-1', 'met' => true]], 'hook' => ['met' => true]]]);
+
+        $run = $service->advance($run->id);
+
+        $this->assertTrue(collect($run->history)->contains(fn (array $entry): bool => ($entry['action'] ?? null) === 'failed' && ($entry['error'] ?? null) === 'REVISION_ISSUES_UNRESOLVED'));
+        $this->assertNotSame('OUTLINE_CANON_CONFLICT', $run->error);
+        $this->assertTrue(ProductionFailure::isAutomaticallyRecoverable('REVISION_ISSUES_UNRESOLVED', 'content'));
+        $this->assertStringContainsString('不是章纲冲突', ProductionFailure::describe('REVISION_ISSUES_UNRESOLVED', 'content')['label']);
     }
 
     /** 供应商余额不足（HTTP 402）单独标出，不自动重试，提示充值后恢复。
