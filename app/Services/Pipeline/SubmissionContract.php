@@ -160,21 +160,22 @@ final class SubmissionContract
         return $schema->anyOf($branches);
     }
 
-    /** 引文从指定段原文计算，模型不能自行填写区间或编造引用。
+    /** 引文从指定段原文计算，模型不能自行填写区间或编造引用。失败原因写明是哪一项的证据，重跑时模型能定位修正。
      * @return list<array{paragraph: int, quote: string, start: int, end: int}>
      */
-    public static function evidence(array $ids, string $body): array
+    public static function evidence(array $ids, string $body, ?string $owner = null): array
     {
         ContentSchema::listing($ids);
         $listed = implode('、', array_map(fn (mixed $id): string => is_scalar($id) ? (string) $id : '?', $ids));
+        $field = $owner === null ? '有一条evidence_ids' : $owner.'的evidence_ids';
         if ($ids === []) {
-            throw new SubmissionRejection('EVIDENCE_INVALID', '有一条evidence_ids为空，每条至少引用1个段落');
+            throw new SubmissionRejection('EVIDENCE_INVALID', $field.'为空，每条至少引用1个段落');
         }
         if (count($ids) > 4) {
-            throw new SubmissionRejection('EVIDENCE_INVALID', '有一条evidence_ids引用了'.count($ids).'个段落（'.$listed.'），每条最多4个');
+            throw new SubmissionRejection('EVIDENCE_INVALID', $field.'引用了'.count($ids).'个段落（'.$listed.'），每条最多4个：只保留最能支撑该项的段落，跨段较长的事件拆成多个事件');
         }
         if (count(array_unique($ids, SORT_REGULAR)) !== count($ids)) {
-            throw new SubmissionRejection('EVIDENCE_INVALID', '有一条evidence_ids重复引用了同一段落（'.$listed.'）');
+            throw new SubmissionRejection('EVIDENCE_INVALID', $field.'重复引用了同一段落（'.$listed.'）');
         }
         $anchors = ContentSchema::anchors($body);
         $result = [];
@@ -223,20 +224,20 @@ final class SubmissionContract
         if (! in_array($data['verdict'], ['pass', 'needs_revision', 'reject'], true)) {
             throw new InvalidArgumentException('REVIEW_INVALID');
         }
-        $data['evidence'] = self::evidence($data['evidence_ids'], $body);
+        $data['evidence'] = self::evidence($data['evidence_ids'], $body, '评审总体结论');
         ContentSchema::listing($data['findings']);
         // 本地复验同步执行供应商结构约束，防止超量意见绕过协议。
         if (count($data['findings']) > 20) {
             throw new InvalidArgumentException('REVIEW_INVALID');
         }
-        foreach ($data['findings'] as &$finding) {
+        foreach ($data['findings'] as $index => &$finding) {
             ContentSchema::keys($finding, ['kind', 'severity', 'reason', 'evidence_ids']);
             ContentSchema::text($finding['reason']);
             if (! in_array($finding['kind'], ['structure', 'literary', 'continuity', 'rule'], true) || ! in_array($finding['severity'], ['advisory', 'blocking'], true)
                 || ($data['verdict'] === 'pass' && $finding['severity'] === 'blocking')) {
                 throw new InvalidArgumentException('REVIEW_INVALID');
             }
-            $finding['evidence'] = self::evidence($finding['evidence_ids'], $body);
+            $finding['evidence'] = self::evidence($finding['evidence_ids'], $body, '第'.($index + 1).'条finding');
         }
         unset($finding);
 

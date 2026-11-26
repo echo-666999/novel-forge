@@ -35,8 +35,15 @@ final class SubmissionValidator
         foreach ($data as $items) {
             ContentSchema::listing($items);
         }
-        if ($data['events'] === [] || count($data['events']) > 40 || count($data['proposed_entities']) > 30 || count($data['patch']) > 50) {
-            throw new InvalidArgumentException('EXTRACTION_INVALID');
+        // 写明超出的数量与上限，重跑时模型据此合并或删减，而不是只看到停止代码。
+        $limits = array_filter([
+            $data['events'] === [] ? 'events不能为空' : null,
+            count($data['events']) > 40 ? 'events共'.count($data['events']).'个，最多40个：合并同一时间、同一人物的连续小动作，只保留影响剧情、知情或状态的关键事件' : null,
+            count($data['proposed_entities']) > 30 ? '新实体共'.count($data['proposed_entities']).'个，最多30个' : null,
+            count($data['patch']) > 50 ? '状态变化共'.count($data['patch']).'条，最多50条' : null,
+        ]);
+        if ($limits !== []) {
+            throw new SubmissionRejection('EXTRACTION_INVALID', implode('；', $limits).'。');
         }
         foreach ($data['proposed_entities'] as &$entity) {
             ContentSchema::keys($entity, ['key', 'type', 'name', 'aliases', 'description', 'core', 'evidence_ids']);
@@ -53,7 +60,7 @@ final class SubmissionValidator
             foreach ($entity['aliases'] as $alias) {
                 ContentSchema::text($alias);
             }
-            $entity['evidence'] = SubmissionContract::evidence($entity['evidence_ids'], $body);
+            $entity['evidence'] = SubmissionContract::evidence($entity['evidence_ids'], $body, '新实体「'.$entity['name'].'」');
         }
         unset($entity);
         foreach ($data['events'] as &$event) {
@@ -79,7 +86,7 @@ final class SubmissionValidator
             foreach ($event['target_refs'] as $ref) {
                 ContentSchema::text($ref);
             }
-            $event['evidence'] = SubmissionContract::evidence($event['evidence_ids'], $body);
+            $event['evidence'] = SubmissionContract::evidence($event['evidence_ids'], $body, $event['key']);
         }
         unset($event);
         foreach ($data['patch'] as $patch) {
@@ -105,7 +112,7 @@ final class SubmissionValidator
                     throw new InvalidArgumentException('FORESHADOW_PROGRESS_INVALID');
                 }
 
-                return [...$entry, 'evidence' => SubmissionContract::evidence($entry['evidence_ids'], $body)];
+                return [...$entry, 'evidence' => SubmissionContract::evidence($entry['evidence_ids'], $body, '伏笔'.$entry['foreshadow_id'].'的'.$entry['action'])];
             }, $foreshadows);
         }
         if ($openItems !== null) {
@@ -143,7 +150,7 @@ final class SubmissionValidator
                 throw new InvalidArgumentException('OPEN_ITEM_INVALID');
             }
 
-            return [...$entry, 'evidence' => SubmissionContract::evidence($entry['evidence_ids'], $body)];
+            return [...$entry, 'evidence' => SubmissionContract::evidence($entry['evidence_ids'], $body, '待核事项「'.mb_substr($entry['claim'], 0, 20).'」')];
         }, $openItems);
     }
 

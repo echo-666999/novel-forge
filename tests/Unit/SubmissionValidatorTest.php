@@ -161,6 +161,21 @@ class SubmissionValidatorTest extends TestCase
         }
     }
 
+    /** 事件超出上限时写明数量与改法。 */
+    public function test_too_many_events_reports_count_and_remedy(): void
+    {
+        $data = $this->extraction();
+        $event = $data['events'][0];
+        $data['events'] = array_map(fn (int $i): array => [...$event, 'key' => 'event-'.$i, 'narrative_order' => $i], range(1, 41));
+        try {
+            (new SubmissionValidator)->normalize($data, '林舟走进旧塔。');
+            $this->fail('超过40个事件必须拒绝');
+        } catch (SubmissionRejection $exception) {
+            $this->assertSame('EXTRACTION_INVALID', $exception->getMessage());
+            $this->assertStringContainsString('events共41个，最多40个', $exception->detail);
+        }
+    }
+
     /** 事件字段无效时写明事件、字段与允许值，重跑反馈能据此修正。 */
     public function test_invalid_event_reports_field_and_allowed_values(): void
     {
