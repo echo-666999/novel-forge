@@ -161,6 +161,35 @@ class SubmissionValidatorTest extends TestCase
         }
     }
 
+    /** 多处证据无效时一次全部列出；单处时提示与原来一致。 */
+    public function test_all_evidence_problems_are_reported_together(): void
+    {
+        $body = "第一段。\n第二段。\n第三段。\n第四段。\n第五段。\n第六段。";
+        $data = $this->extraction();
+        $second = [...$data['events'][0], 'key' => 'event-2', 'narrative_order' => 2, 'evidence_ids' => ['p1', 'p1']];
+        $data['events'][0]['evidence_ids'] = ['p1', 'p2', 'p3', 'p4', 'p5'];
+        $data['events'][] = $second;
+        try {
+            (new SubmissionValidator)->normalize($data, $body);
+            $this->fail('证据无效必须拒绝');
+        } catch (SubmissionRejection $exception) {
+            $this->assertSame('EVIDENCE_INVALID', $exception->getMessage());
+            $this->assertStringStartsWith('共2处证据无效，须全部修正：', $exception->detail);
+            $this->assertStringContainsString('event-1的evidence_ids引用了5个段落', $exception->detail);
+            $this->assertStringContainsString('event-2的evidence_ids重复引用了同一段落', $exception->detail);
+        }
+
+        $review = ['review' => ['verdict' => 'needs_revision', 'summary' => '隔离评审', 'evidence_ids' => ['p9'], 'findings' => [
+            ['kind' => 'continuity', 'severity' => 'blocking', 'reason' => '隔离问题', 'evidence_ids' => ['p1', 'p2', 'p3', 'p4', 'p5']]]]];
+        try {
+            SubmissionContract::review($review, $body);
+            $this->fail('评审证据无效必须拒绝');
+        } catch (SubmissionRejection $exception) {
+            $this->assertStringContainsString('评审总体结论的evidence_ids引用了正文中不存在的段落p9', $exception->detail);
+            $this->assertStringContainsString('第1条finding的evidence_ids引用了5个段落', $exception->detail);
+        }
+    }
+
     /** 事件超出上限时写明数量与改法。 */
     public function test_too_many_events_reports_count_and_remedy(): void
     {

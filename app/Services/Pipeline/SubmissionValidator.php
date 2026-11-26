@@ -19,6 +19,8 @@ final class SubmissionValidator
      */
     public function normalize(array $data, string $body, array $priorState = []): array
     {
+        // 证据问题收集完整份结果后一次报出，其他结构问题仍立即停止。
+        $problems = [];
         // 伏笔流转独立于事件结构，先取出再按原流程处理；没有该字段的历史提取结果完全不变。
         $foreshadows = array_key_exists('foreshadows', $data) ? $data['foreshadows'] : null;
         unset($data['foreshadows']);
@@ -60,7 +62,7 @@ final class SubmissionValidator
             foreach ($entity['aliases'] as $alias) {
                 ContentSchema::text($alias);
             }
-            $entity['evidence'] = SubmissionContract::evidence($entity['evidence_ids'], $body, '新实体「'.$entity['name'].'」');
+            $entity['evidence'] = SubmissionContract::collectEvidence($entity['evidence_ids'], $body, '新实体「'.$entity['name'].'」', $problems);
         }
         unset($entity);
         foreach ($data['events'] as &$event) {
@@ -69,15 +71,15 @@ final class SubmissionValidator
                 ContentSchema::text($event[$field]);
             }
             // 逐项写明哪个事件的哪个字段无效及允许值，重跑时模型据此修正，而不是只看到停止代码。
-            $problems = array_filter([
+            $fieldProblems = array_filter([
                 preg_match('/^event-[1-9][0-9]*$/D', (string) $event['key']) !== 1 ? 'key必须是event-N' : null,
                 ! is_int($event['narrative_order']) || $event['narrative_order'] < 1 ? 'narrative_order必须是正整数' : null,
                 ! in_array($event['event_type'], SubmissionContract::EVENT_TYPES, true) ? 'event_type「'.(is_scalar($event['event_type']) ? $event['event_type'] : '非字符串').'」无效，只能是'.implode('、', SubmissionContract::EVENT_TYPES) : null,
                 ! in_array($event['time_scope'], ['present', 'memory', 'prediction'], true) ? 'time_scope只能是present、memory、prediction' : null,
                 ! is_string($event['fact_category']) || FactCategory::tryFrom($event['fact_category']) === null ? 'fact_category只能是'.implode('、', array_column(FactCategory::cases(), 'value')) : null,
             ]);
-            if ($problems !== []) {
-                throw new SubmissionRejection('EVENT_INVALID', (is_scalar($event['key']) ? $event['key'] : '某个事件').'：'.implode('；', $problems).'。推测、相信、传闻属于fact_category，不是event_type。');
+            if ($fieldProblems !== []) {
+                throw new SubmissionRejection('EVENT_INVALID', (is_scalar($event['key']) ? $event['key'] : '某个事件').'：'.implode('；', $fieldProblems).'。推测、相信、传闻属于fact_category，不是event_type。');
             }
             ContentSchema::listing($event['target_refs']);
             if (count($event['target_refs']) > 10 || count(array_unique($event['target_refs'], SORT_REGULAR)) !== count($event['target_refs'])) {
@@ -86,7 +88,7 @@ final class SubmissionValidator
             foreach ($event['target_refs'] as $ref) {
                 ContentSchema::text($ref);
             }
-            $event['evidence'] = SubmissionContract::evidence($event['evidence_ids'], $body, $event['key']);
+            $event['evidence'] = SubmissionContract::collectEvidence($event['evidence_ids'], $body, $event['key'], $problems);
         }
         unset($event);
         foreach ($data['patch'] as $patch) {
@@ -105,19 +107,20 @@ final class SubmissionValidator
             if (count($foreshadows) > 10) {
                 throw new InvalidArgumentException('FORESHADOW_PROGRESS_INVALID');
             }
-            $data['foreshadows'] = array_map(function ($entry) use ($body): array {
+            $data['foreshadows'] = array_map(function ($entry) use ($body, &$problems): array {
                 ContentSchema::keys($entry, ['foreshadow_id', 'action', 'evidence_ids', 'explanation']);
                 ContentSchema::text($entry['explanation']);
                 if (! is_int($entry['foreshadow_id']) || ! array_key_exists($entry['action'], ForeshadowLedger::ACTIONS)) {
                     throw new InvalidArgumentException('FORESHADOW_PROGRESS_INVALID');
                 }
 
-                return [...$entry, 'evidence' => SubmissionContract::evidence($entry['evidence_ids'], $body, '伏笔'.$entry['foreshadow_id'].'的'.$entry['action'])];
+                return [...$entry, 'evidence' => SubmissionContract::collectEvidence($entry['evidence_ids'], $body, '伏笔'.$entry['foreshadow_id'].'的'.$entry['action'], $problems)];
             }, $foreshadows);
         }
         if ($openItems !== null) {
-            $data['open_items'] = $this->openItemEntries($openItems, $body);
+            $data['open_items'] = $this->openItemEntries($openItems, $body, $problems);
         }
+        SubmissionContract::rejectEvidence($problems);
 
         return $data;
     }
@@ -128,29 +131,33 @@ final class SubmissionValidator
     public function normalizeOpenItems(array $data, string $body): array
     {
         ContentSchema::keys($data, ['open_items']);
+        $problems = [];
+        $result = ['open_items' => $this->openItemEntries($data['open_items'], $body, $problems)];
+        SubmissionContract::rejectEvidence($problems);
 
-        return ['open_items' => $this->openItemEntries($data['open_items'], $body)];
+        return $result;
     }
 
-    /** 校验待核事项变化的结构并绑定原文证据。
+    /** 校验待核事项变化的结构并绑定原文证据；证据问题记入清单。
+     * @param  list<string>  $problems
      * @return list<array<string, mixed>>
      */
-    private function openItemEntries(mixed $openItems, string $body): array
+    private function openItemEntries(mixed $openItems, string $body, array &$problems): array
     {
         ContentSchema::listing($openItems);
         if (count($openItems) > OpenItemLedger::MAX_CHANGES) {
             throw new InvalidArgumentException('OPEN_ITEM_INVALID');
         }
 
-        return array_map(function ($entry) use ($body): array {
+        return array_map(function ($entry) use ($body, &$problems): array {
             ContentSchema::keys($entry, ['action', 'item_id', 'claim', 'evidence_ids']);
             ContentSchema::text($entry['claim']);
             // open 不引用既有编号；confirm、refute 必须引用待核编号，编号是否在目录内由验证门禁判断。
-            if (! in_array($entry['action'], OpenItemLedger::ACTIONS, true) || ! is_string($entry['item_id']) || ($entry['action'] === 'open') !== ($entry['item_id'] === '')) {
+            if (! in_array($entry['action'], OpenItemLedger::ACTIONS, true) || ! is_string($entry['item_id']) || in_array($entry['action'], OpenItemLedger::NEW_ENTRY_ACTIONS, true) !== ($entry['item_id'] === '')) {
                 throw new InvalidArgumentException('OPEN_ITEM_INVALID');
             }
 
-            return [...$entry, 'evidence' => SubmissionContract::evidence($entry['evidence_ids'], $body, '待核事项「'.mb_substr($entry['claim'], 0, 20).'」')];
+            return [...$entry, 'evidence' => SubmissionContract::collectEvidence($entry['evidence_ids'], $body, '待核事项「'.mb_substr($entry['claim'], 0, 20).'」', $problems)];
         }, $openItems);
     }
 
@@ -163,7 +170,7 @@ final class SubmissionValidator
         $errors = [];
         $resolved = [];
         foreach ($data['open_items'] ?? [] as $entry) {
-            if ($entry['action'] === 'open') {
+            if (in_array($entry['action'], OpenItemLedger::NEW_ENTRY_ACTIONS, true)) {
                 continue;
             }
             if (! in_array($entry['item_id'], $pendingIds, true)) {

@@ -165,6 +165,9 @@ class C01SequenceTest extends TestCase
                     $data = ['open_items' => match ($submission->chapter->number) {
                         1 => [['action' => 'open', 'item_id' => '', 'claim' => '隔离待核：来信笔迹是否为师父所写', 'evidence_ids' => ['p1']]],
                         2 => [['action' => 'confirm', 'item_id' => $submitted['open_items']['pending'][0]['id'], 'claim' => '隔离核实：笔迹确为师父所写', 'evidence_ids' => ['p1']]],
+                        // 第3章揭示一条关键事实，第6章换个说法再揭示：重放时并入第3章的揭示。
+                        3 => [['action' => 'reveal', 'item_id' => '', 'claim' => '林澈在航海图夹层里取出师父手写的旧航线草图，日期是沉船前三天。', 'evidence_ids' => ['p1']]],
+                        6 => [['action' => 'reveal', 'item_id' => '', 'claim' => '航海图夹层里取出的师父手写旧航线草图，日期在沉船前三天。', 'evidence_ids' => ['p1']]],
                         // 第5章换个说法再报同一问题：程序重放时并入第4章的事项并留痕。
                         4 => [['action' => 'open', 'item_id' => '', 'claim' => '旧灯塔那把铜钥匙当年交给了谁保管，尚待核实。', 'evidence_ids' => ['p1']]],
                         5 => [['action' => 'open', 'item_id' => '', 'claim' => '那把旧灯塔铜钥匙当年到底交给谁保管，仍待查证。', 'evidence_ids' => ['p1']]],
@@ -330,6 +333,12 @@ class C01SequenceTest extends TestCase
         $this->assertSame(['open-'.$fourth->id.'-1'], array_column($snapshots[6]['pending'], 'id'));
         $this->assertSame([5], $snapshots[6]['pending'][0]['repeated_in']);
         $this->assertArrayNotHasKey('repeated_in', $snapshots[5]['pending'][0]);
+        // 已揭示事实从下一章起进入共享资料，后续重复揭示并入原条目。
+        $third = CanonicalCommit::where('chapter_number', 3)->sole();
+        $this->assertSame([], $snapshots[3]['revealed']);
+        $this->assertSame([['id' => 'reveal-'.$third->id.'-1', 'fact' => '林澈在航海图夹层里取出师父手写的旧航线草图，日期是沉船前三天。', 'chapter' => 3, 'quote' => $snapshots[4]['revealed'][0]['quote']]], $snapshots[4]['revealed']);
+        $this->assertSame([6], $snapshots[7]['revealed'][0]['repeated_in']);
+        $this->assertCount(1, $snapshots[7]['revealed']);
         $this->assertSame(['confirmed', '隔离核实：笔迹确为师父所写', 2], [$snapshots[3]['resolved'][0]['status'], $snapshots[3]['resolved'][0]['conclusion'], $snapshots[3]['resolved'][0]['resolved_chapter']]);
         foreach ($snapshots as $number => $ledger) {
             $this->assertSame(PlanningJson::hash($ledger), PlanningJson::hash(app(OpenItemLedger::class)->context($novel, $number)));

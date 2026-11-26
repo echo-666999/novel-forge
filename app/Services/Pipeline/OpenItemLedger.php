@@ -14,8 +14,11 @@ final class OpenItemLedger
 {
     public const VERSION = 'open-items-v1';
 
-    /** 提取动作：open 新开待核事项，confirm、refute 以本章证据确认或推翻既有事项。 */
-    public const ACTIONS = ['open', 'confirm', 'refute'];
+    /** 提取动作：open 新开待核事项，confirm、refute 以本章证据确认或推翻既有事项，reveal 记录本章首次揭示、之后须当作已知的关键事实。 */
+    public const ACTIONS = ['open', 'confirm', 'refute', 'reveal'];
+
+    /** 不引用既有编号的动作。 */
+    public const NEW_ENTRY_ACTIONS = ['open', 'reveal'];
 
     /** 单章最多报告的变化条数，与供应商Schema一致。 */
     public const MAX_CHANGES = 10;
@@ -31,12 +34,19 @@ final class OpenItemLedger
 
     private const RESOLVED_LIMIT = 30;
 
+    /** 连续这么多章没有被提起（新开或重复报告）的待核项转为长期悬置，不再每章带入；再次被报告时恢复。 */
+    public const DORMANT_AFTER = 15;
+
+    /** 已揭示事实用于防止远距离重演，保留较多条目。 */
+    private const REVEALED_LIMIT = 120;
+
     /** 本章开始前的待核与已核事项；首章及没有任何记录时返回空列表。
-     * @return array{version: string, chapter_number: int, instruction: string, pending: list<array<string, mixed>>, resolved: list<array<string, mixed>>, omitted_pending: int}
+     * @return array{version: string, chapter_number: int, instruction: string, pending: list<array<string, mixed>>, resolved: list<array<string, mixed>>, revealed: list<array<string, mixed>>, dormant_pending: int, omitted_pending: int}
      */
     public function context(Novel $novel, int $chapterNumber): array
     {
         $items = [];
+        $revealed = [];
         $baselines = app(CanonicalBaselines::class);
         $baseline = $chapterNumber > 1 ? $baselines->current($novel) : null;
         $chain = $baseline === null ? [] : $baselines->chain($baseline, $chapterNumber - 1);
@@ -45,7 +55,21 @@ final class OpenItemLedger
             $lineage = $baselines->lineage($commit);
             $root = CanonicalCommit::findOrFail($lineage[array_key_last($lineage)]);
             $opened = 0;
+            $revealCount = 0;
             foreach ($this->changes($root) as $change) {
+                if ($change['action'] === 'reveal') {
+                    // 揭示独立编号，不影响待核项编号；与已揭示事实重复时并入并留痕。
+                    $id = 'reveal-'.$root->id.'-'.(++$revealCount);
+                    $duplicate = $this->duplicateOf($change['claim'], $revealed, false);
+                    if ($duplicate !== null) {
+                        $revealed[$duplicate]['repeated_in'] = [...($revealed[$duplicate]['repeated_in'] ?? []), $commit->chapter_number];
+
+                        continue;
+                    }
+                    $revealed[$id] = ['id' => $id, 'fact' => $change['claim'], 'chapter' => $commit->chapter_number, 'quote' => $change['evidence'][0]['quote'] ?? null];
+
+                    continue;
+                }
                 if ($change['action'] === 'open') {
                     // 每次新开都占一个序号，阈值调整不会改动其他事项的编号。
                     $id = 'open-'.$root->id.'-'.(++$opened);
@@ -68,27 +92,39 @@ final class OpenItemLedger
                 $items[$change['item_id']] = [...$item, 'status' => $change['action'] === 'confirm' ? 'confirmed' : 'refuted', 'conclusion' => $change['claim'], 'resolved_chapter' => $commit->chapter_number];
             }
         }
-        $pending = array_values(array_filter($items, fn (array $item): bool => $item['status'] === 'pending'));
+        [$pending, $dormant] = self::splitDormant(array_values(array_filter($items, fn (array $item): bool => $item['status'] === 'pending')), $chapterNumber);
         $resolved = array_values(array_filter($items, fn (array $item): bool => $item['status'] !== 'pending'));
         usort($resolved, fn (array $a, array $b): int => $a['resolved_chapter'] <=> $b['resolved_chapter']);
 
         return ['version' => self::VERSION, 'chapter_number' => $chapterNumber,
-            'instruction' => 'pending是前文尚未核实的事项，正文只能写成待核、怀疑或推测；要核实或推翻必须写出核实的动作、依据和结果。resolved是已核实的结论，后文不能改写。',
-            'pending' => array_slice($pending, -self::PENDING_LIMIT), 'resolved' => array_slice($resolved, -self::RESOLVED_LIMIT), 'omitted_pending' => max(0, count($pending) - self::PENDING_LIMIT)];
+            'instruction' => 'pending是前文尚未核实的事项，正文只能写成待核、怀疑或推测；要核实或推翻必须写出核实的动作、依据和结果。resolved是已核实的结论，后文不能改写。revealed是前文已经揭示的事实，人物已经知道，后文只能承接，不能当作第一次发现重新演示。',
+            'pending' => array_slice($pending, -self::PENDING_LIMIT), 'resolved' => array_slice($resolved, -self::RESOLVED_LIMIT), 'revealed' => array_values(array_slice($revealed, -self::REVEALED_LIMIT)),
+            'dormant_pending' => $dormant, 'omitted_pending' => max(0, count($pending) - self::PENDING_LIMIT)];
     }
 
-    /** 与新开事项最相似且达到阈值的待核项编号；没有时返回 null。
+    /** 按最近一次被提起的章节（开立章或之后被重复报告的章）拆出仍在跟进的待核项与长期悬置的数量。
+     * @param  list<array<string, mixed>>  $pending
+     * @return array{0: list<array<string, mixed>>, 1: int}
+     */
+    public static function splitDormant(array $pending, int $chapterNumber): array
+    {
+        $active = array_values(array_filter($pending, fn (array $item): bool => $chapterNumber - max([$item['opened_chapter'], ...($item['repeated_in'] ?? [])]) <= self::DORMANT_AFTER));
+
+        return [$active, count($pending) - count($active)];
+    }
+
+    /** 与新条目最相似且达到阈值的既有条目编号；待核项只与仍待核的比较，揭示与全部已揭示事实比较。没有时返回 null。
      * @param  array<string, array<string, mixed>>  $items
      */
-    private function duplicateOf(string $claim, array $items): ?string
+    private function duplicateOf(string $claim, array $items, bool $pendingOnly = true): ?string
     {
         $best = null;
         $score = self::DUPLICATE_THRESHOLD;
         foreach ($items as $id => $item) {
-            if ($item['status'] !== 'pending') {
+            if ($pendingOnly && $item['status'] !== 'pending') {
                 continue;
             }
-            $similarity = self::similarity($claim, $item['claim']);
+            $similarity = self::similarity($claim, $item['claim'] ?? $item['fact']);
             if ($similarity >= $score) {
                 [$best, $score] = [$id, $similarity];
             }

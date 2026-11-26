@@ -36,6 +36,9 @@ class OpenItemsTest extends TestCase
         ]), self::BODY);
         $this->assertSame(self::BODY, $data['open_items'][0]['evidence'][0]['quote']);
         $this->assertSame([], $validator->openItemErrors($data, ['open-7-1']));
+        // 揭示不引用编号，门禁不检查目录。
+        $reveal = $validator->normalize($this->extraction([['action' => 'reveal', 'item_id' => '', 'claim' => '外婆的调阅单日期是火灾前一周的星期三', 'evidence_ids' => ['p1']]]), self::BODY);
+        $this->assertSame([], $validator->openItemErrors($reveal, []));
         $this->assertSame([['code' => 'OPEN_ITEM_UNKNOWN', 'reference' => 'open-7-1']], $validator->openItemErrors($data, []));
 
         $twice = $validator->normalize($this->extraction([
@@ -53,7 +56,8 @@ class OpenItemsTest extends TestCase
     /** @return array<string, array{array<string, mixed>}> */
     public static function malformed(): array
     {
-        return ['open_with_id' => [['action' => 'open', 'item_id' => 'open-7-1', 'claim' => '待核', 'evidence_ids' => ['p1']]],
+        return ['reveal_with_id' => [['action' => 'reveal', 'item_id' => 'open-7-1', 'claim' => '揭示', 'evidence_ids' => ['p1']]],
+            'open_with_id' => [['action' => 'open', 'item_id' => 'open-7-1', 'claim' => '待核', 'evidence_ids' => ['p1']]],
             'confirm_without_id' => [['action' => 'confirm', 'item_id' => '', 'claim' => '确认', 'evidence_ids' => ['p1']]],
             'unknown_action' => [['action' => 'close', 'item_id' => 'open-7-1', 'claim' => '关闭', 'evidence_ids' => ['p1']]],
             'blank_claim' => [['action' => 'open', 'item_id' => '', 'claim' => ' ', 'evidence_ids' => ['p1']]],
@@ -77,6 +81,18 @@ class OpenItemsTest extends TestCase
         $this->assertArrayNotHasKey('open_items', SubmissionContract::schema(new JsonSchemaTypeFactory, 'extract', $anchors));
     }
 
+    /** 超过15章未被提起的待核项转为长期悬置；被重复报告后恢复跟进。 */
+    public function test_items_go_dormant_after_fifteen_quiet_chapters_and_revive_when_reported(): void
+    {
+        // 相隔16章转入悬置，恰好15章仍在跟进；重复报告刷新最近提起的章节。
+        $items = [['id' => 'open-1-1', 'opened_chapter' => 20], ['id' => 'open-2-1', 'opened_chapter' => 10, 'repeated_in' => [30]], ['id' => 'open-3-1', 'opened_chapter' => 21]];
+
+        [$active, $dormant] = OpenItemLedger::splitDormant($items, 36);
+        $this->assertSame(['open-2-1', 'open-3-1'], array_column($active, 'id'));
+        $this->assertSame(1, $dormant);
+        $this->assertSame(['open-1-1', 'open-2-1', 'open-3-1'], array_column(OpenItemLedger::splitDormant($items, 35)[0], 'id'));
+    }
+
     /** 重复判定：措辞不同的同一问题达到阈值，只是同属一条线索的不同问题低于阈值；套话不抬高相似度。 */
     public function test_similarity_separates_rephrased_duplicates_from_related_items(): void
     {
@@ -95,6 +111,10 @@ class OpenItemsTest extends TestCase
         $budget = ['slots' => ['scene_1'], 'min' => 1000, 'max' => 1200];
         $draft = ContentExecutionContract::outputInstructions('draft', ['budget' => $budget, 'open_items' => true]);
         $this->assertStringContainsString('open_items.pending是前文尚未核实的事项', $draft);
+        $this->assertStringContainsString('不能写成重新发现', $draft);
+        $this->assertStringContainsString('当作第一次发现重新演示', ContentExecutionContract::outputInstructions('check', ['open_items' => true]));
+        $this->assertStringContainsString('open_items.revealed中前文已揭示的事实', SubmissionAgent::openItemInstructions('review'));
+        $this->assertStringContainsString('reveal：本章首次揭示', SubmissionContract::instructions('ledger'));
         $this->assertStringNotContainsString('open_items', ContentExecutionContract::outputInstructions('draft', ['budget' => $budget]));
         $this->assertStringContainsString('记入continuity_issues', ContentExecutionContract::outputInstructions('check', ['open_items' => true]));
         $this->assertStringContainsString('open_items.pending是前文尚未核实的事项', ContentExecutionContract::outputInstructions('revise', ['open_items' => true, 'anchors' => ['p1' => [], 'p2' => []]]));

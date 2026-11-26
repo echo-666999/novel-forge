@@ -41,7 +41,7 @@ final class SubmissionAgent implements Agent, HasStructuredOutput
     public static function openItemInstructions(?string $purpose): string
     {
         return match ($purpose) {
-            'review' => "\n待核事项：open_items.pending中的事项若在本章没有写出核实的动作与依据，就被当作已确认事实陈述，或open_items.resolved中的结论被本章改写，属于rule类blocking问题，引用写成确认的段落；人物以推测、怀疑语气提及，或写明仍待核实，不算问题。",
+            'review' => "\n待核事项：open_items.pending中的事项若在本章没有写出核实的动作与依据，就被当作已确认事实陈述，或open_items.resolved中的结论被本章改写，属于rule类blocking问题，引用写成确认的段落；人物以推测、怀疑语气提及，或写明仍待核实，不算问题。open_items.revealed中前文已揭示的事实在本章被当作第一次发现重新演示（重新找到、初次读到、为之震惊），同样属于blocking，引用重演的段落；明确承接已知事实不算问题。",
             'extract' => "\n待核事项：在open_items中报告本章的待核事项变化，没有变化时返回空列表。open为本章新出现、正文明确写出尚未核实（待核、待比对、待鉴定、未确认）且影响后续剧情的关键判断或线索，claim用一句话写清待核的内容，item_id填空字符串，每章新开不超过5项，已在open_items.pending中的不要重复新开。confirm或refute为本章用正文中已发生的核实动作与证据确认或推翻了open_items.pending中的事项，item_id填该事项编号，claim写核实结论。只是再次提到、复述、推测或计划去核实都不算结论。evidence_ids指向写出待核或核实结论的段落。",
             default => '',
         };
