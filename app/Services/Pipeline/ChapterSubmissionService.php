@@ -563,13 +563,47 @@ final class ChapterSubmissionService
             'reading_findings' => $reading === [] ? [] : $reading[array_key_last($reading)]['findings'],
             'uncovered_evidence_ids' => array_values(array_diff(array_keys(ContentSchema::anchors($predecessor->version->body)), array_merge(...array_column($result['events'], 'evidence_ids')))),
             'validation_hash' => PlanningJson::hash($validation->result), 'rejected_result' => $result,
-            'errors' => $validation->result['errors'], 'stop_reason' => $predecessor->stop_reason,
+            'errors' => $validation->result['errors'], 'error_details' => self::errorDetails($validation->result['errors'], $extraction->result, $predecessor->snapshot['entity_catalog']),
+            'stop_reason' => $predecessor->stop_reason,
             'rules' => ['PATCH_SOURCE_INVALID' => '补丁entity_ref和value_ref必须出现在来源事件actor_ref或target_refs中。新地点必须在该事件target_refs中给完整定义，补丁重复使用相同定义。',
                 'LOCATION_EVENT_REQUIRED' => '位置补丁只能引用location_change事件；静态观察不能产生位置变化补丁。',
                 'PATCH_PRECONDITION_FAILED' => 'before_ref须与按事件顺序重放得到的原位置或原物主完全一致，未知才为空。',
+                'PATCH_VALUE_INVALID' => 'location的value_ref必须是地点实体（type为location），不能用人物代替地点；item_owner的entity_ref必须是物品、value_ref必须是人物或群体；value_text保持为空。去往的地点不在entity_catalog中时，在该事件target_refs里给出完整的地点定义。',
                 'UNKNOWN_ENTITY' => '既有实体使用目录编号，新实体每次引用给完整内联定义，禁止new-N字符串。',
                 'OPEN_ITEM_UNKNOWN' => 'confirm与refute的item_id只能取open_items.pending中的编号；新出现的待核事项用open且item_id为空。',
                 'OPEN_ITEM_DUPLICATE' => '同一待核事项一章只能确认或推翻一次。']];
+    }
+
+    /** 把补丁类错误的编号翻成实体名称与类型，重跑时模型知道哪一处、错在哪里；不属于补丁编号的错误不加说明。
+     * @param  list<array{code: string, reference: string}>  $errors
+     * @param  array<string, mixed>  $extraction
+     * @param  array<string, array<string, mixed>>  $catalog
+     * @return list<string>
+     */
+    public static function errorDetails(array $errors, array $extraction, array $catalog): array
+    {
+        $types = ['character' => '人物', 'location' => '地点', 'item' => '物品', 'group' => '群体', 'animal' => '动物'];
+        $entities = $catalog;
+        foreach ($extraction['proposed_entities'] ?? [] as $proposal) {
+            $entities[$proposal['key']] = $proposal;
+        }
+        $describe = fn (string $ref): string => isset($entities[$ref]) ? $ref.'「'.$entities[$ref]['name'].'」（'.($types[$entities[$ref]['type']] ?? $entities[$ref]['type']).'）' : $ref.'（不在实体目录中）';
+        $details = [];
+        foreach ($errors as $error) {
+            if (preg_match('/^(event-\d+):((?:entity|new)-\d+):(\w+)$/', $error['reference'], $parts) !== 1) {
+                continue;
+            }
+            [, $event, $ref, $property] = $parts;
+            $patch = collect($extraction['patch'] ?? [])->first(fn (array $item): bool => $item['source_event_key'] === $event && $item['entity_ref'] === $ref && $item['property'] === $property);
+            $value = ($patch['value_ref'] ?? '') === '' ? '空' : $describe($patch['value_ref']);
+            $details[] = $error['code'].'：'.$event.'把'.$describe($ref).'的'.$property.'设为'.$value.match (true) {
+                $error['code'] === 'PATCH_VALUE_INVALID' && $property === 'location' => '，location只能指向地点实体；目的地不在实体目录中时，在该事件target_refs里给出完整的地点定义',
+                $error['code'] === 'PATCH_VALUE_INVALID' && $property === 'item_owner' => '，item_owner的对象必须是物品、持有者必须是人物或群体',
+                default => '',
+            }.'。';
+        }
+
+        return $details;
     }
 
     /** 同版本评审、提取和验证全部有摘要，不能只换编号借用其他章节产物。 */

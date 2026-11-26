@@ -2,6 +2,7 @@
 
 namespace Tests\Unit;
 
+use App\Services\Pipeline\ChapterSubmissionService;
 use App\Services\Pipeline\SubmissionContract;
 use App\Services\Pipeline\SubmissionRejection;
 use App\Services\Pipeline\SubmissionValidator;
@@ -159,6 +160,25 @@ class SubmissionValidatorTest extends TestCase
             $this->assertStringContainsString('「旧塔」「守塔人」', $exception->detail);
             $this->assertStringContainsString('首次引用处写完整对象', $exception->detail);
         }
+    }
+
+    /** 评审顶层抄入输出格式类型时忽略该回显；其他多余字段仍拒绝。 */
+    public function test_review_ignores_echoed_format_type_only(): void
+    {
+        $review = ['verdict' => 'pass', 'summary' => '隔离评审', 'evidence_ids' => ['p1'], 'findings' => []];
+        $this->assertSame('pass', SubmissionContract::review(['review' => $review, 'type' => 'json_object'], '林舟走进旧塔。')['verdict']);
+        $this->expectException(InvalidArgumentException::class);
+        SubmissionContract::review(['review' => $review, 'note' => '多余'], '林舟走进旧塔。');
+    }
+
+    /** 补丁类错误翻成实体名称与类型，并按属性给出改法；不属于补丁编号的错误不加说明。 */
+    public function test_patch_errors_are_explained_with_entity_names_and_types(): void
+    {
+        $catalog = ['entity-202' => ['name' => '沈禾', 'type' => 'character'], 'entity-216' => ['name' => '档案科同事', 'type' => 'character']];
+        $extraction = ['proposed_entities' => [], 'patch' => [['entity_ref' => 'entity-202', 'property' => 'location', 'value_ref' => 'entity-216', 'value_text' => '', 'before_ref' => '', 'fact_category' => 'objective_confirmed', 'source_event_key' => 'event-13']]];
+        $details = ChapterSubmissionService::errorDetails([['code' => 'PATCH_VALUE_INVALID', 'reference' => 'event-13:entity-202:location'], ['code' => 'UNKNOWN_ENTITY', 'reference' => 'entity-999']], $extraction, $catalog);
+
+        $this->assertSame(['PATCH_VALUE_INVALID：event-13把entity-202「沈禾」（人物）的location设为entity-216「档案科同事」（人物），location只能指向地点实体；目的地不在实体目录中时，在该事件target_refs里给出完整的地点定义。'], $details);
     }
 
     /** 多处证据无效时一次全部列出；单处时提示与原来一致。 */

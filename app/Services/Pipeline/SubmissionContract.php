@@ -242,6 +242,10 @@ final class SubmissionContract
      */
     public static function review(array $data, string $body): array
     {
+        // 模型偶尔把请求的输出格式（"type": "json_object"）或Schema根类型抄进顶层，只容忍这两种明确的回显，其他多余字段仍然拒绝。
+        if (array_key_exists('review', $data) && count($data) === 2 && in_array($data['type'] ?? null, ['json_object', 'object'], true)) {
+            unset($data['type']);
+        }
         // 新版包装只约束供应商输出，保存结果仍保持既有结构以便历史复验。
         if (array_key_exists('review', $data)) {
             ContentSchema::keys($data, ['review']);
