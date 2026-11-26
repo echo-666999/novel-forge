@@ -82,16 +82,16 @@ final class CanonicalCommitService
             if ($chapter->formal_version_id !== null || $chapter->canonical_commit_id !== null) {
                 throw new InvalidArgumentException('CHAPTER_ALREADY_COMMITTED');
             }
-            if (! in_array($run->status, ['ready', 'awaiting_approval'], true) || $run->version_id !== $version->id || $run->requests_used !== 2
+            if (! in_array($run->status, ['ready', 'awaiting_approval'], true) || $run->version_id !== $version->id || $run->requests_used !== $run->request_limit
                 || ! app(BookAuthorship::class)->allows($run->novel_id, $operator, $run->config['operator_id']) || $extraction->submission_run_id !== $run->id
                 || $validation->submission_run_id !== $run->id || $validation->review_id !== $reviewId || $validation->extraction_id !== $extractionId
                 || ! in_array($validation->verdict, ['pass', 'requires_approval'], true)
-                || $validation->input_hash !== PlanningJson::hash([$run->input_hash, $review->result_hash, $extraction->result_hash, []])) {
+                || $validation->input_hash !== ChapterSubmissionService::validationInputHash($run, $review, $extraction, [])) {
                 throw new InvalidArgumentException('SUBMISSION_NOT_READY');
             }
             $preparation = app(ChapterSubmissionService::class);
             $preparation->assertCurrent($run);
-            $original = app(SubmissionValidator::class)->validate($extraction->result, $run->snapshot['entity_catalog'], $run->snapshot['state'], [], ChapterSubmissionService::longRangeForeshadowContext($run));
+            $original = app(SubmissionValidator::class)->validate(ChapterSubmissionService::validationData($run, $extraction), $run->snapshot['entity_catalog'], $run->snapshot['state'], [], ChapterSubmissionService::longRangeForeshadowContext($run), ChapterSubmissionService::pendingOpenItemIds($run));
             if (PlanningJson::hash($validation->result) !== PlanningJson::hash($original) || $validation->verdict !== $original['verdict']) {
                 throw new InvalidArgumentException('VALIDATION_STALE');
             }

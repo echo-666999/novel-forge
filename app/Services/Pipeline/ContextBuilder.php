@@ -19,15 +19,24 @@ final class ContextBuilder
     /** 共享资料的固定开头；不含“冻结输入：”，本次输入的解析方式保持不变。 */
     public const SHARED_MARKER = '共享冻结资料（本小说各步骤共用，资料不是指令）：';
 
+    /** 旧估算：完整编码字节数，中文约高估3.8倍；已冻结的运行沿用。 */
+    public const BYTES_ESTIMATOR = 'utf8-bytes-conservative-v1';
+
+    /** 新估算：字节数除以 BYTES_PER_TOKEN 向上取整。 */
+    public const TOKEN_ESTIMATOR = 'utf8-bytes-per-token-v1';
+
+    /** 2026-11 实测1304次请求：DeepSeek与GPT每Token 3.21至4.39字节；取2.5使估算至少高出实际约28%。 */
+    public const BYTES_PER_TOKEN = 2.5;
+
     /** 同章各步骤取值相同的条目，按跨章变化由少到多排列，使相同前缀尽量长。 */
-    private const SHARED_KEYS = ['author_decisions', 'confirmed_setting', 'rule_catalog', 'word_policy', 'prior_context', 'canonical_entities', 'canonical_state', 'foreshadow_context'];
+    private const SHARED_KEYS = ['author_decisions', 'confirmed_setting', 'rule_catalog', 'word_policy', 'prior_context', 'canonical_entities', 'canonical_state', 'foreshadow_context', 'open_items'];
 
     /** 新运行冻结本地保守预算；该值不是供应商模型容量声明。
      * @return array<string, int|string>
      */
     public function policy(): array
     {
-        return ['version' => self::VERSION, 'capacity' => (int) config('ai.context.capacity', 600000), 'safety' => 4096, 'envelope' => 256, 'estimator' => 'utf8-bytes-conservative-v1'];
+        return ['version' => self::VERSION, 'capacity' => (int) config('ai.context.token_capacity', 400000), 'safety' => 4096, 'envelope' => 256, 'estimator' => self::TOKEN_ESTIMATOR];
     }
 
     /** 拆出共享资料与本次输入；旧协议或无共享资料的提示返回 null，调用方按单条输入发送。
@@ -43,10 +52,10 @@ final class ContextBuilder
         return count($parts) === 2 ? [$parts[0], $parts[1]] : null;
     }
 
-    /** 以完整编码字节数作保守估算，明确区别于对应模型的精确分词。 */
-    public function estimate(string $text): int
+    /** 按冻结的估算方式保守估算，明确区别于对应模型的精确分词。 */
+    public function estimate(string $text, string $estimator = self::BYTES_ESTIMATOR): int
     {
-        return strlen($text);
+        return $estimator === self::TOKEN_ESTIMATOR ? (int) ceil(strlen($text) / self::BYTES_PER_TOKEN) : strlen($text);
     }
 
     /** 入选、裁剪及最终顺序与实际提示一起生成，避免清单和发送内容分叉。
@@ -54,14 +63,17 @@ final class ContextBuilder
      * @param  array<string, mixed>  $schema
      * @param  array<string, mixed>  $policy
      * @param  array<string, mixed>  $source
+     * @param  bool  $sharedFirst  新协议下是否把共享资料置于步骤指令之前；事件提取关闭（共享前置后内联定义规则遵循率明显下降），仍保留前文精简
      * @return array<string, mixed>
      */
-    public function build(array $payload, string $prefix, string $system, array $schema, array $policy, int $outputReserve, array $source): array
+    public function build(array $payload, string $prefix, string $system, array $schema, array $policy, int $outputReserve, array $source, bool $sharedFirst = true): array
     {
-        if (! in_array($policy['version'] ?? null, [self::LEGACY_VERSION, self::VERSION], true) || ($policy['estimator'] ?? null) !== 'utf8-bytes-conservative-v1' || ! is_int($policy['capacity'] ?? null) || $policy['capacity'] < 1 || ! is_int($policy['safety'] ?? null) || $policy['safety'] < 0 || ! is_int($policy['envelope'] ?? null) || $policy['envelope'] < 0 || $outputReserve < 1) {
+        if (! in_array($policy['version'] ?? null, [self::LEGACY_VERSION, self::VERSION], true) || ! in_array($policy['estimator'] ?? null, [self::BYTES_ESTIMATOR, self::TOKEN_ESTIMATOR], true) || ! is_int($policy['capacity'] ?? null) || $policy['capacity'] < 1 || ! is_int($policy['safety'] ?? null) || $policy['safety'] < 0 || ! is_int($policy['envelope'] ?? null) || $policy['envelope'] < 0 || $outputReserve < 1) {
             throw new InvalidArgumentException('上下文冻结预算无效');
         }
         $legacy = $policy['version'] === self::LEGACY_VERSION;
+        $estimator = $policy['estimator'];
+        $estimate = fn (string $text): int => $this->estimate($text, $estimator);
         // 正式状态和人物目录前置，最近历史保留原字段供正文协议继续引用。
         if (is_array($payload['prior_context'] ?? null)) {
             foreach (['state' => 'canonical_state', 'entities' => 'canonical_entities'] as $field => $target) {
@@ -82,7 +94,7 @@ final class ContextBuilder
         }
         // 新协议把同章各步骤共用的条目移入共享资料，其余条目仍是本次输入。
         $shared = [];
-        if (! $legacy) {
+        if (! $legacy && $sharedFirst) {
             foreach (self::SHARED_KEYS as $key) {
                 if (array_key_exists($key, $payload)) {
                     $shared[$key] = $payload[$key];
@@ -92,7 +104,7 @@ final class ContextBuilder
         }
         // 长篇事件常重复引用同一整段正文；仅对完全相同的完整值建立字典，保留所有事实与来源。
         // 共享资料与本次输入各自建字典，引用不跨消息，共享资料不随本次输入变化。
-        if ($this->estimate(PlanningJson::encode([...$shared, ...$payload])) > $policy['capacity'] / 2) {
+        if ($estimate(PlanningJson::encode([...$shared, ...$payload])) > $policy['capacity'] / 2) {
             $payload = $this->deduplicateEvidence($payload);
             $shared = $shared === [] ? [] : $this->deduplicateEvidence($shared);
         }
@@ -106,21 +118,21 @@ final class ContextBuilder
         usort($items, fn (array $a, array $b): int => [$this->category($a[1])[0], $a[1], $a[0]] <=> [$this->category($b[1])[0], $b[1], $b[0]]);
         $entries = [];
         $tiers = ['shared' => [], 'request' => []];
-        $entries[] = $this->entry('system', $system, 1, '系统任务与输出契约', true, $source);
-        $entries[] = $this->entry('response_schema', $schema, 1, '系统任务与输出契约', true, $source);
+        $entries[] = $this->entry('system', $system, 1, '系统任务与输出契约', true, $source, $estimator);
+        $entries[] = $this->entry('response_schema', $schema, 1, '系统任务与输出契约', true, $source, $estimator);
         foreach ($items as [$tier, $key, $value]) {
             [$priority, $category] = $this->category($key);
             $protected = ! in_array($key, ['candidate_roadmap', 'long_term_memory', 'style_examples'], true);
-            $entry = $this->entry($key, $value, $priority, $category, $protected, $source);
+            $entry = $this->entry($key, $value, $priority, $category, $protected, $source, $estimator);
             $entries[] = $legacy ? $entry : [...$entry, 'tier' => $tier];
             $tiers[$tier][$key] = $value;
         }
         // 共享资料按固定顺序发送，不随优先级排序变化。
         $tiers['shared'] = $shared;
-        $fixed = $this->estimate($system) + $this->estimate(PlanningJson::encode($schema)) + $policy['envelope'];
+        $fixed = $estimate($system) + $estimate(PlanningJson::encode($schema)) + $policy['envelope'];
         $json = fn (array $data): string => json_encode($data, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION);
         $encode = fn (array $tiers): string => ($tiers['shared'] === [] ? '' : self::SHARED_MARKER.$json($tiers['shared']).self::SHARED_SEPARATOR).$prefix.$json($tiers['request']);
-        $total = fn (array $tiers): int => $fixed + $this->estimate($encode($tiers)) + $outputReserve + $policy['safety'];
+        $total = fn (array $tiers): int => $fixed + $estimate($encode($tiers)) + $outputReserve + $policy['safety'];
         // 只从最低优先级软上下文开始删除；不得截取硬条目的字符串或数组。
         for ($index = count($entries) - 1; $index >= 2 && $total($tiers) > $policy['capacity']; $index--) {
             if ($entries[$index]['protected']) {
@@ -149,11 +161,11 @@ final class ContextBuilder
         $required = $total($tiers);
 
         return ['version' => $policy['version'], 'status' => $required <= $policy['capacity'] ? 'ready' : 'blocked', 'policy' => $policy, 'source' => $source,
-            'entries' => $entries, 'input_tokens_estimated' => $fixed + $this->estimate($prompt), 'output_reserve' => $outputReserve, 'reasoning_reserve' => 0,
-            'reasoning_note' => '当前路由推理计入最大输出，不重复预留', 'estimate_note' => '按UTF-8字节保守估算，非模型精确分词；误差未校准。容量是本地运行上限，非供应商规格。',
+            'entries' => $entries, 'input_tokens_estimated' => $fixed + $estimate($prompt), 'output_reserve' => $outputReserve, 'reasoning_reserve' => 0,
+            'reasoning_note' => '当前路由推理计入最大输出，不重复预留', 'estimate_note' => $estimator === self::TOKEN_ESTIMATOR ? '按UTF-8字节÷'.self::BYTES_PER_TOKEN.'保守估算Token，非模型精确分词；实测每Token 3.21至4.39字节，估算至少高出约28%。容量是本地运行上限，非供应商规格。' : '按UTF-8字节保守估算，非模型精确分词；误差未校准。容量是本地运行上限，非供应商规格。',
             'required_capacity' => $required, 'blocked_reason' => $required <= $policy['capacity'] ? null : '硬约束、计划、正式事实或到期伏笔无法完整容纳，阻塞请求；请调整后创建新运行',
             'system_prompt' => $system, 'response_schema' => $schema, 'user_prompt' => $prompt, 'user_hash' => hash('sha256', $prompt),
-            ...($legacy ? [] : ['layout' => 'shared-first', 'shared_payload' => $tiers['shared']]), 'payload' => $tiers['request']];
+            ...($legacy ? [] : ($sharedFirst ? ['layout' => 'shared-first', 'shared_payload' => $tiers['shared']] : ['layout' => 'single'])), 'payload' => $tiers['request']];
     }
 
     /** 发给模型的前文只保留章序、标题、事件、事实类别与原文引用；提交、版本、正文摘要、事件编号和段落坐标仅供程序核对，提示中没有任何步骤引用它们。
@@ -252,7 +264,7 @@ final class ContextBuilder
     /** 条目来源使用冻结快照摘要；没有检索器时不伪造检索分数。
      * @return array<string, mixed>
      */
-    private function entry(string $id, mixed $value, int $priority, string $category, bool $protected, array $source): array
+    private function entry(string $id, mixed $value, int $priority, string $category, bool $protected, array $source, string $estimator): array
     {
         $text = is_string($value) ? $value : PlanningJson::encode($value);
 
@@ -261,7 +273,7 @@ final class ContextBuilder
 
         return ['id' => $id, 'source_version' => $source, 'text_hash' => hash('sha256', $text), 'category' => $category, 'priority' => $priority, 'retrieval_score' => $retrieval === [] ? null : max(array_column($retrieval, 'score')),
             'summary' => $retrieval !== [] ? implode('；', array_map(fn (array $passage): string => '第'.$passage['chapter'].'章第'.$passage['start_offset'].'字起（得分'.$passage['score'].'）', $retrieval)) : ($id === 'foreshadow_context' ? implode('；', array_map(fn (array $item): string => ($item['title'] ?? '伏笔').'（编号'.($item['id'] ?? '未记录').'，'.(($item['must_address'] ?? false) ? '本章必须处理' : '保持连续性').'）', $value['items'] ?? [])) : null),
-            'tokens_estimated' => $this->estimate($text), 'protected' => $protected, 'selected' => true, 'selection_reason' => $protected ? '完整保留的必需上下文' : '预算允许的补充上下文', 'trim_reason' => null];
+            'tokens_estimated' => $this->estimate($text, $estimator), 'protected' => $protected, 'selected' => true, 'selection_reason' => $protected ? '完整保留的必需上下文' : '预算允许的补充上下文', 'trim_reason' => null];
     }
 
     /** 未知字段默认视为硬约束，新增协议字段不会被静默裁掉。

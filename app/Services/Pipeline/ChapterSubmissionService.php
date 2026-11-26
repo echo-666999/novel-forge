@@ -8,6 +8,7 @@ use App\Jobs\PrepareChapterSubmissionJob;
 use App\Models\Chapter;
 use App\Models\ChapterEventExtraction;
 use App\Models\ChapterGenerationRun;
+use App\Models\ChapterOpenItemExtraction;
 use App\Models\ChapterProgressionCheck;
 use App\Models\ChapterReview;
 use App\Models\ChapterSubmissionRun;
@@ -44,7 +45,7 @@ final class ChapterSubmissionService
             return null;
         }
         $step = match ($run->step) {
-            'review' => '独立评审', 'extract' => '事件提取', default => '提交准备',
+            'review' => '独立评审', 'extract' => '事件提取', 'ledger' => '待核台账', default => '提交准备',
         };
         $detail = $this->failureDetail($run);
 
@@ -63,7 +64,7 @@ final class ChapterSubmissionService
     /** 按失败步骤保存的成功响应重新执行同一本地校验，取出具体原因；找不到响应或校验未报出具体原因时返回 null。 */
     private function replayedDetail(ChapterSubmissionRun $run): ?string
     {
-        if (! in_array($run->step, ['review', 'extract'], true)) {
+        if (! in_array($run->step, ['review', 'extract', 'ledger'], true)) {
             return null;
         }
         $log = CostLog::where('novel_id', $run->novel_id)->where('route_version', 'like', 'submission-%-'.$run->step.'-%')->where('status', 'succeeded')
@@ -74,7 +75,11 @@ final class ChapterSubmissionService
         $body = ChapterVersion::findOrFail($run->version_id)->body;
         try {
             $data = ContentSchema::decode($log->response_text);
-            $run->step === 'review' ? SubmissionContract::review($data, $body) : app(SubmissionValidator::class)->normalize($data, $body, $run->snapshot['state']);
+            match ($run->step) {
+                'review' => SubmissionContract::review($data, $body),
+                'ledger' => app(SubmissionValidator::class)->normalizeOpenItems($data, $body),
+                default => app(SubmissionValidator::class)->normalize($data, $body, $run->snapshot['state']),
+            };
         } catch (SubmissionRejection $exception) {
             return $exception->detail;
         } catch (Throwable) {
@@ -155,12 +160,18 @@ final class ChapterSubmissionService
             if ($model === '' || strlen($model) > 128) {
                 throw new InvalidArgumentException('MODEL_INVALID');
             }
+            // 冻结了待核台账的正文：台账单独请求，准备多一步、多一次请求。
+            $ledger = array_key_exists('open_items', $snapshot['content_sources']);
+            $requestLimit = $ledger ? 3 : 2;
             $limit = $executionLimit ?? $novel->max_execution_count;
-            if ($limit < $novel->max_execution_count || $limit < $novel->execution_count + 2 || $limit > 2147483647) {
+            if ($limit < $novel->max_execution_count || $limit < $novel->execution_count + $requestLimit || $limit > 2147483647) {
                 throw new InvalidArgumentException('EXECUTION_LIMIT_CONFIRMATION_REQUIRED');
             }
-            $config = ['version' => SubmissionContract::VERSION, 'model' => $model, 'temperature' => 0, 'request_limit' => 2,
-                'operator_id' => $operator->id, 'reason' => $reason, 'protocol' => ['review' => hash('sha256', SubmissionContract::instructions('review')), 'extract' => hash('sha256', SubmissionContract::instructions('extract'))]];
+            $config = ['version' => SubmissionContract::VERSION, 'model' => $model, 'temperature' => 0, 'request_limit' => $requestLimit,
+                'operator_id' => $operator->id, 'reason' => $reason, 'protocol' => array_map(fn (string $step): string => hash('sha256', SubmissionContract::instructions($step)), array_combine(self::steps($ledger), self::steps($ledger)))];
+            if ($ledger) {
+                $config['open_item_step'] = true;
+            }
             // 评审推理强度来自模型配置并冻结在本次准备中，避免将文本提示直接复制成阻塞结论。
             $reasoning = ModelProfiles::profile($model)['review_reasoning'];
             if ($reasoning !== null) {
@@ -177,8 +188,8 @@ final class ChapterSubmissionService
             $run = ChapterSubmissionRun::create(['novel_id' => $novel->id, 'chapter_id' => $version->chapter_id, 'version_id' => $version->id, 'body_hash' => $version->body_hash,
                 'attempt' => ($predecessor?->attempt ?? 0) + 1, 'predecessor_id' => $retryOf,
                 'expected_state_version' => $expectedState, 'snapshot' => $snapshot, 'config' => $config, 'input_hash' => PlanningJson::hash([$snapshot, $config]),
-                'status' => 'pending', 'step' => 'review', 'invocation_id' => (string) Str::uuid7(), 'requests_used' => 0, 'request_limit' => 2,
-                'control_history' => [['action' => 'authorize_preparation', 'operator_id' => $operator->id, 'reason' => $reason, 'request_limit' => 2,
+                'status' => 'pending', 'step' => 'review', 'invocation_id' => (string) Str::uuid7(), 'requests_used' => 0, 'request_limit' => $requestLimit,
+                'control_history' => [['action' => 'authorize_preparation', 'operator_id' => $operator->id, 'reason' => $reason, 'request_limit' => $requestLimit,
                     'old_execution_limit' => $novel->max_execution_count, 'new_execution_limit' => $limit, 'at' => now()->toIso8601String()]]]);
             $novel->update(['max_execution_count' => $limit]);
 
@@ -272,11 +283,13 @@ final class ChapterSubmissionService
     /** 每次发送及提交前重验冻结来源，正文或实体改变即失效。 */
     public function assertCurrent(ChapterSubmissionRun $run): void
     {
-        if ($run->config['version'] !== SubmissionContract::VERSION || $run->request_limit !== 2 || $run->requests_used > 2
+        $ledger = self::hasLedgerStep($run);
+        $expected = $ledger ? 3 : 2;
+        if ($run->config['version'] !== SubmissionContract::VERSION || $run->request_limit !== $expected || $run->requests_used > $expected
             || PlanningJson::hash([$run->snapshot, $run->config]) !== $run->input_hash) {
             throw new InvalidArgumentException('SUBMISSION_CONTRACT_CHANGED');
         }
-        foreach (['review', 'extract'] as $step) {
+        foreach (self::steps($ledger) as $step) {
             if ($run->config['protocol'][$step] !== hash('sha256', SubmissionContract::instructions($step))) {
                 throw new InvalidArgumentException('SUBMISSION_CONTRACT_CHANGED');
             }
@@ -305,10 +318,10 @@ final class ChapterSubmissionService
                 if ($issues !== []) {
                     throw new InvalidArgumentException('STRUCTURE_BLOCKED:'.implode(',', $issues));
                 }
-                if ($run->requests_used >= 2 || $novel->execution_count >= $novel->max_execution_count) {
+                if ($run->requests_used >= $run->request_limit || $novel->execution_count >= $novel->max_execution_count) {
                     throw new InvalidArgumentException('REQUEST_BUDGET_EXHAUSTED');
                 }
-                if (CostLog::where('novel_id', $novel->id)->where('status', 'pending')->exists()
+                if (CostLog::where('novel_id', $novel->id)->storyRequests()->where('status', 'pending')->exists()
                     || ChapterSubmissionRun::where('novel_id', $novel->id)->where('status', 'running')->exists()) {
                     throw new InvalidArgumentException('REQUEST_ALREADY_ACTIVE');
                 }
@@ -338,6 +351,15 @@ final class ChapterSubmissionService
             if ($purpose === 'extract' && ($ids = self::longRangeForeshadowIds($run)) !== []) {
                 $context['foreshadow_ids'] = $ids;
             }
+            // 冻结了待核台账的运行：评审和提取都读取台账，提取的台账字段只能引用本章待核编号。
+            // 冻结了待核台账的运行：评审检查台账约束；台账字段由单独的台账请求输出（早期运行由提取一并输出），编号只能取本章待核目录。
+            if (array_key_exists('open_items', $run->snapshot['content_sources'])) {
+                $reportsLedger = self::hasLedgerStep($run) ? $purpose === 'ledger' : $purpose === 'extract';
+                $context['open_items'] = $purpose === 'review' || $reportsLedger;
+                if ($reportsLedger) {
+                    $context['open_item_ids'] = OpenItemLedger::pendingIds($run->snapshot['content_sources']['open_items']);
+                }
+            }
             if ($purpose === 'review' && isset($run->config['review_reasoning_effort'])) {
                 $context['deepseek_reasoning_effort'] = $run->config['review_reasoning_effort'];
             }
@@ -353,12 +375,15 @@ final class ChapterSubmissionService
                 'confirmed_setting' => $run->snapshot['content_sources']['confirmed_setting'], 'author_decisions' => $run->snapshot['content_sources']['decisions'],
                 'chapter_plan' => $run->snapshot['body_plan'], 'rule_catalog' => ContentQualityContract::rules($run->snapshot['content_sources']),
                 'entity_catalog' => $run->snapshot['entity_catalog'], 'prior_state' => $run->snapshot['state'], 'reading_hints' => ContentReadingAudit::inspect($version->body)];
-            if ($purpose === 'extract' && isset($run->config['repair_feedback'])) {
+            if (in_array($purpose, ['extract', 'ledger'], true) && isset($run->config['repair_feedback'])) {
                 $payload['rejected_extraction'] = $run->config['repair_feedback'];
             }
             // 评审与提取使用同一份章前伏笔输入，旧快照不补写新字段。
             if (array_key_exists('foreshadow_context', $run->snapshot['content_sources'])) {
                 $payload['foreshadow_context'] = $run->snapshot['content_sources']['foreshadow_context'];
+            }
+            if (array_key_exists('open_items', $run->snapshot['content_sources'])) {
+                $payload['open_items'] = $run->snapshot['content_sources']['open_items'];
             }
             $log = app(AiTextGenerationService::class)->generate('冻结提交输入：'.PlanningJson::encode($payload), 'real', $run->config['model'], $run->novel_id, null,
                 'submission-'.$purpose.'-'.SubmissionContract::VERSION, TextRequestOptions::submission($purpose, $context));
@@ -366,7 +391,11 @@ final class ChapterSubmissionService
                 throw new InvalidArgumentException('MODEL_MISMATCH');
             }
             $data = ContentSchema::decode($log->response_text);
-            $result = $purpose === 'review' ? SubmissionContract::review($data, $version->body) : app(SubmissionValidator::class)->normalize($data, $version->body, $run->snapshot['state']);
+            $result = match ($purpose) {
+                'review' => SubmissionContract::review($data, $version->body),
+                'ledger' => app(SubmissionValidator::class)->normalizeOpenItems($data, $version->body),
+                default => app(SubmissionValidator::class)->normalize($data, $version->body, $run->snapshot['state']),
+            };
         } catch (AiGenerationException $exception) {
             $log = $exception->costLogId === null ? null : CostLog::find($exception->costLogId);
             // 上下文超限发生在请求前、余额不足是供应商402，二者都单独标出，不混为通用供应商失败。
@@ -415,7 +444,18 @@ final class ChapterSubmissionService
 
                 return true;
             }
-            $extraction = ChapterEventExtraction::create([...$identity, 'verdict' => 'extracted']);
+            if ($purpose === 'extract') {
+                $extraction = ChapterEventExtraction::create([...$identity, 'verdict' => 'extracted']);
+                // 台账单独请求时先保存事件提取，台账完成后再统一验证。
+                if (self::hasLedgerStep($run)) {
+                    $run->update(['status' => 'pending', 'step' => 'ledger', 'invocation_id' => (string) Str::uuid7()]);
+
+                    return true;
+                }
+            } else {
+                ChapterOpenItemExtraction::create($identity);
+                $extraction = ChapterEventExtraction::where('submission_run_id', $run->id)->firstOrFail();
+            }
             $validation = $this->validateArtifacts($run, $extraction, []);
             $run->update(['status' => match ($validation->verdict) {
                 'pass' => 'ready', 'requires_approval' => 'awaiting_approval', default => 'failed'
@@ -527,20 +567,23 @@ final class ChapterSubmissionService
             'rules' => ['PATCH_SOURCE_INVALID' => '补丁entity_ref和value_ref必须出现在来源事件actor_ref或target_refs中。新地点必须在该事件target_refs中给完整定义，补丁重复使用相同定义。',
                 'LOCATION_EVENT_REQUIRED' => '位置补丁只能引用location_change事件；静态观察不能产生位置变化补丁。',
                 'PATCH_PRECONDITION_FAILED' => 'before_ref须与按事件顺序重放得到的原位置或原物主完全一致，未知才为空。',
-                'UNKNOWN_ENTITY' => '既有实体使用目录编号，新实体每次引用给完整内联定义，禁止new-N字符串。']];
+                'UNKNOWN_ENTITY' => '既有实体使用目录编号，新实体每次引用给完整内联定义，禁止new-N字符串。',
+                'OPEN_ITEM_UNKNOWN' => 'confirm与refute的item_id只能取open_items.pending中的编号；新出现的待核事项用open且item_id为空。',
+                'OPEN_ITEM_DUPLICATE' => '同一待核事项一章只能确认或推翻一次。']];
     }
 
     /** 同版本评审、提取和验证全部有摘要，不能只换编号借用其他章节产物。 */
     public function validateArtifacts(ChapterSubmissionRun $run, ChapterEventExtraction $extraction, array $approvedKeys): ChapterSubmissionValidation
     {
         $review = ChapterReview::where('submission_run_id', $run->id)->firstOrFail();
-        foreach ([$review, $extraction] as $artifact) {
+        $ledger = self::hasLedgerStep($run) ? ChapterOpenItemExtraction::where('submission_run_id', $run->id)->firstOrFail() : null;
+        foreach (array_filter([$review, $extraction, $ledger]) as $artifact) {
             if ($artifact->submission_run_id !== $run->id || $artifact->version_id !== $run->version_id || $artifact->body_hash !== $run->body_hash
                 || $artifact->result_hash !== PlanningJson::hash($artifact->result)) {
                 throw new InvalidArgumentException('ARTIFACT_STALE');
             }
         }
-        foreach ([[$review, 'review'], [$extraction, 'extract']] as [$artifact, $purpose]) {
+        foreach (array_filter([[$review, 'review'], [$extraction, 'extract'], $ledger === null ? null : [$ledger, 'ledger']]) as [$artifact, $purpose]) {
             $log = CostLog::find($artifact->cost_log_id);
             if ($log === null || $log->status !== 'succeeded' || $log->novel_id !== $run->novel_id
                 || ($log->request_parameters['submission_run_id'] ?? null) !== $run->id
@@ -549,7 +592,11 @@ final class ChapterSubmissionService
                 throw new InvalidArgumentException('ARTIFACT_REQUEST_INVALID');
             }
             $raw = ContentSchema::decode($log->response_text);
-            $normalized = $purpose === 'review' ? SubmissionContract::review($raw, $run->version->body) : app(SubmissionValidator::class)->normalize($raw, $run->version->body, $run->snapshot['state']);
+            $normalized = match ($purpose) {
+                'review' => SubmissionContract::review($raw, $run->version->body),
+                'ledger' => app(SubmissionValidator::class)->normalizeOpenItems($raw, $run->version->body),
+                default => app(SubmissionValidator::class)->normalize($raw, $run->version->body, $run->snapshot['state']),
+            };
             if (PlanningJson::hash($normalized) !== $artifact->result_hash) {
                 throw new InvalidArgumentException('ARTIFACT_RESPONSE_CHANGED');
             }
@@ -557,10 +604,20 @@ final class ChapterSubmissionService
         if ($review->verdict !== 'pass' || $review->result['verdict'] !== 'pass') {
             throw new InvalidArgumentException('REVIEW_NOT_PASSED');
         }
-        $result = app(SubmissionValidator::class)->validate($extraction->result, $run->snapshot['entity_catalog'], $run->snapshot['state'], $approvedKeys, self::longRangeForeshadowContext($run));
+        $result = app(SubmissionValidator::class)->validate(self::validationData($run, $extraction), $run->snapshot['entity_catalog'], $run->snapshot['state'], $approvedKeys, self::longRangeForeshadowContext($run), self::pendingOpenItemIds($run));
 
         return ChapterSubmissionValidation::create(['submission_run_id' => $run->id, 'review_id' => $review->id, 'extraction_id' => $extraction->id,
-            'verdict' => $result['verdict'], 'input_hash' => PlanningJson::hash([$run->input_hash, $review->result_hash, $extraction->result_hash, $approvedKeys]), 'result' => $result, 'created_at' => now()]);
+            'verdict' => $result['verdict'], 'input_hash' => self::validationInputHash($run, $review, $extraction, $approvedKeys), 'result' => $result, 'created_at' => now()]);
+    }
+
+    /** 验证摘要：冻结输入与各产物结果摘要；台账单独请求时包含台账结果，旧运行的摘要保持不变。
+     * @param  list<string>  $approvedKeys
+     */
+    public static function validationInputHash(ChapterSubmissionRun $run, ChapterReview $review, ChapterEventExtraction $extraction, array $approvedKeys): string
+    {
+        $hashed = [$run->input_hash, $review->result_hash, $extraction->result_hash, $approvedKeys];
+
+        return PlanningJson::hash(self::hasLedgerStep($run) ? [...$hashed, ChapterOpenItemExtraction::where('submission_run_id', $run->id)->firstOrFail()->result_hash] : $hashed);
     }
 
     /** 专用队列只执行一次请求，不启用自动重试。 */
@@ -595,6 +652,40 @@ final class ChapterSubmissionService
     public static function longRangeForeshadowIds(ChapterSubmissionRun $run): array
     {
         return array_values(array_map(fn (array $item): int => (int) $item['id'], array_filter($run->snapshot['content_sources']['foreshadow_context']['items'] ?? [], fn (array $item): bool => isset($item['payoff_to']))));
+    }
+
+    /** 准备运行是否带独立的台账步骤（冻结时决定）。 */
+    public static function hasLedgerStep(ChapterSubmissionRun $run): bool
+    {
+        return ($run->config['open_item_step'] ?? false) === true;
+    }
+
+    /** 准备运行依次执行的步骤。
+     * @return list<string>
+     */
+    private static function steps(bool $ledger): array
+    {
+        return $ledger ? ['review', 'extract', 'ledger'] : ['review', 'extract'];
+    }
+
+    /** 确定性验证的输入：事件提取结果，台账单独请求时并入台账结果。
+     * @return array<string, mixed>
+     */
+    public static function validationData(ChapterSubmissionRun $run, ChapterEventExtraction $extraction): array
+    {
+        if (! self::hasLedgerStep($run)) {
+            return $extraction->result;
+        }
+
+        return [...$extraction->result, 'open_items' => ChapterOpenItemExtraction::where('submission_run_id', $run->id)->firstOrFail()->result['open_items']];
+    }
+
+    /** 冻结了待核台账时返回本章待核编号供门禁使用；旧快照为 null，验证结果保持不变。
+     * @return list<string>|null
+     */
+    public static function pendingOpenItemIds(ChapterSubmissionRun $run): ?array
+    {
+        return array_key_exists('open_items', $run->snapshot['content_sources']) ? OpenItemLedger::pendingIds($run->snapshot['content_sources']['open_items']) : null;
     }
 
     /** 有长程伏笔时返回冻结上下文供确定性门禁使用，否则为空，旧验证结果保持不变。

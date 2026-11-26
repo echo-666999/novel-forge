@@ -231,6 +231,26 @@ final class ContentSchema
         }
     }
 
+    /** 场景结束状态：至少一名在场人物；每个物件写明名称与持有人或所在位置。
+     * @param  array<string, mixed>  $scene
+     */
+    private static function sceneState(array $scene): void
+    {
+        self::listing($scene['present']);
+        self::listing($scene['props']);
+        if ($scene['present'] === []) {
+            throw new InvalidArgumentException('细纲场景present至少列出一名在场人物');
+        }
+        foreach ($scene['present'] as $name) {
+            self::text($name);
+        }
+        foreach ($scene['props'] as $prop) {
+            self::keys($prop, ['item', 'holder']);
+            self::text($prop['item']);
+            self::text($prop['holder']);
+        }
+    }
+
     /** 细纲必须完整映射原推进点，不能新增或替换作者契约。
      * @param  list<string>  $pointIds
      */
@@ -261,9 +281,14 @@ final class ContentSchema
             if (is_array($scene) && array_key_exists('goal', $scene)) {
                 $fields = [...$fields, ...ContentExecutionContract::DRAMA_FIELDS];
             }
-            self::keys($scene, [...$fields, 'point_ids']);
+            // 冻结场景状态的运行另带结束时在场人物与物件持有。
+            $state = is_array($scene) && array_key_exists('present', $scene) ? ['present', 'props'] : [];
+            self::keys($scene, [...$fields, ...$state, 'point_ids']);
             foreach ($fields as $key) {
                 self::text($scene[$key]);
+            }
+            if ($state !== []) {
+                self::sceneState($scene);
             }
             self::listing($scene['point_ids']);
             foreach ($scene['point_ids'] as $id) {

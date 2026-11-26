@@ -77,7 +77,7 @@ class B04ContentTest extends TestCase
         }
         if (Schema::hasTable('chapter_submission_runs')) {
             DB::table('chapters')->update(['formal_version_id' => null, 'canonical_commit_id' => null, 'committed_at' => null]);
-            foreach (['story_outbox_events', 'story_state_projections', 'story_events', 'canonical_commits', 'chapter_submission_validations', 'chapter_event_extractions', 'chapter_reviews', 'chapter_submission_runs', 'story_entities'] as $table) {
+            foreach (['story_outbox_events', 'story_state_projections', 'story_events', 'canonical_commits', 'chapter_submission_validations', 'chapter_open_item_extractions', 'chapter_event_extractions', 'chapter_reviews', 'chapter_submission_runs', 'story_entities'] as $table) {
                 // 隔离夹具先删除后继再删除前驱，保持真实外键约束开启。
                 // 修订与重挂提交引用来源提交，同样按编号倒序删除。
                 if (in_array($table, ['chapter_submission_runs', 'canonical_commits'], true)) {
@@ -149,9 +149,9 @@ class B04ContentTest extends TestCase
     public static function fine(): array
     {
         return ['scenes' => [
-            ['time' => '清晨', 'place' => '灯塔', 'action' => '读取来信并记录可验证信息', 'change' => '取得待查线索', 'goal' => '林澈想弄清来信真伪', 'obstacle' => '守塔人劝她别多管闲事并提醒旧航线的事早就没人在意', 'emotional_beat' => '由迟疑转为决意', 'key_dialogue' => '守塔人问她图什么', 'point_ids' => ['chapter-1-point-1']],
-            ['time' => '午后', 'place' => '档案室', 'action' => '逐项比对航线记录', 'change' => '辨认篡改痕迹', 'goal' => '找到原始航线', 'obstacle' => '档案员拖延调阅', 'emotional_beat' => '怀疑落到熟人身上', 'key_dialogue' => '档案员否认有人动过档案', 'point_ids' => ['chapter-1-point-1']],
-            ['time' => '傍晚', 'place' => '港口', 'action' => '凭证据追查签名', 'change' => '明确后续调查地点', 'goal' => '追到签名的主人', 'obstacle' => '港口工头翻脸', 'emotional_beat' => '紧张升到顶点', 'key_dialogue' => '工头警告她别再查', 'point_ids' => []],
+            ['time' => '清晨', 'place' => '灯塔', 'action' => '读取来信并记录可验证信息', 'change' => '取得待查线索', 'goal' => '林澈想弄清来信真伪', 'obstacle' => '守塔人劝她别多管闲事并提醒旧航线的事早就没人在意', 'emotional_beat' => '由迟疑转为决意', 'key_dialogue' => '守塔人问她图什么', 'present' => ['林澈', '守塔人'], 'props' => [['item' => '来信', 'holder' => '林澈']], 'point_ids' => ['chapter-1-point-1']],
+            ['time' => '午后', 'place' => '档案室', 'action' => '逐项比对航线记录', 'change' => '辨认篡改痕迹', 'goal' => '找到原始航线', 'obstacle' => '档案员拖延调阅', 'emotional_beat' => '怀疑落到熟人身上', 'key_dialogue' => '档案员否认有人动过档案', 'present' => ['林澈', '档案员'], 'props' => [['item' => '来信', 'holder' => '林澈'], ['item' => '航线记录', 'holder' => '档案室借阅台']], 'point_ids' => ['chapter-1-point-1']],
+            ['time' => '傍晚', 'place' => '港口', 'action' => '凭证据追查签名', 'change' => '明确后续调查地点', 'goal' => '追到签名的主人', 'obstacle' => '港口工头翻脸', 'emotional_beat' => '紧张升到顶点', 'key_dialogue' => '工头警告她别再查', 'present' => ['林澈'], 'props' => [['item' => '来信', 'holder' => '林澈']], 'point_ids' => []],
         ], 'hook' => '签名指向下一处调查地点', 'adjustments' => ['把验证安排在本章完成后才转入新线索'], 'hook_transition' => ['completed_state' => '已确认航线篡改', 'trigger' => '发现签名指向仓库', 'next_question' => '仓库与旧案有关联吗', 'point_ids' => ['chapter-1-point-1']]];
     }
 

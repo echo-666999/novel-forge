@@ -36,7 +36,8 @@ class PrepareChapterSubmission extends Command
                 $this->option('max-execution-count') === null ? null : (int) $this->option('max-execution-count'), ! $this->option('sync'),
                 $this->option('retry-of') === null ? null : (int) $this->option('retry-of'));
             if ($this->option('sync')) {
-                for ($i = 0; $i < 2 && $run->refresh()->status === 'pending'; $i++) {
+                // 按运行冻结的请求上限依次执行评审、提取及（带台账时）待核台账。
+                for ($i = 0; $i < $run->request_limit && $run->refresh()->status === 'pending'; $i++) {
                     $service->execute($run->id, $run->invocation_id, false);
                 }
             }

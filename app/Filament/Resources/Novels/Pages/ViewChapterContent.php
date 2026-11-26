@@ -344,6 +344,9 @@ class ViewChapterContent extends Page implements HasTable
             'key_dialogue' => $scene['key_dialogue'] ?? null,
             'emotional_beat' => $scene['emotional_beat'] ?? null,
             'change' => $scene['change'],
+            // 冻结场景状态的细纲记录本场结束时的在场人物与物件持有。
+            'present' => isset($scene['present']) ? implode('、', $scene['present']) : null,
+            'props' => isset($scene['props']) ? (implode('；', array_map(fn (array $prop): string => $prop['item'].'：'.$prop['holder'], $scene['props'])) ?: '无') : null,
         ])->all();
     }
 
@@ -549,6 +552,8 @@ class ViewChapterContent extends Page implements HasTable
                             TextEntry::make('key_dialogue')->label('关键对白')->visible(fn (?string $state): bool => filled($state)),
                             TextEntry::make('emotional_beat')->label('情绪变化')->visible(fn (?string $state): bool => filled($state)),
                             TextEntry::make('change')->label('状态变化'),
+                            TextEntry::make('present')->label('结束时在场')->visible(fn (?string $state): bool => filled($state)),
+                            TextEntry::make('props')->label('物件去向')->visible(fn (?string $state): bool => filled($state)),
                         ]),
                         RepeatableEntry::make('plan_hook')->label('章末钩子安排')->state(fn (): array => $this->planHookRows())->placeholder('尚未生成细纲')->schema([
                             Flex::make([

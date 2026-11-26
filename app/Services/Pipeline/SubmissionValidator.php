@@ -22,6 +22,9 @@ final class SubmissionValidator
         // 伏笔流转独立于事件结构，先取出再按原流程处理；没有该字段的历史提取结果完全不变。
         $foreshadows = array_key_exists('foreshadows', $data) ? $data['foreshadows'] : null;
         unset($data['foreshadows']);
+        // 待核事项同样独立于事件结构；没有该字段的历史提取结果完全不变。
+        $openItems = array_key_exists('open_items', $data) ? $data['open_items'] : null;
+        unset($data['open_items']);
         // 新请求内联定义；历史提取仍按原结构复验，不重写旧响应。
         if (! array_key_exists('patch', $data)) {
             $data = (new EventChangeResolver)->expand($data, $priorState);
@@ -58,10 +61,16 @@ final class SubmissionValidator
             foreach (['key', 'actor_ref', 'summary'] as $field) {
                 ContentSchema::text($event[$field]);
             }
-            if (preg_match('/^event-[1-9][0-9]*$/D', $event['key']) !== 1 || ! is_int($event['narrative_order']) || $event['narrative_order'] < 1
-                || ! in_array($event['event_type'], SubmissionContract::EVENT_TYPES, true) || ! in_array($event['time_scope'], ['present', 'memory', 'prediction'], true)
-                || ! is_string($event['fact_category']) || FactCategory::tryFrom($event['fact_category']) === null) {
-                throw new InvalidArgumentException('EVENT_INVALID');
+            // 逐项写明哪个事件的哪个字段无效及允许值，重跑时模型据此修正，而不是只看到停止代码。
+            $problems = array_filter([
+                preg_match('/^event-[1-9][0-9]*$/D', (string) $event['key']) !== 1 ? 'key必须是event-N' : null,
+                ! is_int($event['narrative_order']) || $event['narrative_order'] < 1 ? 'narrative_order必须是正整数' : null,
+                ! in_array($event['event_type'], SubmissionContract::EVENT_TYPES, true) ? 'event_type「'.(is_scalar($event['event_type']) ? $event['event_type'] : '非字符串').'」无效，只能是'.implode('、', SubmissionContract::EVENT_TYPES) : null,
+                ! in_array($event['time_scope'], ['present', 'memory', 'prediction'], true) ? 'time_scope只能是present、memory、prediction' : null,
+                ! is_string($event['fact_category']) || FactCategory::tryFrom($event['fact_category']) === null ? 'fact_category只能是'.implode('、', array_column(FactCategory::cases(), 'value')) : null,
+            ]);
+            if ($problems !== []) {
+                throw new SubmissionRejection('EVENT_INVALID', (is_scalar($event['key']) ? $event['key'] : '某个事件').'：'.implode('；', $problems).'。推测、相信、传闻属于fact_category，不是event_type。');
             }
             ContentSchema::listing($event['target_refs']);
             if (count($event['target_refs']) > 10 || count(array_unique($event['target_refs'], SORT_REGULAR)) !== count($event['target_refs'])) {
@@ -99,8 +108,66 @@ final class SubmissionValidator
                 return [...$entry, 'evidence' => SubmissionContract::evidence($entry['evidence_ids'], $body)];
             }, $foreshadows);
         }
+        if ($openItems !== null) {
+            $data['open_items'] = $this->openItemEntries($openItems, $body);
+        }
 
         return $data;
+    }
+
+    /** 独立台账请求的结果：顶层只含 open_items。
+     * @return array{open_items: list<array<string, mixed>>}
+     */
+    public function normalizeOpenItems(array $data, string $body): array
+    {
+        ContentSchema::keys($data, ['open_items']);
+
+        return ['open_items' => $this->openItemEntries($data['open_items'], $body)];
+    }
+
+    /** 校验待核事项变化的结构并绑定原文证据。
+     * @return list<array<string, mixed>>
+     */
+    private function openItemEntries(mixed $openItems, string $body): array
+    {
+        ContentSchema::listing($openItems);
+        if (count($openItems) > OpenItemLedger::MAX_CHANGES) {
+            throw new InvalidArgumentException('OPEN_ITEM_INVALID');
+        }
+
+        return array_map(function ($entry) use ($body): array {
+            ContentSchema::keys($entry, ['action', 'item_id', 'claim', 'evidence_ids']);
+            ContentSchema::text($entry['claim']);
+            // open 不引用既有编号；confirm、refute 必须引用待核编号，编号是否在目录内由验证门禁判断。
+            if (! in_array($entry['action'], OpenItemLedger::ACTIONS, true) || ! is_string($entry['item_id']) || ($entry['action'] === 'open') !== ($entry['item_id'] === '')) {
+                throw new InvalidArgumentException('OPEN_ITEM_INVALID');
+            }
+
+            return [...$entry, 'evidence' => SubmissionContract::evidence($entry['evidence_ids'], $body)];
+        }, $openItems);
+    }
+
+    /** 待核事项门禁：确认或推翻只能引用本章冻结目录中的待核编号，同一事项一章只能结论一次。
+     * @param  list<string>  $pendingIds
+     * @return list<array{code: string, reference: string}>
+     */
+    public function openItemErrors(array $data, array $pendingIds): array
+    {
+        $errors = [];
+        $resolved = [];
+        foreach ($data['open_items'] ?? [] as $entry) {
+            if ($entry['action'] === 'open') {
+                continue;
+            }
+            if (! in_array($entry['item_id'], $pendingIds, true)) {
+                $errors[] = ['code' => 'OPEN_ITEM_UNKNOWN', 'reference' => $entry['item_id']];
+            } elseif (isset($resolved[$entry['item_id']])) {
+                $errors[] = ['code' => 'OPEN_ITEM_DUPLICATE', 'reference' => $entry['item_id']];
+            }
+            $resolved[$entry['item_id']] = true;
+        }
+
+        return $errors;
     }
 
     /** 长程伏笔的确定性门禁：动作必须符合当前状态与章节窗口；必回收伏笔在埋设章未埋设、在窗口末章未回收时阻塞提交。旧伏笔（无窗口）不受影响。
@@ -127,7 +194,8 @@ final class SubmissionValidator
             $declared[$entry['foreshadow_id']] = $entry['action'];
             $valid = match ($entry['action']) {
                 'plant' => $item['status'] === 'planned' && $chapter <= $item['plant_chapter'],
-                'reinforce' => in_array($item['status'], ['planted', 'reinforced'], true) && $chapter < $item['payoff_from'],
+                // 回收窗口内尚未回收时仍可强化，线索可以继续累积；窗口结束后不再接受强化。
+                'reinforce' => in_array($item['status'], ['planted', 'reinforced'], true) && $chapter <= $item['payoff_to'],
                 'payoff' => in_array($item['status'], ['planted', 'reinforced'], true) && $chapter >= $item['payoff_from'] && $chapter <= $item['payoff_to'],
                 default => false,
             };
@@ -152,9 +220,10 @@ final class SubmissionValidator
 
     /** 用冻结实体和前序状态重放最小补丁，未批准实体明确单列。
      * @param  list<string>  $approvedKeys  本次作者明确批准的提议编号
+     * @param  list<string>|null  $pendingOpenItemIds  本章冻结的待核编号；旧运行为 null，不做台账门禁
      * @return array{verdict: string, errors: list<array<string, mixed>>, approval_required: list<string>, state: array<string, mixed>}
      */
-    public function validate(array $data, array $catalog, array $state, array $approvedKeys = [], ?array $foreshadowContext = null): array
+    public function validate(array $data, array $catalog, array $state, array $approvedKeys = [], ?array $foreshadowContext = null, ?array $pendingOpenItemIds = null): array
     {
         $errors = [];
         $add = function (string $code, string $reference) use (&$errors): void {
@@ -296,6 +365,12 @@ final class SubmissionValidator
         // 只有冻结上下文中存在长程伏笔时才加入伏笔门禁，旧验证结果的摘要保持不变。
         if ($foreshadowContext !== null) {
             foreach ($this->foreshadowErrors($data, $foreshadowContext) as $error) {
+                $errors[] = $error;
+            }
+        }
+        // 只有冻结了待核台账的运行才加入台账门禁，旧验证结果的摘要保持不变。
+        if ($pendingOpenItemIds !== null) {
+            foreach ($this->openItemErrors($data, $pendingOpenItemIds) as $error) {
                 $errors[] = $error;
             }
         }

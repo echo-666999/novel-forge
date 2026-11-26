@@ -3,8 +3,11 @@
 namespace App\Models;
 
 use App\Models\Concerns\PreservesJsonFloats;
+use App\Services\Search\EmbeddingService;
 use Database\Factories\CostLogFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Attributes\Scope;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -17,6 +20,15 @@ class CostLog extends Model
     use HasFactory;
 
     use PreservesJsonFloats;
+
+    /** 会读写故事状态的请求：排除检索嵌入。嵌入只写检索索引，在途或结果未知时不能阻塞正文、提交与自动流程。
+     * @param  Builder<self>  $query
+     */
+    #[Scope]
+    protected function storyRequests(Builder $query): void
+    {
+        $query->where(fn (Builder $inner) => $inner->whereNull('route_version')->orWhere('route_version', '!=', EmbeddingService::PROFILE));
+    }
 
     /** 使用定点金额、结构化快照和不可变时间，避免浮点费用累加。
      * @return array<string, string>

@@ -88,7 +88,9 @@ final class AiTextGenerationService
                 if (count($parts) !== 2 || $novelId === null) {
                     throw new InvalidArgumentException('上下文组装缺少小说或冻结输入');
                 }
-                $document = app(ContextBuilder::class)->build(json_decode($parts[1], true, flags: JSON_THROW_ON_ERROR), $parts[0].$marker, $agent->instructions(), $schema, $context['context_policy'], $options->maxOutputTokens, $context['context_source']);
+                $document = app(ContextBuilder::class)->build(json_decode($parts[1], true, flags: JSON_THROW_ON_ERROR), $parts[0].$marker, $agent->instructions(), $schema, $context['context_policy'], $options->maxOutputTokens, $context['context_source'],
+                    // 事件提取保持“步骤指令在前”：共享资料前置后，新实体内联定义的违规由0/27升至4/6。
+                    sharedFirst: $options->submissionPurpose !== 'extract');
                 $manifest = ContextManifest::create(['novel_id' => $novelId, 'chapter_number' => $context['context_source']['chapter_number'], 'purpose' => $options->submissionPurpose ?? $options->chapterStep, 'status' => $document['status'], 'document' => $document, 'document_hash' => PlanningJson::hash($document), 'created_at' => now()]);
                 if ($document['status'] === 'blocked') {
                     throw new AiGenerationException('上下文容量不足，清单 #'.$manifest->id.' 已保留，尚未发送请求。', 'context_capacity');

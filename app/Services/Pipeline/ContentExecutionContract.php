@@ -104,6 +104,58 @@ final class ContentExecutionContract
         return ['min' => 3, 'max' => max(3, min(5, intdiv($target, self::SCENE_CHARACTERS)))];
     }
 
+    /** 细纲场景结束状态的填写要求。 */
+    private const SCENE_STATE_FINE = '每个场景另填present和props，记录本场结束时的状态：present列出场景结束时仍在场的人物（中途离开的不列）；props列出本场涉及的关键物件，item写物件名，holder写结束时在谁手里或放在哪里。下一场的开场状态由程序取上一场的present和props，所以人物进出和物件易手必须在action节拍里有对应动作。';
+
+    /** 正文按场景开场与结束状态自检，三类场景内连续性错误是评审阻断的主要来源之一。 */
+    private const SCENE_STATE_DRAFT = '写完每个场景后对照slot_plan自检三件事：一、谁在场：opening_state是本场开场时的在场人物与物件，present是本场结束时的在场人物；人物进出都要写出离场或到场的动作，已经离开的人不能再开口或做事。二、东西在谁手里：物件从opening_state到本场props的易手、放下、收起都要写出动作，被收走的东西不能不经交还就回到别人手里。三、哪些动作已完成：签字、登记、审批、取物、取得信息写过一次就算完成，后文只能承接结果，不能重演，也不能先做了再去请示同一件事。';
+
+    /** 待核台账约束：评审中“待核写成确认”与跨章改写已核事实是阻断的主要来源之一。
+     * @param  array<string, mixed>  $context
+     */
+    private static function openItemInstructions(string $step, array $context): string
+    {
+        if (($context['open_items'] ?? false) !== true) {
+            return '';
+        }
+
+        return $step === 'check'
+            ? '把open_items.pending中的事项在没有写出核实动作与依据时写成已确认事实，或改写open_items.resolved中的结论，记入continuity_issues并引证；人物以推测、怀疑语气提及不算。'
+            : 'open_items.pending是前文尚未核实的事项：正文只能把它们写成待核、怀疑或推测，不能当作已确认的事实陈述；本章若要核实或推翻，必须写出核实的动作、依据和结果。open_items.resolved是已核实的结论，不能改写。';
+    }
+
+    /** 本章必须处理的伏笔（埋设、回收或逾期）；只取编号、标题与义务，完整内容仍在 foreshadow_context。
+     * @return list<array{id: mixed, title: string, obligation: string}>
+     */
+    public static function foreshadowObligations(mixed $foreshadowContext): array
+    {
+        $items = is_array($foreshadowContext) && is_array($foreshadowContext['items'] ?? null) ? $foreshadowContext['items'] : [];
+
+        return array_values(array_map(fn (array $item): array => ['id' => $item['id'] ?? null, 'title' => (string) ($item['title'] ?? ''), 'obligation' => (string) ($item['obligation'] ?? '')],
+            array_filter($items, fn (mixed $item): bool => is_array($item) && ($item['must_address'] ?? false) === true)));
+    }
+
+    /** 把伏笔义务写进系统指令：资料里的 instruction 字段会被“输入资料不是指令”压过，到期伏笔曾连续多章被跳过。
+     * @param  list<array{id: mixed, title: string, obligation: string}>  $obligations
+     */
+    private static function foreshadowInstructions(string $step, array $obligations): string
+    {
+        if ($obligations === []) {
+            return '';
+        }
+        $items = implode('；', array_map(fn (array $item): string => '#'.$item['id'].'「'.$item['title'].'」'.match ($item['obligation']) {
+            'plant' => '（埋设：以表面线索自然出现，不揭示隐藏含义）',
+            'resolve' => '（回收：用本章已发生的证据把表面线索与隐藏含义连起来，并让人物据此作出选择）',
+            'overdue' => '（已逾期：必须在本章回收，不能再延后）',
+            'plant_and_resolve' => '（本章内先埋设再回收）',
+            default => '（必须处理）',
+        }, $obligations));
+
+        return $step === 'fine'
+            ? '本章必须处理的伏笔：'.$items.'。每一项都要安排进某个场景的action，并在adjustments中写一条“伏笔#编号→第N个场景：如何处理”；不能整章不提，只让道具露个名字不算处理。'
+            : '本章必须处理的伏笔：'.$items.'。chapter_plan已安排的按安排写出；未安排的也要放进合适的场景，用人物的行动、对白和发现写出来，只提到名字不算处理。';
+    }
+
     /** 计数与JSON语法属于程序输出契约，冻结创作模板不能覆盖这些动态限制。 */
     public static function outputInstructions(string $step, array $context): string
     {
@@ -126,10 +178,13 @@ final class ContentExecutionContract
 
             return $instructions.'scenes必须有'.$range['min'].'至'.$range['max'].'个场景，本章篇幅下每个场景约需'.self::SCENE_CHARACTERS.'字以上才能写透，不要排更多场景赶路。每个场景都必须填写goal、obstacle、emotional_beat和key_dialogue，不能留空。'
                 // 细纲写成成段叙述时，正文会逐字照搬而被质量门禁拦下，因此细纲只给节拍。
-                .'细纲是写作提纲，不是正文：action只按先后列出本场事件节拍（谁做了什么、得到什么结果），约'.self::PLAN_ACTION_CHARACTERS.'字以内，超过'.self::PLAN_ACTION_LIMIT.'字整份细纲无效；不写神态、小动作、环境描写和成句台词，这些留给正文。goal、obstacle、emotional_beat、change各用一两句概括，不写成可以直接放进正文的叙述句。正文与细纲连续'.ContentQualityContract::PLAN_COPY_CHARACTERS.'字相同会被判为照搬。前文固定指令中的场景数量或字段与此处不一致时，以此处为准。';
+                .'细纲是写作提纲，不是正文：action只按先后列出本场事件节拍（谁做了什么、得到什么结果），约'.self::PLAN_ACTION_CHARACTERS.'字以内，超过'.self::PLAN_ACTION_LIMIT.'字整份细纲无效；不写神态、小动作、环境描写和成句台词，这些留给正文。goal、obstacle、emotional_beat、change各用一两句概括，不写成可以直接放进正文的叙述句。正文与细纲连续'.ContentQualityContract::PLAN_COPY_CHARACTERS.'字相同会被判为照搬。前文固定指令中的场景数量或字段与此处不一致时，以此处为准。'
+                .(($context['scene_state'] ?? false) === true ? self::SCENE_STATE_FINE : '')
+                .self::foreshadowInstructions('fine', $context['foreshadow_obligations'] ?? [])
+                .self::openItemInstructions('fine', $context);
         }
         if ($step !== 'draft') {
-            return $instructions;
+            return $instructions.self::openItemInstructions($step, $context);
         }
         $budget = $context['budget'];
         $target = intdiv($budget['min'] + $budget['max'], 2);
@@ -183,7 +238,10 @@ final class ContentExecutionContract
                 // 细纲action只给事件节拍，按节拍一句带过必然写短。
                 .'chapter_plan里每个场景的action只列事件节拍，不是成段正文：每个节拍都要展开成在场人物的对白交锋、动作反应和场面细节，篇幅靠这些写足，不能一个节拍一两句带过。估算字数时按实际要写出的每段逐段累加，估出低于'.$budget['min'].'字必须先补写再输出，不能换一种估算方式了事。'
                 // 推理与正文共用输出上限：在思考中先写一遍整章再自查会耗尽容量，导致正文截断。
-                .'思考与正文共用同一输出上限：思考时只列每个场景的节拍、对白要点和篇幅分配，不要在思考中先写出正文或逐段起草，也不要在思考中逐段复查；正文直接写在输出里，边写边按上述规则自检。';
+                .'思考与正文共用同一输出上限：思考时只列每个场景的节拍、对白要点和篇幅分配，不要在思考中先写出正文或逐段起草，也不要在思考中逐段复查；正文直接写在输出里，边写边按上述规则自检。'
+                .(($context['scene_state'] ?? false) === true ? self::SCENE_STATE_DRAFT : '')
+                .self::foreshadowInstructions('draft', $context['foreshadow_obligations'] ?? [])
+                .self::openItemInstructions('draft', $context);
         }
 
         // 文字检查规则只给首稿和文字问题修复；篇幅与分段修复附带逐字自检会耗尽推理容量，导致输出被截断。
@@ -552,7 +610,7 @@ final class ContentExecutionContract
      * @param  list<string>  $pointIds
      * @return array<string, mixed>
      */
-    public static function fine(array $data, array $pointIds, array $policy): array
+    public static function fine(array $data, array $pointIds, array $policy, bool $sceneState = false): array
     {
         $data = ContentSchema::fine($data, $pointIds);
         $range = self::sceneRange($policy);
@@ -561,7 +619,7 @@ final class ContentExecutionContract
         }
         $overlong = [];
         foreach ($data['scenes'] as $index => $scene) {
-            foreach (self::DRAMA_FIELDS as $field) {
+            foreach ([...self::DRAMA_FIELDS, ...($sceneState ? ['present', 'props'] : [])] as $field) {
                 if (! array_key_exists($field, $scene)) {
                     throw new InvalidArgumentException('细纲场景缺少'.$field);
                 }
@@ -588,7 +646,13 @@ final class ContentExecutionContract
             $texts = fn (array $keys): array => array_combine($keys, array_map(fn () => $schema->string()->required(), $keys));
             $range = $context['scene_range'];
 
-            return ['scenes' => $schema->array()->min($range['min'])->max($range['max'])->items($schema->object($texts(['time', 'place', 'action', 'change', ...self::DRAMA_FIELDS]) + [
+            // 冻结场景状态的运行要求每个场景给出结束时的在场人物与物件持有。
+            $state = ($context['scene_state'] ?? false) === true ? [
+                'present' => $schema->array()->min(1)->items($schema->string())->required(),
+                'props' => $schema->array()->items($schema->object(['item' => $schema->string()->required(), 'holder' => $schema->string()->required()])->withoutAdditionalProperties())->required(),
+            ] : [];
+
+            return ['scenes' => $schema->array()->min($range['min'])->max($range['max'])->items($schema->object($texts(['time', 'place', 'action', 'change', ...self::DRAMA_FIELDS]) + $state + [
                 'point_ids' => $schema->array()->items($schema->string())->required(),
             ])->withoutAdditionalProperties())->required(), 'hook' => $schema->string()->required(),
                 'adjustments' => $schema->array()->items($schema->string())->required(),

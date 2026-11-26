@@ -234,6 +234,21 @@ final class ContentExecutionService
         }
         $context = ['chapter_number' => $run->chapter->number, 'accepted_branch_continuation' => $run->chapter->number > 1 && isset($run->snapshot['acceptance_branch']), 'anchors' => $version === null ? [] : ContentSchema::anchors($version->body), 'rules' => ContentQualityContract::rules($run->snapshot),
             'findings' => $this->findings($run, $version), 'budget' => $budget];
+        // 冻结了待核台账的运行在细纲、正文、修订与检查指令中说明台账约束。
+        if (array_key_exists('open_items', $run->snapshot)) {
+            $context['open_items'] = true;
+        }
+        // 新运行冻结场景状态：细纲为每个场景给出在场人物与物件持有，正文按上一场结束状态衔接并自检。
+        if (($run->config['scene_state'] ?? false) === true) {
+            $context['scene_state'] = true;
+        }
+        // 细纲与正文首稿把到期伏笔写进系统指令；单场景修复只改一个场景，不重复要求。
+        if (in_array($step, ['fine', 'draft'], true)) {
+            $obligations = ContentExecutionContract::foreshadowObligations($run->snapshot['foreshadow_context'] ?? null);
+            if ($obligations !== []) {
+                $context['foreshadow_obligations'] = $obligations;
+            }
+        }
         if (($step === 'draft' && isset($run->config['draft_max_output_tokens'])) || ($step === 'revise' && isset($run->config['revision_max_output_tokens'])) || ($step === 'check' && isset($run->config['check_max_output_tokens']))) {
             $context['deepseek_reasoning_effort'] = 'low';
             // 运行冻结了扩展输出容量，请求选项据此放行超过8192的上限。
@@ -281,6 +296,11 @@ final class ContentExecutionService
                 $payload['slot_plan'][$slot] = ['order' => $index + 1, 'role' => $index === $budget['count'] - 1 ? '本章推进完成后停在冻结钩子的当下悬念' : '推进新的冲突、信息及结果，不重演已经完成的动作'];
                 if ($fine) {
                     $payload['slot_plan'][$slot] += $run->plan_data['scenes'][$index];
+                    // 上一场结束时的在场人物与物件持有由程序接力给本场，作为开场状态。
+                    $previous = $index > 0 ? ($run->plan_data['scenes'][$index - 1] ?? null) : null;
+                    if (is_array($previous) && array_key_exists('present', $previous)) {
+                        $payload['slot_plan'][$slot]['opening_state'] = ['present' => $previous['present'], 'props' => $previous['props']];
+                    }
                 }
             }
             $payload['effective_chapter_contract'] = ['progression_points' => $run->snapshot['source_chapter']['progression_points'], 'hook' => $run->plan_data['hook'], 'hook_transition' => $run->plan_data['hook_transition'] ?? null];
@@ -311,6 +331,9 @@ final class ContentExecutionService
         }
         if (array_key_exists('foreshadow_context', $run->snapshot)) {
             $payload['foreshadow_context'] = $run->snapshot['foreshadow_context'];
+        }
+        if (array_key_exists('open_items', $run->snapshot)) {
+            $payload['open_items'] = $run->snapshot['open_items'];
         }
         // 跨章文风信号只给写作和修订作避免模板化的提示，检查步骤不据此判定问题。
         if (array_key_exists('style_signals', $run->snapshot) && in_array($step, ['draft', 'revise'], true)) {
@@ -793,7 +816,7 @@ final class ContentExecutionService
 
                 return null;
             }
-            if ($novel->stages()->where('status', 'running')->exists() || CostLog::where('novel_id', $novel->id)->where('status', 'pending')->exists()
+            if ($novel->stages()->where('status', 'running')->exists() || CostLog::where('novel_id', $novel->id)->storyRequests()->where('status', 'pending')->exists()
                 || ($run->next_step === 'revise' && ! $reuse && ! ($formatRetry ? $this->hasRepairQuota($run, $novel) : $this->canRevise($run)))) {
                 $this->stop($run, $novel, 'retry_limit');
 
@@ -866,7 +889,7 @@ final class ContentExecutionService
                 $response = $repairedDraft;
             }
             $data = match ($step) {
-                'fine' => ContentExecutionContract::fine($response, array_column($run->snapshot['source_chapter']['progression_points'], 'id'), $run->snapshot['novel']['chapter_length_policy']),
+                'fine' => ContentExecutionContract::fine($response, array_column($run->snapshot['source_chapter']['progression_points'], 'id'), $run->snapshot['novel']['chapter_length_policy'], ($run->config['scene_state'] ?? false) === true),
                 'draft' => $this->draftBody($run, $response, $request['context']['full_draft_budget'] ?? $request['context']['budget']),
                 'revise' => $this->revisionBody($response, $source, $request, $droppedRanges),
                 'check' => ContentContinuationContract::check($response, $source->body, array_column($run->snapshot['source_chapter']['progression_points'], 'id'), $request['context']['rules'], $request['context']['findings']),

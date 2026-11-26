@@ -47,6 +47,7 @@ use App\Services\Pipeline\FormalRevisionService;
 use App\Services\Pipeline\LegacyContentSources;
 use App\Services\Pipeline\NovelBudget;
 use App\Services\Pipeline\NovelProgressQuery;
+use App\Services\Pipeline\OpenItemLedger;
 use App\Services\Pipeline\OutlineGenerationService;
 use App\Services\Pipeline\OutlineRevisions;
 use App\Services\Pipeline\PlanningJson;
@@ -153,7 +154,24 @@ class C01SequenceTest extends TestCase
                     $this->assertCount(3, $payload['foreshadow_context']['items']);
                     $this->assertSame([true, true, true], array_column($payload['foreshadow_context']['items'], 'must_address'));
                 }
-                if ($log->request_parameters['purpose'] === 'review') {
+                if ($log->request_parameters['purpose'] === 'ledger') {
+                    // 待核台账：首章新开一项，第2章以证据确认；台账请求共享资料前置，带台账Schema与专用指令。
+                    $submitted = self::requestPayload($request, '冻结提交输入：');
+                    $audit = $log->request_parameters['prompt_audit'];
+                    $this->assertSame(['open_items'], array_keys($audit['response_schema']['properties']));
+                    $this->assertStringContainsString('顶层只含open_items', $audit['system_prompt']);
+                    $this->assertStringContainsString('"open_items"', ContextBuilder::splitShared(self::requestPrompt($request))[0]);
+                    $submission = ChapterSubmissionRun::findOrFail($log->request_parameters['submission_run_id']);
+                    $data = ['open_items' => match ($submission->chapter->number) {
+                        1 => [['action' => 'open', 'item_id' => '', 'claim' => '隔离待核：来信笔迹是否为师父所写', 'evidence_ids' => ['p1']]],
+                        2 => [['action' => 'confirm', 'item_id' => $submitted['open_items']['pending'][0]['id'], 'claim' => '隔离核实：笔迹确为师父所写', 'evidence_ids' => ['p1']]],
+                        default => [],
+                    }];
+                } elseif ($log->request_parameters['purpose'] === 'review') {
+                    // 冻结了台账的评审必须把“待核写成已确认”列为阻断规则。
+                    if (array_key_exists('open_items', self::requestPayload($request, '冻结提交输入：'))) {
+                        $this->assertStringContainsString('待核事项：open_items.pending', $log->request_parameters['prompt_audit']['system_prompt']);
+                    }
                     $submission = ChapterSubmissionRun::findOrFail($log->request_parameters['submission_run_id']);
                     $data = ['review' => ['verdict' => $this->rejectFifthReview && $submission->chapter->number === 5 ? 'needs_revision' : 'pass', 'summary' => '隔离评审通过', 'evidence_ids' => ['p1'], 'findings' => []]];
                 } else {
@@ -192,6 +210,9 @@ class C01SequenceTest extends TestCase
                             }
                         }
                     }
+                    // 台账单独请求：提取请求不再携带台账字段，并保持步骤指令在前。
+                    $this->assertArrayNotHasKey('open_items', $log->request_parameters['prompt_audit']['response_schema']['properties']);
+                    $this->assertNull(ContextBuilder::splitShared(self::requestPrompt($request)));
                 }
             } else {
                 $payload = self::requestPayload($request, '冻结输入：');
@@ -201,6 +222,27 @@ class C01SequenceTest extends TestCase
                 if ($this->assertForeshadows) {
                     $this->assertCount(3, $payload['foreshadow_context']['items']);
                     $this->assertSame([true, true, true], array_column($payload['foreshadow_context']['items'], 'must_address'));
+                    // 到期伏笔必须写进细纲与正文首稿的系统指令，不能只放在“不是指令”的资料里。
+                    $step = $log->request_parameters['step'];
+                    if (in_array($step, ['fine', 'draft'], true) && ! isset($payload['draft_repair_slot'])) {
+                        $system = self::requestSystem($request);
+                        foreach ($payload['foreshadow_context']['items'] as $item) {
+                            $this->assertStringContainsString('#'.$item['id'].'「'.$item['title'].'」', $system);
+                        }
+                        $this->assertStringContainsString($step === 'fine' ? '在adjustments中写一条“伏笔#编号→第N个场景' : 'chapter_plan已安排的按安排写出', $system);
+                    }
+                    if ($step === 'check') {
+                        $this->assertStringNotContainsString('本章必须处理的伏笔', self::requestSystem($request));
+                    }
+                }
+                // 新运行冻结场景状态：每个场景开场状态取上一场细纲的结束状态，首场没有。
+                if ($log->request_parameters['step'] === 'draft' && ! isset($payload['draft_repair_slot']) && ! isset($payload['draft_repair_slots'])) {
+                    $slots = array_values($payload['slot_plan']);
+                    $this->assertArrayNotHasKey('opening_state', $slots[0]);
+                    foreach (array_slice($slots, 1) as $index => $slot) {
+                        $this->assertSame(['present' => $slots[$index]['present'], 'props' => $slots[$index]['props']], $slot['opening_state']);
+                    }
+                    $this->assertStringContainsString('写完每个场景后对照slot_plan自检三件事', self::requestSystem($request));
                 }
                 if ($number > 1) {
                     $this->assertCount($number - 1, $payload['prior_context']['chapters']);
@@ -273,9 +315,21 @@ class C01SequenceTest extends TestCase
                 $this->assertSame('objective_confirmed', $context['chapters'][0]['events'][0]['fact_category']);
             }
         }
-        $this->assertSame(53, $service->requestCount($run));
+        // 台账沿正式提交链重放：第2章看到首章新开的待核项，第3章起它转为已核结论；各章冻结值与重放结果一致。
+        $novel = Novel::findOrFail($run->novel_id);
+        $snapshots = ChapterGenerationRun::orderBy('id')->get()->mapWithKeys(fn (ChapterGenerationRun $body): array => [$body->chapter->number => $body->snapshot['open_items']]);
+        $first = CanonicalCommit::where('chapter_number', 1)->sole();
+        $this->assertSame([], $snapshots[1]['pending']);
+        $this->assertSame([['id' => 'open-'.$first->id.'-1', 'claim' => '隔离待核：来信笔迹是否为师父所写', 'opened_chapter' => 1, 'status' => 'pending', 'quote' => $snapshots[2]['pending'][0]['quote']]], $snapshots[2]['pending']);
+        $this->assertNotNull($snapshots[2]['pending'][0]['quote']);
+        $this->assertSame([], $snapshots[3]['pending']);
+        $this->assertSame(['confirmed', '隔离核实：笔迹确为师父所写', 2], [$snapshots[3]['resolved'][0]['status'], $snapshots[3]['resolved'][0]['conclusion'], $snapshots[3]['resolved'][0]['resolved_chapter']]);
+        foreach ($snapshots as $number => $ledger) {
+            $this->assertSame(PlanningJson::hash($ledger), PlanningJson::hash(app(OpenItemLedger::class)->context($novel, $number)));
+        }
+        $this->assertSame(63, $service->requestCount($run));
         $service->advance($run->id);
-        $this->assertSame(53, $service->requestCount($run));
+        $this->assertSame(63, $service->requestCount($run));
         $this->assertSame(10, CanonicalCommit::count());
         // C02从真实提交服务产物回放第五章，不能包含后五章事件。
         $replay = app(StoryStateReplay::class)->atChapter(Novel::findOrFail($run->novel_id), 5);
@@ -924,7 +978,7 @@ class C01SequenceTest extends TestCase
         $this->assertSame($limit, Novel::findOrFail($run->novel_id)->max_execution_count);
         $this->assertSame(10, CanonicalCommit::count());
         $this->assertSame(1, ChapterSubmissionRun::where('status', 'failed')->count());
-        $this->assertSame(55, $service->requestCount($run));
+        $this->assertSame(66, $service->requestCount($run));
         $this->assertTrue(collect($run->history)->contains('action', 'automatic_recovery'));
     }
 
@@ -971,7 +1025,11 @@ class C01SequenceTest extends TestCase
         $this->assertSame('completed', $run->status, $run->error ?? '');
         $this->assertSame('unknown', CostLog::findOrFail($unknownId)->status);
         $this->assertSame(10, CanonicalCommit::count());
-        CostLog::factory()->create(['novel_id' => $run->novel_id, 'mode' => 'real', 'status' => 'unknown']);
+        // 续写新建的后继运行沿前序链继承已确认的旧请求，不再因同一请求阻塞。
+        $successor = ProductionRun::factory()->create(['novel_id' => $run->novel_id, 'author_id' => $author->id, 'predecessor_id' => $run->id]);
+        $this->assertSame([$unknownId], $successor->acknowledgedUnknownLogIds());
+        $newUnknown = CostLog::factory()->create(['novel_id' => $run->novel_id, 'mode' => 'real', 'status' => 'unknown']);
+        $this->assertNotContains($newUnknown->id, $successor->acknowledgedUnknownLogIds());
         $run->update(['status' => 'failed']);
         $this->expectException(\InvalidArgumentException::class);
         $service->retry($run->id, $author);

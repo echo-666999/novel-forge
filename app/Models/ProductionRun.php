@@ -94,14 +94,22 @@ class ProductionRun extends Model
     }
 
     /** 仅返回操作者已明确承担费用风险的历史请求，后续未知请求不能自动继承确认。
+     * 确认沿同书的前序运行链继承：续写新建的运行不会因前一运行已确认的旧请求再次阻塞。
+     *
      * @return list<int>
      */
     public function acknowledgedUnknownLogIds(): array
     {
-        return collect($this->history)->filter(fn (array $entry): bool => ($entry['action'] ?? null) === 'retry'
-            && ($entry['confirm_unknown'] ?? false) === true && ($entry['operator_id'] ?? null) === $this->author_id)
-            ->flatMap(fn (array $entry): array => $entry['confirmed_unknown_log_ids'] ?? [])
-            ->filter(fn ($id): bool => is_int($id) && $id > 0)->unique()->values()->all();
+        $ids = [];
+        $seen = [];
+        for ($run = $this; $run !== null && $run->novel_id === $this->novel_id && ! isset($seen[$run->id]); $run = $run->predecessor_id === null ? null : self::find($run->predecessor_id)) {
+            $seen[$run->id] = true;
+            array_push($ids, ...collect($run->history)->filter(fn (array $entry): bool => ($entry['action'] ?? null) === 'retry'
+                && ($entry['confirm_unknown'] ?? false) === true && ($entry['operator_id'] ?? null) === $run->author_id)
+                ->flatMap(fn (array $entry): array => $entry['confirmed_unknown_log_ids'] ?? [])->all());
+        }
+
+        return collect($ids)->filter(fn ($id): bool => is_int($id) && $id > 0)->unique()->values()->all();
     }
 
     /** 每章使用独立且可重放的提交键，首章保持旧键兼容；只允许授权范围内的章号。 */

@@ -161,6 +161,36 @@ class SubmissionValidatorTest extends TestCase
         }
     }
 
+    /** 事件字段无效时写明事件、字段与允许值，重跑反馈能据此修正。 */
+    public function test_invalid_event_reports_field_and_allowed_values(): void
+    {
+        $data = $this->extraction();
+        $data['events'][0]['event_type'] = 'inference';
+        try {
+            (new SubmissionValidator)->normalize($data, '林舟走进旧塔。');
+            $this->fail('无效事件类型必须拒绝');
+        } catch (SubmissionRejection $exception) {
+            $this->assertSame('EVENT_INVALID', $exception->getMessage());
+            $this->assertStringContainsString('event-1：event_type「inference」无效', $exception->detail);
+            $this->assertStringContainsString('不是event_type', $exception->detail);
+        }
+    }
+
+    /** 回收窗口内尚未回收时仍可强化；窗口结束后不能强化，回收也不能早于窗口。 */
+    public function test_reinforce_is_allowed_until_payoff_window_ends(): void
+    {
+        $validator = new SubmissionValidator;
+        $context = fn (int $chapter): array => ['chapter_number' => $chapter, 'items' => [['id' => 13, 'status' => 'planted', 'plant_chapter' => 17, 'payoff_from' => 30, 'payoff_to' => 40, 'must_payoff' => false]]];
+        $entry = fn (string $action): array => ['foreshadows' => [['foreshadow_id' => 13, 'action' => $action]]];
+
+        $this->assertSame([], $validator->foreshadowErrors($entry('reinforce'), $context(25)));
+        $this->assertSame([], $validator->foreshadowErrors($entry('reinforce'), $context(30)));
+        $this->assertSame([], $validator->foreshadowErrors($entry('reinforce'), $context(40)));
+        $this->assertSame([['code' => 'FORESHADOW_TRANSITION_INVALID', 'reference' => 'foreshadow-13']], $validator->foreshadowErrors($entry('reinforce'), $context(41)));
+        $this->assertSame([['code' => 'FORESHADOW_WINDOW_VIOLATION', 'reference' => 'foreshadow-13']], $validator->foreshadowErrors($entry('payoff'), $context(29)));
+        $this->assertSame([], $validator->foreshadowErrors($entry('payoff'), $context(30)));
+    }
+
     /** 同名对象的不同定义不能静默覆盖或合并。 */
     public function test_inline_conflicting_definitions_are_rejected(): void
     {

@@ -61,7 +61,7 @@ final readonly class TextRequestOptions
     /** 独立提交准备用途，不与B04步骤或额度混用。 */
     public static function submission(string $purpose, array $context): self
     {
-        if (! in_array($purpose, ['review', 'extract'], true) || ($context['anchors'] ?? []) === []) {
+        if (! in_array($purpose, ['review', 'extract', 'ledger'], true) || ($context['anchors'] ?? []) === []) {
             throw new InvalidArgumentException('提交准备用途或正文目录无效');
         }
         ksort($context['anchors'], SORT_STRING);

@@ -2,9 +2,10 @@
 
 /** 文本供应商固定注册；密钥与地址以后台“模型供应商”设置为准，此处环境变量仅作后备；嵌入检索继续使用原OpenAI路由。 */
 return [
-    // C04本地保守运行预算，不声明供应商模型窗口；新运行冻结后不随配置变化。
-    // 本地上下文上限按UTF-8字节保守估算；中文实测约3.8字节/Token，600000约合16万Token。只冻结进新运行。
-    'context'   => ['capacity' => 600000],
+    // C04本地保守运行预算，新运行冻结后不随配置变化。
+    // capacity 是旧估算（按UTF-8字节计）的上限，仅用于重建已冻结旧估算的运行。
+    // token_capacity 是新估算（字节÷2.5）的上限：DeepSeek flash/v4-pro 官方窗口为1M，取40%留出估算误差与未实测供应商的余量。
+    'context'   => ['capacity' => 600000, 'token_capacity' => (int) env('AI_CONTEXT_TOKEN_CAPACITY', 400000)],
     'default'   => 'openai',
     'providers' => [
         // DeepSeek使用官方SDK驱动，实际地址由适配器白名单校验。

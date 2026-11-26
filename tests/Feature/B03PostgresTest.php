@@ -168,6 +168,9 @@ class B03PostgresTest extends TestCase
         // 章纲修订同样引用大纲章节，先撤销空修订表，恢复时最后重建。
         $outlineRevisionMigration = require database_path('migrations/2026_11_11_000518_create_outline_chapter_revisions_table.php');
         // A-09 基线依赖正式提交与伏笔证据，最先撤销、最后重建。
+        // 待核台账表依附准备运行，最先撤销、最后重建。
+        $openItemMigration = require database_path('migrations/2026_11_26_161013_create_chapter_open_item_extractions_table.php');
+        $openItemMigration->down();
         $formalRevisionMigration = require database_path('migrations/2026_11_12_140653_create_formal_revisions_table.php');
         $formalRevisionMigration->down();
         $baselineMigration = require database_path('migrations/2026_11_12_133335_create_canonical_baselines_table.php');
@@ -200,6 +203,7 @@ class B03PostgresTest extends TestCase
         $outlineRevisionMigration->up();
         $baselineMigration->up();
         $formalRevisionMigration->up();
+        $openItemMigration->up();
         $this->assertSame($beforeNovel, Novel::findOrFail($stage->novel_id)->getRawOriginal());
         $this->assertSame($beforeStage, $stage->fresh()->getRawOriginal());
     }

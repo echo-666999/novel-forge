@@ -15,7 +15,6 @@ use App\Services\Ai\AiGenerationException;
 use App\Services\Ai\AiTextGenerationService;
 use App\Services\Ai\ModelProfiles;
 use App\Services\Ai\TextRequestOptions;
-use App\Services\Search\EmbeddingService;
 use App\Settings\GeneralSettings;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
@@ -161,7 +160,7 @@ final class ProductionRunService
     private function recoverKnownFailure(ProductionRun $run): ProductionRun
     {
         if ($run->status !== 'failed' || ($run->policy['automatic_recovery'] ?? null) !== 'distinct_failure_once'
-            || CostLog::where('novel_id', $run->novel_id)->where(fn ($query) => $query->where('status', 'pending')->orWhere(fn ($unknown) => $unknown->where('status', 'unknown')->whereNotIn('id', $run->acknowledgedUnknownLogIds())))->exists()) {
+            || CostLog::where('novel_id', $run->novel_id)->storyRequests()->where(fn ($query) => $query->where('status', 'pending')->orWhere(fn ($unknown) => $unknown->where('status', 'unknown')->whereNotIn('id', $run->acknowledgedUnknownLogIds())))->exists()) {
             return $run;
         }
         // 首章历史恢复指纹保持原值；多章授权按章区分失败，防止旧授权重复领用。
@@ -277,9 +276,8 @@ final class ProductionRunService
                 $this->stepper->interrupt($run, $novel);
             }
             // 只结算本次领取期间发出的文本请求；同书检索嵌入等其他在途请求不受影响。
-            CostLog::where('novel_id', $novel->id)->where('status', 'pending')
+            CostLog::where('novel_id', $novel->id)->storyRequests()->where('status', 'pending')
                 ->where('started_at', '>=', $run->lease_expires_at->subMinutes(self::LEASE_MINUTES))
-                ->where(fn ($query) => $query->whereNull('route_version')->orWhere('route_version', '!=', EmbeddingService::PROFILE))
                 ->update(['status' => 'unknown', 'error_category' => 'automation_interrupted', 'error_message' => '自动流程中断，结果未知，未自动重发', 'finished_at' => now()]);
             $run->update(['status' => 'failed', 'error' => 'INTERRUPTED_RECONCILED', 'lease_token' => null, 'lease_expires_at' => null,
                 'history' => [...$run->history, ['action' => 'reconcile', 'operator_id' => $author?->id, 'operator' => $author === null ? 'watchdog' : 'author', 'at' => now()->toIso8601String()]]]);
@@ -313,7 +311,7 @@ final class ProductionRunService
         if ($run->status !== 'recovering') {
             throw new InvalidArgumentException('只能恢复已停止的自动流程');
         }
-        if (! $confirmUnknown && CostLog::where('novel_id', $run->novel_id)->where(fn ($query) => $query->where('status', 'pending')->orWhere(fn ($unknown) => $unknown->where('status', 'unknown')->whereNotIn('id', $run->acknowledgedUnknownLogIds())))->exists()) {
+        if (! $confirmUnknown && CostLog::where('novel_id', $run->novel_id)->storyRequests()->where(fn ($query) => $query->where('status', 'pending')->orWhere(fn ($unknown) => $unknown->where('status', 'unknown')->whereNotIn('id', $run->acknowledgedUnknownLogIds())))->exists()) {
             throw new InvalidArgumentException('存在未知响应，必须明确确认保留费用风险后再恢复');
         }
         $novel = Novel::findOrFail($run->novel_id);

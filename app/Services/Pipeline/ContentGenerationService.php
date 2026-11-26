@@ -102,6 +102,8 @@ final class ContentGenerationService
             }
             $snapshot['context_policy'] = app(ContextBuilder::class)->policy();
             $snapshot['foreshadow_context'] = app(ForeshadowLedger::class)->context($novel, $chapterNumber);
+            // 待核台账只在新运行冻结：前文尚未核实与已核实的事项随各步骤共享。
+            $snapshot['open_items'] = app(OpenItemLedger::class)->context($novel, $chapterNumber);
             // 跨章文风信号只在新运行冻结，来自已提交近章；历史运行不补写。
             $styleSignals = app(StyleSignals::class)->context($novel, $chapterNumber);
             if ($styleSignals !== null) {
@@ -442,7 +444,8 @@ final class ContentGenerationService
         }
         $novel = $run->chapter->novel;
 
-        return $this->startSubmission($run, $author, $reason, max($novel->max_execution_count, $novel->execution_count + 2));
+        // 提交准备最多三次请求（评审、事件提取、待核台账）。
+        return $this->startSubmission($run, $author, $reason, max($novel->max_execution_count, $novel->execution_count + 3));
     }
 
     /** 记录作者已通读的全文核对，再按同一授权发起一键提交。 */
@@ -611,7 +614,7 @@ final class ContentGenerationService
             throw new InvalidArgumentException('模型或修订设置无效');
         }
         $config = ['version' => ContentExecutionContract::VERSION, 'model' => trim($model), 'temperature' => $temperature,
-            'enable_fine_outline' => $fine, 'max_output_tokens' => $tokens, 'max_retries' => min(1, $retries), 'author_id' => $authorId,
+            'enable_fine_outline' => $fine, 'scene_state' => true, 'max_output_tokens' => $tokens, 'max_retries' => min(1, $retries), 'author_id' => $authorId,
             'authorization' => ['scope' => 'bounded_content', 'reason' => $reason, 'at' => now()->toIso8601String()],
             'protocol' => array_combine(['fine', 'draft', 'revise', 'check'], array_map(fn (string $step): string => hash('sha256', ContentExecutionContract::instructions($step)), ['fine', 'draft', 'revise', 'check']))];
 
@@ -636,8 +639,8 @@ final class ContentGenerationService
         // 已显式确认的旧未知费用仍保留，只解除这些请求对后续章节的重复阻塞。
         $acknowledged = ProductionRun::latestFor($novel->id)?->acknowledgedUnknownLogIds() ?? [];
         if ($novel->stages()->where('status', 'running')->exists() || ChapterGenerationRun::whereHas('chapter', fn ($q) => $q->where('novel_id', $novel->id))->whereIn('status', ['pending', 'running'])->exists()
-            || CostLog::where('novel_id', $novel->id)->where('status', 'pending')->exists()
-            || (! $confirmUnknown && CostLog::where('novel_id', $novel->id)->where('status', 'unknown')->whereNotIn('id', $acknowledged)->exists())) {
+            || CostLog::where('novel_id', $novel->id)->storyRequests()->where('status', 'pending')->exists()
+            || (! $confirmUnknown && CostLog::where('novel_id', $novel->id)->storyRequests()->where('status', 'unknown')->whereNotIn('id', $acknowledged)->exists())) {
             throw new InvalidArgumentException('存在活动步骤或尚未确认的未知调用');
         }
     }

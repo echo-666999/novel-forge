@@ -149,7 +149,7 @@ class CanonicalCommitPostgresTest extends TestCase
         $this->assertSame(1, $peer->table('story_state_projections')->count());
         $this->assertSame(1, $peer->table('story_outbox_events')->count());
         $this->assertSame($commit->id, ChapterSubmissionTest::commit($run, $operator, key: $commit->idempotency_key)->id);
-        Http::assertSentCount(5);
+        Http::assertSentCount(6);
     }
 
     /** PostgreSQL也验证事务末端故障回滚，不能只依据SQLite结论。 */
@@ -189,6 +189,9 @@ class CanonicalCommitPostgresTest extends TestCase
         // C09 实体版本依赖正式实体，专库回滚按子表优先执行，禁止级联删除。
         $entityDefinitionsMigration = require database_path('migrations/2026_11_07_133118_create_entity_definition_versions_table.php');
         // A-09 基线依赖正式提交与伏笔证据，最先撤销、最后重建。
+        // 待核台账表依附准备运行，最先撤销、最后重建。
+        $openItemMigration = require database_path('migrations/2026_11_26_161013_create_chapter_open_item_extractions_table.php');
+        $openItemMigration->down();
         $formalRevisionMigration = require database_path('migrations/2026_11_12_140653_create_formal_revisions_table.php');
         $formalRevisionMigration->down();
         $baselineMigration = require database_path('migrations/2026_11_12_133335_create_canonical_baselines_table.php');
@@ -207,6 +210,7 @@ class CanonicalCommitPostgresTest extends TestCase
         $entityDefinitionsMigration->up();
         $baselineMigration->up();
         $formalRevisionMigration->up();
+        $openItemMigration->up();
         $this->assertSame($beforeNovel, Novel::findOrFail($stage->novel_id)->getRawOriginal());
         $this->assertSame($beforeStage, $stage->fresh()->getRawOriginal());
         ChapterSubmissionRun::factory()->create();

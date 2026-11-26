@@ -147,6 +147,21 @@ class C04ContextTest extends TestCase
         $this->assertSame('shared', collect($review['entries'])->firstWhere('id', 'prior_context')['tier']);
     }
 
+    /** 关闭共享前置时（事件提取）仍是单条输入，但保留新协议的前文精简。 */
+    public function test_shared_first_can_be_disabled_while_keeping_slim_prior_context(): void
+    {
+        $builder = app(ContextBuilder::class);
+        $prior = ['chapters' => [['number' => 1, 'commit_id' => 7, 'events' => [['event_id' => 31, 'summary' => '发现锉痕', 'evidence' => [['paragraph' => 1, 'start' => 0, 'end' => 3]]]]]]];
+        $document = $builder->build(['prior_context' => $prior, 'confirmed_setting' => ['禁忌' => '不可复活'], 'body_hash' => 'h1'], '冻结提交输入：', '提取指令', [], $builder->policy(), 100, [], sharedFirst: false);
+
+        $this->assertSame('single', $document['layout']);
+        $this->assertArrayNotHasKey('shared_payload', $document);
+        $this->assertNull(ContextBuilder::splitShared($document['user_prompt']));
+        $this->assertSame(['body_hash', 'confirmed_setting', 'prior_context'], array_keys($document['payload']));
+        $this->assertSame([['number' => 1, 'events' => [['summary' => '发现锉痕']]]], $document['payload']['prior_context']['chapters']);
+        $this->assertNull(SharedContextLayout::responsesInput([['role' => 'system', 'content' => '提取指令'], ['role' => 'user', 'content' => [['type' => 'input_text', 'text' => $document['user_prompt']]]]]));
+    }
+
     /** 已冻结旧协议的运行保持原排列与原前文字段，单条用户输入不含共享资料。 */
     public function test_legacy_policy_keeps_original_layout(): void
     {
@@ -172,13 +187,39 @@ class C04ContextTest extends TestCase
         $this->assertSame([['type' => 'text', 'text' => ContextBuilder::SHARED_MARKER.'{"a":1}'], ['type' => 'text', 'text' => '冻结输入：{"b":2}']], $messages[0]['content']);
     }
 
+    /** 新运行按字节÷2.5估算Token并使用Token容量；已冻结字节估算的运行仍按字节计，结果不变。 */
+    public function test_token_estimator_for_new_runs_and_byte_estimator_for_frozen_runs(): void
+    {
+        $builder = app(ContextBuilder::class);
+        $policy = $builder->policy();
+        $this->assertSame(ContextBuilder::TOKEN_ESTIMATOR, $policy['estimator']);
+        $this->assertSame(400000, $policy['capacity']);
+        $this->assertSame(3, $builder->estimate('中文', ContextBuilder::TOKEN_ESTIMATOR));
+        $this->assertSame(6, $builder->estimate('中文'));
+
+        $payload = ['confirmed_setting' => ['禁忌' => str_repeat('不可复活', 1000)], 'body_hash' => 'h1'];
+        $tokens = $builder->build($payload, '冻结输入：', '系统', [], $policy, 100, []);
+        $bytes = $builder->build($payload, '冻结输入：', '系统', [], [...$policy, 'estimator' => ContextBuilder::BYTES_ESTIMATOR, 'capacity' => 600000], 100, []);
+        $this->assertSame($tokens['user_prompt'], $bytes['user_prompt']);
+        $this->assertSame(strlen('系统') + strlen('[]') + 256 + strlen($bytes['user_prompt']), $bytes['input_tokens_estimated']);
+        $this->assertSame((int) ceil(strlen('系统') / 2.5) + (int) ceil(strlen('[]') / 2.5) + 256 + (int) ceil(strlen($tokens['user_prompt']) / 2.5), $tokens['input_tokens_estimated']);
+        $this->assertSame((int) ceil(strlen(json_encode($payload['confirmed_setting'], JSON_UNESCAPED_UNICODE)) / 2.5), collect($tokens['entries'])->firstWhere('id', 'confirmed_setting')['tokens_estimated']);
+
+        // 百章长篇实测最大清单约50万字节：旧估算逼近60万字节上限，新估算约20万Token，远低于40万上限。
+        $long = ['prior_context' => ['chapters' => [['number' => 1, 'events' => [['summary' => str_repeat('长', 167000)]]]]]];
+        $this->assertSame('ready', $builder->build($long, '冻结输入：', '系统', [], $policy, 8192, [])['status']);
+        $this->assertSame('blocked', $builder->build($long, '冻结输入：', '系统', [], [...$policy, 'estimator' => ContextBuilder::BYTES_ESTIMATOR, 'capacity' => 500000], 8192, [])['status']);
+        $this->expectException(\InvalidArgumentException::class);
+        $builder->build($payload, '', '', [], [...$policy, 'estimator' => 'unknown'], 100, []);
+    }
+
     /** 真正执行正文入口，预算在启动时冻结；阻塞持久化且没有HTTP或成本流水。 */
     public function test_pipeline_blocks_before_provider_and_persists_manifest(): void
     {
-        config(['ai.context.capacity' => 100]);
+        config(['ai.context.token_capacity' => 100]);
         $novel = B04ContentTest::readyNovel(false, 20);
         $run = app(ContentGenerationService::class)->start($novel, auth()->user());
-        config(['ai.context.capacity' => 999999]);
+        config(['ai.context.token_capacity' => 999999]);
         app(ContentExecutionService::class)->runStep($run->id, $run->invocation_id, app(AiTextGenerationService::class));
         $this->assertSame('context_capacity', $run->fresh()->stop_reason);
         $manifest = ContextManifest::sole();

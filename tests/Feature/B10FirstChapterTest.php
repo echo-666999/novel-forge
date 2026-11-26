@@ -89,6 +89,8 @@ class B10FirstChapterTest extends TestCase
             } elseif (isset($log->request_parameters['purpose'])) {
                 if ($log->request_parameters['purpose'] === 'review') {
                     $data = ['review' => ['verdict' => $this->rejectReview ? 'needs_revision' : 'pass', 'summary' => '隔离评审通过', 'evidence_ids' => ['p1'], 'findings' => []]];
+                } elseif ($log->request_parameters['purpose'] === 'ledger') {
+                    $data = ['open_items' => []];
                 } else {
                     $submission = ChapterSubmissionRun::findOrFail($log->request_parameters['submission_run_id']);
                     $data = ['events' => [['key' => 'event-1', 'event_type' => 'observation', 'narrative_order' => 1,
@@ -147,7 +149,7 @@ class B10FirstChapterTest extends TestCase
         }
         $this->assertSame('completed', $run->status, $run->error ?? '');
         $this->assertSame(1, Novel::findOrFail($run->novel_id)->chapters_done);
-        $this->assertSame(8, $service->requestCount($run));
+        $this->assertSame(9, $service->requestCount($run));
         $commit = CanonicalCommit::findOrFail($run->artifacts['commit_id']);
         $this->assertFalse($commit->approvals['author_story_approval']);
         $this->assertSame('delegated_policy', $commit->approvals['approval_mode']);
@@ -155,7 +157,7 @@ class B10FirstChapterTest extends TestCase
         $body = ChapterGenerationRun::findOrFail($run->artifacts['body_run_id']);
         $this->assertSame('delegated_policy', collect($body->control_history)->last()['acceptance_mode']);
         $service->advance($run->id);
-        $this->assertSame(8, $service->requestCount($run));
+        $this->assertSame(9, $service->requestCount($run));
         $this->assertSame(1, CanonicalCommit::count());
         Queue::assertNothingPushed();
     }
@@ -199,7 +201,7 @@ class B10FirstChapterTest extends TestCase
             $run = $service->advance($run->id);
         }
         $this->assertSame('completed', $run->status, $run->error ?? '');
-        $this->assertSame(10, $service->requestCount($run));
+        $this->assertSame(12, $service->requestCount($run));
         $this->assertSame(1, ChapterSubmissionRun::where('status', 'failed')->count());
         $this->assertSame(1, ChapterSubmissionRun::where('status', 'committed')->count());
         $this->assertTrue(collect($run->history)->contains('action', 'automatic_recovery'));

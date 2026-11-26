@@ -75,7 +75,7 @@ class ViewContextManifests extends Page implements HasTable
         return $table->query(ContextManifest::where('novel_id', $this->getRecord()->id))->defaultSort('id', 'desc')->columns([
             TextColumn::make('id')->label('清单编号')->prefix('#')->color('gray'), TextColumn::make('chapter_number')->label('章号'),
             TextColumn::make('purpose')->label('用途')->formatStateUsing(fn (string $state): string => match ($state) {
-                'preview' => '验收预览（未发送）', 'fine' => '细纲', 'draft' => '正文', 'revise' => '修订', 'check' => '检查', 'review' => '评审', 'extract' => '提取', default => $state
+                'preview' => '验收预览（未发送）', 'fine' => '细纲', 'draft' => '正文', 'revise' => '修订', 'check' => '检查', 'review' => '评审', 'extract' => '提取', 'ledger' => '待核台账', default => $state
             }),
             TextColumn::make('status')->label('组装状态')->formatStateUsing(fn (string $state): string => $state === 'ready' ? '就绪（不代表已发送）' : '容量阻塞'),
             TextColumn::make('document.required_capacity')->label('总预算需求（估算）'), TextColumn::make('created_at')->label('组装时间')->since()->dateTimeTooltip('Y-m-d H:i:s')->color('gray'),

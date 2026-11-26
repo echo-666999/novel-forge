@@ -97,6 +97,9 @@ class ChapterSubmissionTest extends TestCase
             $ref = array_key_first($run->snapshot['entity_catalog']);
             if ($purpose === 'review') {
                 $data = ['review' => ['verdict' => $mode === 'review_reject' ? 'needs_revision' : 'pass', 'summary' => '隔离基本评审结论', 'evidence_ids' => ['p1'], 'findings' => []]];
+            } elseif ($purpose === 'ledger') {
+                // 台账结论引用目录外编号：本地门禁阻塞提交。
+                $data = ['open_items' => $mode === 'ledger_unknown' ? [['action' => 'confirm', 'item_id' => 'open-999-1', 'claim' => '隔离核实', 'evidence_ids' => ['p1']]] : []];
             } else {
                 $data = self::extraction($ref);
                 if ($mode === 'proposal') {
@@ -170,7 +173,7 @@ class ChapterSubmissionTest extends TestCase
             'target_refs' => [], 'time_scope' => 'present', 'fact_category' => 'objective_confirmed', 'summary' => '隔离观察事件', 'evidence_ids' => ['p1']]], 'patch' => []];
     }
 
-    /** 两个用途通过同一准备运行，不使用手工拼接的已通过产物。
+    /** 评审、事件提取与待核台账通过同一准备运行，不使用手工拼接的已通过产物。
      * @return array{ChapterSubmissionRun, User}
      */
     public static function prepared(): array
@@ -178,7 +181,7 @@ class ChapterSubmissionTest extends TestCase
         [$version, $operator] = self::candidate();
         $service = app(ChapterSubmissionService::class);
         $run = $service->prepare($version->id, $operator, 0, '隔离有限两次提交准备', dispatch: false);
-        for ($i = 0; $i < 2 && $run->refresh()->status === 'pending'; $i++) {
+        for ($i = 0; $i < 3 && $run->refresh()->status === 'pending'; $i++) {
             $service->execute($run->id, $run->invocation_id, false);
         }
 
@@ -218,7 +221,7 @@ class ChapterSubmissionTest extends TestCase
         $this->assertSame(1, StoryEvent::count());
         $this->assertSame(1, StoryStateProjection::count());
         $this->assertSame(1, StoryOutboxEvent::count());
-        Http::assertSentCount(5);
+        Http::assertSentCount(6);
     }
 
     /** 有核心新实体时停在批准门禁，明确批准后才能原子注册实体。 */
@@ -238,7 +241,7 @@ class ChapterSubmissionTest extends TestCase
         self::commit($run, $operator, ['new-1']);
         $this->assertSame(2, StoryEntity::count());
         $this->assertTrue(CanonicalCommit::sole()->approvals['author_story_approval']);
-        Http::assertSentCount(5);
+        Http::assertSentCount(6);
     }
 
     /** 供应商未知、评审失败和硬事实失败均不自动重试，也不进入正式状态。 */
@@ -255,12 +258,18 @@ class ChapterSubmissionTest extends TestCase
         $this->assertSame(0, CanonicalCommit::count());
         $this->assertSame(0, $run->novel->fresh()->state_version);
         $this->assertSame($calls, CostLog::whereNotNull('request_parameters->purpose')->count());
+        // 台账结论引用目录外编号时由确定性验证阻塞，并记录具体错误码。
+        if ($scenario === 'ledger_unknown') {
+            $this->assertSame('ledger', $run->step);
+            $this->assertSame(['OPEN_ITEM_UNKNOWN'], array_column(ChapterSubmissionValidation::sole()->result['errors'], 'code'));
+        }
     }
 
     /** 每种失败的费用意图数有独立断言。 */
     public static function stopCases(): array
     {
-        return [['unknown', 1], ['review_reject', 1], ['bad_fact', 2], ['unknown_entity', 2], ['invalid_category', 2]];
+        // 事件确定性错误在台账请求后统一验证时发现，共三次；提取结构本身无效时在台账前停止，共两次。
+        return [['unknown', 1], ['review_reject', 1], ['bad_fact', 3], ['unknown_entity', 3], ['invalid_category', 2], ['ledger_unknown', 3]];
     }
 
     /** 显式后继使用新额度，原失败产物不变；同前驱重复命令不重复请求。 */
@@ -289,7 +298,7 @@ class ChapterSubmissionTest extends TestCase
         $this->assertSame(2, ChapterSubmissionRun::count());
         self::commit($successor, $operator);
         $this->assertSame(1, CanonicalCommit::count());
-        Http::assertSentCount(7);
+        Http::assertSentCount(9);
     }
 
     /** 自动重试仍被禁止，成功运行不能充当失败前驱。 */
@@ -323,7 +332,7 @@ class ChapterSubmissionTest extends TestCase
         $next = $service->prepare($original->version_id, $operator, 0, '隔离追溯提取反馈', 20, false, $middle->id);
         $this->assertSame(ChapterEventExtraction::sole()->id, $next->config['repair_feedback']['extraction_id']);
         $this->assertContains('UNKNOWN_ENTITY', array_column($next->config['repair_feedback']['errors'], 'code'));
-        Http::assertSentCount(6);
+        Http::assertSentCount(7);
     }
 
     /** 原文核对拒绝后禁止正式提交，后继收到原核对意见且旧提取不变。 */
@@ -338,7 +347,7 @@ class ChapterSubmissionTest extends TestCase
         $this->assertSame($before, $extraction->fresh()->getRawOriginal());
         $next = app(ChapterSubmissionService::class)->prepare($run->version_id, $operator, 0, '阅读失败后继', 20, false, $run->id);
         $this->assertSame(['事件主体与原文不符'], $next->config['repair_feedback']['reading_findings']);
-        Http::assertSentCount(5);
+        Http::assertSentCount(6);
         $this->expectExceptionMessage('SUBMISSION_NOT_READY');
         self::commit($run, $operator);
     }
@@ -364,9 +373,10 @@ class ChapterSubmissionTest extends TestCase
         $before = $version->getRawOriginal();
         $service = app(ChapterSubmissionService::class);
         $run = $service->prepare($version->id, $operator, 0, 'B05未定义实体阻塞验收', dispatch: false);
-        $service->execute($run->id, $run->invocation_id, false);
-        $run->refresh();
-        $service->execute($run->id, $run->invocation_id, false);
+        // 评审、事件提取与待核台账依次执行，台账完成后统一验证。
+        for ($i = 0; $i < 3 && $run->refresh()->status === 'pending'; $i++) {
+            $service->execute($run->id, $run->invocation_id, false);
+        }
         $this->assertSame('EVENT_VALIDATION_BLOCKED', $run->fresh()->stop_reason);
         $extraction = ChapterEventExtraction::sole();
         $validation = ChapterSubmissionValidation::sole();
@@ -382,7 +392,7 @@ class ChapterSubmissionTest extends TestCase
         $this->assertSame(0, StoryEvent::count());
         $this->assertSame(0, CanonicalCommit::count());
         $this->assertSame(0, $run->novel->fresh()->state_version);
-        Http::assertSentCount(5);
+        Http::assertSentCount(6);
     }
 
     /** 事务最后一笔失败时，章节、实体、事件、投影、计数和提交必须全部回滚。 */
@@ -457,7 +467,7 @@ class ChapterSubmissionTest extends TestCase
         $service->execute($run->id, $run->invocation_id, false);
         $service->interrupted($run->id, $run->invocation_id);
         $this->assertSame($before, $run->fresh()->getRawOriginal());
-        Http::assertSentCount(5);
+        Http::assertSentCount(6);
     }
 
     /** 失效故事版本和其他作者都不能凭已有评审提交。 */
@@ -496,7 +506,7 @@ class ChapterSubmissionTest extends TestCase
         // 提交原因由程序生成并留档。
         $this->assertSame('作者批准并正式提交第'.ChapterVersion::findOrFail(CanonicalCommit::sole()->version_id)->chapter->number.'章', CanonicalCommit::sole()->reason);
         $this->assertSame(2, StoryEntity::count());
-        Http::assertSentCount(5);
+        Http::assertSentCount(6);
     }
 
     /** 换账号后在后台接管本书，再在正文工作台依次完成全文核对、准备提交与正式提交，全程只用后台按钮。 */
@@ -530,7 +540,7 @@ class ChapterSubmissionTest extends TestCase
         $this->assertSame($other->id, $submission->config['operator_id']);
         // 取消自动提交时不冻结提交授权，停在待手动提交。
         $this->assertArrayNotHasKey('auto_commit', $submission->config);
-        for ($i = 0; $i < 2 && $submission->refresh()->status === 'pending'; $i++) {
+        for ($i = 0; $i < 3 && $submission->refresh()->status === 'pending'; $i++) {
             app(ChapterSubmissionService::class)->execute($submission->id, $submission->invocation_id, false);
         }
         // 结论随提交准备进度更新：准备完成后指向手动提交，提交后说明已正式提交。
@@ -553,7 +563,7 @@ class ChapterSubmissionTest extends TestCase
         $run = ChapterSubmissionRun::sole();
         $this->assertSame('作者一键正式提交第'.$version->chapter->number.'章', $run->config['auto_commit']['reason']);
         $this->assertSame($operator->id, $run->config['auto_commit']['operator_id']);
-        for ($i = 0; $i < 2 && $run->refresh()->status === 'pending'; $i++) {
+        for ($i = 0; $i < 3 && $run->refresh()->status === 'pending'; $i++) {
             app(ChapterSubmissionService::class)->execute($run->id, $run->invocation_id, false);
         }
         $this->assertSame($status, $run->refresh()->status);
@@ -587,7 +597,7 @@ class ChapterSubmissionTest extends TestCase
             '--validation' => ChapterSubmissionValidation::sole()->id, '--expected-state-version' => '0', '--idempotency-key' => (string) Str::uuid7(), '--reason' => '未勾选作者确认'])
             ->assertFailed();
         $this->assertSame(0, CanonicalCommit::count());
-        Http::assertSentCount(5);
+        Http::assertSentCount(6);
     }
 
     /** 工厂只创建带来源关系的隔离约束夹具，不冒充可提交的真实产物。 */
