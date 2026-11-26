@@ -165,6 +165,9 @@ class C01SequenceTest extends TestCase
                     $data = ['open_items' => match ($submission->chapter->number) {
                         1 => [['action' => 'open', 'item_id' => '', 'claim' => '隔离待核：来信笔迹是否为师父所写', 'evidence_ids' => ['p1']]],
                         2 => [['action' => 'confirm', 'item_id' => $submitted['open_items']['pending'][0]['id'], 'claim' => '隔离核实：笔迹确为师父所写', 'evidence_ids' => ['p1']]],
+                        // 第5章换个说法再报同一问题：程序重放时并入第4章的事项并留痕。
+                        4 => [['action' => 'open', 'item_id' => '', 'claim' => '旧灯塔那把铜钥匙当年交给了谁保管，尚待核实。', 'evidence_ids' => ['p1']]],
+                        5 => [['action' => 'open', 'item_id' => '', 'claim' => '那把旧灯塔铜钥匙当年到底交给谁保管，仍待查证。', 'evidence_ids' => ['p1']]],
                         default => [],
                     }];
                 } elseif ($log->request_parameters['purpose'] === 'review') {
@@ -323,6 +326,10 @@ class C01SequenceTest extends TestCase
         $this->assertSame([['id' => 'open-'.$first->id.'-1', 'claim' => '隔离待核：来信笔迹是否为师父所写', 'opened_chapter' => 1, 'status' => 'pending', 'quote' => $snapshots[2]['pending'][0]['quote']]], $snapshots[2]['pending']);
         $this->assertNotNull($snapshots[2]['pending'][0]['quote']);
         $this->assertSame([], $snapshots[3]['pending']);
+        $fourth = CanonicalCommit::where('chapter_number', 4)->sole();
+        $this->assertSame(['open-'.$fourth->id.'-1'], array_column($snapshots[6]['pending'], 'id'));
+        $this->assertSame([5], $snapshots[6]['pending'][0]['repeated_in']);
+        $this->assertArrayNotHasKey('repeated_in', $snapshots[5]['pending'][0]);
         $this->assertSame(['confirmed', '隔离核实：笔迹确为师父所写', 2], [$snapshots[3]['resolved'][0]['status'], $snapshots[3]['resolved'][0]['conclusion'], $snapshots[3]['resolved'][0]['resolved_chapter']]);
         foreach ($snapshots as $number => $ledger) {
             $this->assertSame(PlanningJson::hash($ledger), PlanningJson::hash(app(OpenItemLedger::class)->context($novel, $number)));

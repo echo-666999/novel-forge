@@ -4,6 +4,7 @@ namespace Tests\Unit;
 
 use App\Services\Ai\SubmissionAgent;
 use App\Services\Pipeline\ContentExecutionContract;
+use App\Services\Pipeline\OpenItemLedger;
 use App\Services\Pipeline\SubmissionContract;
 use App\Services\Pipeline\SubmissionValidator;
 use Illuminate\JsonSchema\JsonSchemaTypeFactory;
@@ -74,6 +75,18 @@ class OpenItemsTest extends TestCase
         $schema = SubmissionContract::schema(new JsonSchemaTypeFactory, 'extract', $anchors, [], [], ['open-7-1']);
         $this->assertSame(['', 'open-7-1'], $schema['open_items']->toArray()['items']['properties']['item_id']['enum']);
         $this->assertArrayNotHasKey('open_items', SubmissionContract::schema(new JsonSchemaTypeFactory, 'extract', $anchors));
+    }
+
+    /** 重复判定：措辞不同的同一问题达到阈值，只是同属一条线索的不同问题低于阈值；套话不抬高相似度。 */
+    public function test_similarity_separates_rephrased_duplicates_from_related_items(): void
+    {
+        $same = OpenItemLedger::similarity('主管出示的合影复印件与第17章修复室夹出的合影裁口分毫不差、同属外婆当年交的附件，但被裁掉的那个人是谁，尚待核实。',
+            '主管抽出的外婆旧材料中那张合影复印件与沈禾修复室夹出的合影裁口分毫不差，但被裁掉的那个人是谁、为何被裁，尚待核实。');
+        $related = OpenItemLedger::similarity('母亲说外婆退休前带回的旧帆布包底下蹭出一块印着字的硬纸角，纸上写的是什么、是否与旧案相关尚待核实。',
+            '母亲回忆外婆退休前把一叠纸锁进五斗橱上头带锁的抽屉、钥匙用布包着压在米缸底下，那叠纸是什么、是否与旧案相关，尚待核实。');
+        $this->assertGreaterThanOrEqual(OpenItemLedger::DUPLICATE_THRESHOLD, $same);
+        $this->assertLessThan(OpenItemLedger::DUPLICATE_THRESHOLD, $related);
+        $this->assertSame(0.0, OpenItemLedger::similarity('尚待核实。', '是谁，尚待核实'));
     }
 
     /** 细纲、正文、修订与检查只在冻结台账时追加约束，检查把违反记入连续性问题；评审列为阻断。 */
