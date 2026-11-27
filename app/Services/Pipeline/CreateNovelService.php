@@ -4,6 +4,7 @@ namespace App\Services\Pipeline;
 
 use App\Enums\GenerationMode;
 use App\Enums\NovelStatus;
+use App\Enums\ReviewStrictness;
 use App\Jobs\RunNovelPipelineJob;
 use App\Jobs\RunSettingJob;
 use App\Models\Novel;
@@ -15,6 +16,8 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
+use InvalidArgumentException;
 use LogicException;
 use Throwable;
 
@@ -46,17 +49,25 @@ final class CreateNovelService
             ...collect(self::BRIEF_FIELDS)->mapWithKeys(fn (string $label, string $key): array => ['creative_brief.'.$key => ['nullable', 'string', 'max:2000']])->all(),
             'budget_amount' => ['nullable', 'regex:/\A\d{1,12}(?:\.\d{1,8})?\z/'],
             'budget_currency' => ['nullable', 'required_with:budget_amount', 'in:CNY,USD'],
+            'review_strictness' => ['nullable', 'in:loose,standard,strict'],
+            'genre_pack' => ['nullable', 'string', 'max:64'],
+            'style_preset' => ['nullable', 'string', 'max:64'],
         ], [
             'required' => '请填写:attribute。', 'string' => ':attribute必须为文本。',
             'max' => ':attribute超出允许范围。', 'min' => ':attribute必须大于0。',
             'integer' => ':attribute必须为整数。', 'regex' => ':attribute不能只包含空白。',
-            'in' => '生成模式不合法。', 'array' => '篇幅策略格式不正确。', 'gte' => '每章字数上限不得小于下限。',
+            'in' => '生成模式不合法。', 'review_strictness.in' => '评审严格度不合法。', 'array' => '篇幅策略格式不正确。', 'gte' => '每章字数上限不得小于下限。',
         ], [
             'generation_mode' => '生成模式', 'title' => '书名', 'genre' => '题材', 'premise_raw' => '原始创意', 'target_chapters' => '目标章数',
             'chapter_length_policy.min_characters' => '每章字数下限', 'chapter_length_policy.max_characters' => '每章字数上限',
-            'budget_amount' => '预算金额', 'budget_currency' => '预算币种',
+            'budget_amount' => '预算金额', 'budget_currency' => '预算币种', 'review_strictness' => '评审严格度',
             ...collect(self::BRIEF_FIELDS)->mapWithKeys(fn (string $label, string $key): array => ['creative_brief.'.$key => $label])->all(),
         ])->validate();
+        try {
+            $profile = StoryProfile::freeze($data['genre_pack'] ?? null, $data['style_preset'] ?? null);
+        } catch (InvalidArgumentException $exception) {
+            throw ValidationException::withMessages(['genre_pack' => $exception->getMessage()]);
+        }
         $brief = array_filter(array_map(fn ($value): string => trim((string) $value), $data['creative_brief'] ?? []), fn (string $value): bool => $value !== '');
         $budget = filled($data['budget_amount'] ?? null) ? (string) $data['budget_amount'] : null;
         $mode = GenerationMode::from($data['generation_mode'] ?? 'simulation');
@@ -75,7 +86,7 @@ final class CreateNovelService
             'prompt_version' => 'b02-setting-prompt-v1',
             // 模板正文、版本与变量在小说根运行创建时冻结，恢复和后续章节沿用此快照。
             'prompt_templates' => app(PromptTemplateManager::class)->snapshot(),
-            'prompt_variables' => ['title' => trim($data['title']), 'genre' => $data['genre'] ?? ''],
+            'prompt_variables' => ['title' => trim($data['title']), 'genre' => filled($data['genre'] ?? null) ? $data['genre'] : ($profile['genre']['name'] ?? '')],
         ] : null;
         if ($config !== null && ($config['model'] === '' || strlen($config['model']) > 128)) {
             throw new LogicException('默认模型标识不合法');
@@ -85,7 +96,9 @@ final class CreateNovelService
             'generation_mode' => $mode,
             'generation_config' => $config,
             'title' => trim($data['title']),
-            'genre' => filled($data['genre'] ?? null) ? trim($data['genre']) : null,
+            // 没填题材文字时用题材包名称，旧的题材字段继续可读。
+            'genre' => filled($data['genre'] ?? null) ? trim($data['genre']) : ($profile['genre']['name'] ?? null),
+            'story_profile' => $profile,
             'premise_raw' => $data['premise_raw'],
             'target_chapters' => (int) $data['target_chapters'],
             'chapter_length_policy' => [
@@ -96,6 +109,7 @@ final class CreateNovelService
             'creative_brief' => $brief === [] ? null : $brief,
             'budget_amount' => $budget,
             'budget_currency' => $budget === null ? null : $data['budget_currency'],
+            'review_strictness' => $data['review_strictness'] ?? ReviewStrictness::Loose->value,
             'budget_history' => $budget === null ? [] : [['from' => null, 'to' => $budget, 'to_currency' => $data['budget_currency'], 'reason' => '建书时设定', 'at' => now()->toIso8601String()]],
         ]));
 

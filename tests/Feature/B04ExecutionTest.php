@@ -29,6 +29,7 @@ use App\Services\Pipeline\ContentStyleRules;
 use App\Services\Pipeline\PlanningJson;
 use App\Services\Pipeline\ProgressionChecker;
 use App\Services\Pipeline\RunControlService;
+use App\Services\Pipeline\StoryProfile;
 use App\Settings\GeneralSettings;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\DevCommands;
@@ -330,6 +331,25 @@ class B04ExecutionTest extends TestCase
         $this->assertSame('awaiting_review', $run->fresh()->stop_reason);
         $this->assertStringStartsWith(self::TIME_OPENING, ChapterVersion::oldest('id')->firstOrFail()->body);
         $this->assertStringStartsWith('门一推开，', ChapterVersion::latest('id')->firstOrFail()->body);
+    }
+
+    /** 建书时选了题材包和文风：冻结进正文快照，首稿与修订带写法要求和示范段落，独立检查不带。 */
+    public function test_story_profile_reaches_draft_and_revise_but_not_check(): void
+    {
+        $this->scenario = 'time_open';
+        $novel = B04ContentTest::readyNovel(true, 20);
+        $novel->update(['chapter_length_policy' => ['min_characters' => 2500, 'max_characters' => 3500], 'story_profile' => StoryProfile::freeze('era', 'colloquial')]);
+        $run = app(ContentGenerationService::class)->start($novel, User::firstOrFail());
+        $this->assertSame(['era', 'colloquial'], [$run->snapshot['novel']['story_profile']['genre']['key'], $run->snapshot['novel']['story_profile']['style']['key']]);
+        $this->drain();
+        $draft = CostLog::where('request_parameters->step', 'draft')->sole()->request_parameters['prompt_audit'];
+        $this->assertStringContainsString('本书文风「生活口语 · 泼辣」', $draft['system_prompt']);
+        $this->assertStringContainsString('本书题材「年代」', $draft['system_prompt']);
+        $this->assertStringContainsString('瓜子壳吐得又准又脆', $draft['user_prompt']);
+        $this->assertStringContainsString('本书文风「生活口语 · 泼辣」', CostLog::where('request_parameters->step', 'revise')->sole()->request_parameters['prompt_audit']['system_prompt']);
+        foreach (CostLog::where('request_parameters->step', 'check')->get() as $check) {
+            $this->assertStringNotContainsString('story_profile', $check->request_parameters['prompt_audit']['user_prompt']);
+        }
     }
 
     /** 细纲action写成成段叙述时，同一运行内带着实测字数补发一次细纲，合格后照常写正文。 */

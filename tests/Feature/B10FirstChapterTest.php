@@ -90,7 +90,8 @@ class B10FirstChapterTest extends TestCase
                 $data = B03OutlineTest::batch();
             } elseif (isset($log->request_parameters['purpose'])) {
                 if ($log->request_parameters['purpose'] === 'review') {
-                    $data = ['review' => ['verdict' => $this->rejectReview ? 'needs_revision' : 'pass', 'summary' => '隔离评审通过', 'evidence_ids' => ['p1'], 'findings' => []]];
+                    $data = ['review' => ['verdict' => $this->rejectReview ? 'needs_revision' : 'pass', 'summary' => '隔离评审通过', 'evidence_ids' => ['p1'],
+                        'findings' => $this->rejectReview ? [ChapterSubmissionTest::hardDefectFinding(ChapterSubmissionRun::findOrFail($log->request_parameters['submission_run_id']))] : []]];
                 } elseif ($log->request_parameters['purpose'] === 'ledger') {
                     $data = ['open_items' => []];
                 } else {

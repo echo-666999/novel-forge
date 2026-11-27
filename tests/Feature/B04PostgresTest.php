@@ -187,7 +187,8 @@ class B04PostgresTest extends TestCase
         $formalRevisionMigration->up();
         $openItemMigration->up();
         $backfillMigration->up();
-        $this->assertSame($before, Novel::findOrFail($stage->novel_id)->getRawOriginal());
+        // 回滚重建旧迁移会把后加的小说列排到末尾；列序不是业务数据，按列名比较。
+        $this->assertSame(collect($before)->sortKeys()->all(), collect(Novel::findOrFail($stage->novel_id)->getRawOriginal())->sortKeys()->all());
         $this->assertSame($stageBefore, $stage->fresh()->getRawOriginal());
     }
 

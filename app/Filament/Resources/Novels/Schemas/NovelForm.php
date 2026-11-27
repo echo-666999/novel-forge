@@ -2,6 +2,8 @@
 
 namespace App\Filament\Resources\Novels\Schemas;
 
+use App\Enums\ReviewStrictness;
+use App\Models\StoryPreset;
 use App\Services\Ai\CostForecast;
 use App\Services\Ai\ModelProfiles;
 use App\Services\Pipeline\CreateNovelService;
@@ -11,8 +13,10 @@ use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Infolists\Components\TextEntry;
+use Filament\Schemas\Components\Grid;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Get;
+use Filament\Schemas\Components\Utilities\Set;
 use Filament\Schemas\Components\Wizard\Step;
 
 /** 建书向导：创意输入 → 篇幅 → 生产方式 → 确认启动。运行字段不进入作者输入，模拟流程只保留给命令行自检。 */
@@ -44,7 +48,21 @@ class NovelForm
             Step::make('创意输入')->description('原文完整保存')->schema([
                 TextInput::make('title')->label('书名')->required()->maxLength(255)->regex('/(*UCP)\S/u')
                     ->validationMessages(['required' => '请输入书名。', 'max' => '书名不得超过255个字符。', 'regex' => '书名不能只包含空白。']),
-                TextInput::make('genre')->label('题材')->maxLength(255)->placeholder('例如：玄幻、都市、悬疑'),
+                Grid::make(3)->schema([
+                    // 题材包和文风预设来自后台列表，建书时整份复制进本书；之后修改列表不影响本书。
+                    Select::make('genre_pack')->label('题材包')->options(fn (): array => StoryPreset::options('genre'))->native(false)->placeholder('不使用（自定义）')->live()
+                        ->afterStateUpdated(function (?string $state, Set $set): void {
+                            $style = $state === null ? null : (StoryPreset::query()->enabled()->where('kind', 'genre')->where('key', $state)->first()?->content['default_style'] ?? null);
+                            if (filled($style) && array_key_exists($style, StoryPreset::options('style'))) {
+                                $set('style_preset', $style);
+                            }
+                        })
+                        ->helperText('决定爽点类型、节奏和题材禁忌。'),
+                    Select::make('style_preset')->label('文风')->options(fn (): array => StoryPreset::options('style'))->native(false)->placeholder('不使用')
+                        ->helperText('选题材包后自动带出推荐文风，可以改。'),
+                    TextInput::make('genre')->label('题材补充（可选）')->maxLength(255)->placeholder('例如：年代·重生·美食')
+                        ->helperText('不填时用题材包名称。'),
+                ]),
                 Textarea::make('premise_raw')->label('原始创意')->required()->rows(10)
                     ->placeholder('写下故事背景、人物目标和主要矛盾，保留你希望实现的具体细节。')
                     ->helperText('原始创意会完整保存，不做摘要或改写。')->regex('/(*UCP)\S/u')
@@ -68,6 +86,8 @@ class NovelForm
                 Select::make('automatic_model')->label('模型（可选）')->options(ModelProfiles::options())->native(false)
                     ->placeholder(fn (): string => '使用通用设置的默认模型：'.app(GeneralSettings::class)->default_model)
                     ->helperText('只对这本书生效，不修改全局设置。'),
+                Radio::make('review_strictness')->label('评审严格度')->options(ReviewStrictness::options())->descriptions(collect(ReviewStrictness::cases())->mapWithKeys(fn (ReviewStrictness $case): array => [$case->value => $case->description()])->all())
+                    ->default(ReviewStrictness::Loose->value)->required()->helperText('决定提交评审拦下哪些问题。没拦下的问题仍会列在章节页，可以事后手改。之后可在小说页修改。'),
             ]),
             Step::make('确认启动')->schema([
                 TextEntry::make('summary')->label('即将启动')->state(fn (Get $get): array => self::summary($get))->listWithLineBreaks(),
@@ -89,7 +109,9 @@ class NovelForm
             '书名：'.($get('title') ?: '（未填写）'),
             '篇幅：'.$chapters.'章，每章'.$get('chapter_length_policy.min_characters').'～'.$get('chapter_length_policy.max_characters').'字',
             '生产方式：'.(self::MODES[$mode] ?? $mode),
+            '题材与文风：'.(StoryPreset::options('genre')[$get('genre_pack')] ?? '未选题材包').' · '.(StoryPreset::options('style')[$get('style_preset')] ?? '未选文风'),
             '模型：'.$model,
+            '评审严格度：'.(ReviewStrictness::tryFrom((string) $get('review_strictness')) ?? ReviewStrictness::Loose)->label(),
             '预算：'.(filled($get('budget_amount')) ? $get('budget_amount').' '.$get('budget_currency') : '未设（只受执行次数上限约束）'),
         ];
         $lines[] = match ($mode) {

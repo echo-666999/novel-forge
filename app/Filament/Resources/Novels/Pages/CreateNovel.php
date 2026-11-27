@@ -52,6 +52,9 @@ class CreateNovel extends CreateRecord
             'creative_brief' => $source->creative_brief ?? [],
             'budget_amount' => $source->budget_amount === null ? null : (string) $source->budget_amount,
             'budget_currency' => $source->budget_currency ?? 'CNY',
+            'review_strictness' => $source->review_strictness->value,
+            'genre_pack' => $source->story_profile['genre']['key'] ?? null,
+            'style_preset' => $source->story_profile['style']['key'] ?? null,
         ]);
     }
 

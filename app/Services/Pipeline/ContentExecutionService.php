@@ -252,6 +252,11 @@ final class ContentExecutionService
                 $context['opening_mode'] = ContentStyleRules::openingMode($run->chapter->number);
             }
         }
+        // 建书时冻结了题材包或文风预设：首稿、文字修复和修订附加写法要求。
+        $profile = $run->snapshot['novel']['story_profile'] ?? null;
+        if ($profile !== null && in_array($step, ['draft', 'revise'], true)) {
+            $context['story_profile'] = $profile;
+        }
         // 细纲与正文首稿把到期伏笔写进系统指令；单场景修复只改一个场景，不重复要求。
         if (in_array($step, ['fine', 'draft'], true)) {
             $obligations = ContentExecutionContract::foreshadowObligations($run->snapshot['foreshadow_context'] ?? null);
@@ -265,7 +270,8 @@ final class ContentExecutionService
             $context['extended_output'] = true;
         }
         // 原始创意保留具体时间、视角和限制；失败反馈只用于修复响应，不成为故事事实。
-        $payload = ['chapter_number' => $run->chapter->number, 'prior_context' => $run->snapshot['prior_context'] ?? null, 'writing_requirements' => ['原始创意中的时间、人物称谓及具体限制不得被规划摘要覆盖。', '以可观察的具体行动、对白、阻力及结果推进，每段须有新信息；不反复宣告调查方向明确或决心坚定。', '不得输出故事将在后续展开、待续等写作说明。每段必须以完整句子的结束标点收束，不允许为满足字数而在句中截断或把半句拆到下一段。'], 'author_idea' => $run->snapshot['novel']['premise_raw'], ...(isset($run->snapshot['novel']['creative_brief']) ? ['creative_brief' => $run->snapshot['novel']['creative_brief']] : []), 'previous_response_failure' => $run->config['recovery_validation_error'] ?? null, 'author_decisions' => $run->snapshot['decisions'], 'confirmed_setting' => $run->snapshot['confirmed_setting'], 'candidate_roadmap' => $run->snapshot['roadmap'],
+        $payload = ['chapter_number' => $run->chapter->number, 'prior_context' => $run->snapshot['prior_context'] ?? null, 'writing_requirements' => ['原始创意中的时间、人物称谓及具体限制不得被规划摘要覆盖。', '以可观察的具体行动、对白、阻力及结果推进，每段须有新信息；不反复宣告调查方向明确或决心坚定。', '不得输出故事将在后续展开、待续等写作说明。每段必须以完整句子的结束标点收束，不允许为满足字数而在句中截断或把半句拆到下一段。'], 'author_idea' => $run->snapshot['novel']['premise_raw'], ...(isset($run->snapshot['novel']['creative_brief']) ? ['creative_brief' => $run->snapshot['novel']['creative_brief']] : []),
+            ...($profile !== null && $step !== 'check' ? ['story_profile' => StoryProfile::bodyPayload($profile)] : []), 'previous_response_failure' => $run->config['recovery_validation_error'] ?? null, 'author_decisions' => $run->snapshot['decisions'], 'confirmed_setting' => $run->snapshot['confirmed_setting'], 'candidate_roadmap' => $run->snapshot['roadmap'],
             'rule_catalog' => $context['rules'], 'chapter_plan' => $run->plan_data ?? $run->snapshot['source_chapter'], 'word_policy' => $run->snapshot['novel']['chapter_length_policy'],
             'progression_points' => $run->snapshot['source_chapter']['progression_points'], 'findings' => $context['findings'], 'count_rule' => ContentSchema::COUNT_VERSION];
         // 字数失败时提供原段和实际计数错误，避免后继请求看不到失败正文而盲目重写。

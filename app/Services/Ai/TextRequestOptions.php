@@ -95,6 +95,12 @@ final readonly class TextRequestOptions
         return ContentExecutionContract::VERSION;
     }
 
+    /** 文风示范段落：无结构的单次短文本请求，用于后台让模型起草示范段落，作者再改。 */
+    public static function styleSamples(): self
+    {
+        return new self(2048, 120, 0.9, false);
+    }
+
     /** 保持 A03 短文本连通验证的原有行为。 */
     public static function probe(): self
     {

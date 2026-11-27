@@ -214,7 +214,8 @@ class CanonicalCommitPostgresTest extends TestCase
         $formalRevisionMigration->up();
         $openItemMigration->up();
         $backfillMigration->up();
-        $this->assertSame($beforeNovel, Novel::findOrFail($stage->novel_id)->getRawOriginal());
+        // 回滚重建旧迁移会把后加的小说列排到末尾；列序不是业务数据，按列名比较。
+        $this->assertSame(collect($beforeNovel)->sortKeys()->all(), collect(Novel::findOrFail($stage->novel_id)->getRawOriginal())->sortKeys()->all());
         $this->assertSame($beforeStage, $stage->fresh()->getRawOriginal());
         ChapterSubmissionRun::factory()->create();
         $this->expectExceptionMessage('已有提交准备或正式历史，拒绝回滚');

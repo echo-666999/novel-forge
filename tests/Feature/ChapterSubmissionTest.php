@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Enums\ProductionFailure;
+use App\Enums\ReviewStrictness;
 use App\Filament\Resources\Novels\Pages\ViewChapterContent;
 use App\Filament\Resources\Novels\Pages\ViewNovel;
 use App\Jobs\RunChapterStepJob;
@@ -30,6 +31,7 @@ use App\Services\Pipeline\OpenItemLedger;
 use App\Services\Pipeline\PlanningJson;
 use App\Services\Pipeline\ProgressionChecker;
 use App\Services\Pipeline\RevealBackfill;
+use App\Services\Pipeline\ReviewTiers;
 use App\Services\Pipeline\SubmissionContract;
 use App\Services\Pipeline\SubmissionValidator;
 use Filament\Actions\Testing\TestAction;
@@ -75,6 +77,14 @@ class ChapterSubmissionTest extends TestCase
         parent::tearDown();
     }
 
+    /** 评审拒绝夹具用的阻塞问题：因果颠倒属于任何严格度都阻断的硬伤；冻结了评审分级的运行附带硬伤类别。
+     * @return array<string, mixed>
+     */
+    public static function hardDefectFinding(ChapterSubmissionRun $run): array
+    {
+        return ['kind' => 'continuity', 'severity' => 'blocking', 'reason' => '隔离硬伤：结果先于原因发生', 'evidence_ids' => ['p1'], ...(ReviewTiers::frozen($run) !== null ? ['defect' => 'causality'] : [])];
+    }
+
     /** PostgreSQL专项也复用同一真实SDK请求夹具，不访问外网。 */
     public static function fakeProvider(?callable $scenario = null): void
     {
@@ -109,7 +119,14 @@ class ChapterSubmissionTest extends TestCase
             $run = ChapterSubmissionRun::findOrFail($log->request_parameters['submission_run_id']);
             $ref = array_key_first($run->snapshot['entity_catalog']);
             if ($purpose === 'review') {
-                $data = ['review' => ['verdict' => $mode === 'review_reject' ? 'needs_revision' : 'pass', 'summary' => '隔离基本评审结论', 'evidence_ids' => ['p1'], 'findings' => []]];
+                // 拒绝场景带一条阻塞问题：review_reject 是硬伤（因果颠倒），review_detail 只是细节不一致；冻结了评审分级时附带硬伤类别。
+                $tiered = ReviewTiers::frozen($run) !== null;
+                $findings = match ($mode) {
+                    'review_reject' => [self::hardDefectFinding($run)],
+                    'review_detail' => [['kind' => 'continuity', 'severity' => 'blocking', 'reason' => '隔离细节：挑子前文写成有车轴', 'evidence_ids' => ['p1'], ...($tiered ? ['defect' => ReviewTiers::NONE] : [])]],
+                    default => [],
+                };
+                $data = ['review' => ['verdict' => $findings === [] ? 'pass' : 'needs_revision', 'summary' => '隔离基本评审结论', 'evidence_ids' => ['p1'], 'findings' => $findings]];
             } elseif ($purpose === 'ledger') {
                 // 台账结论引用目录外编号：本地门禁阻塞提交。
                 $data = ['open_items' => $mode === 'ledger_unknown' ? [['action' => 'confirm', 'item_id' => 'open-999-1', 'claim' => '隔离核实', 'evidence_ids' => ['p1']]] : []];
@@ -746,5 +763,52 @@ class ChapterSubmissionTest extends TestCase
         $this->assertSame('revise', $child->next_step);
         $this->assertSame('根据独立提交评审修订当前候选', $child->config['authorization']['reason']);
         $page->assertActionHidden('reviseFromReview');
+    }
+
+    /** 宽松书（新书默认）：评审标为阻塞的细节矛盾被降为瑕疵，提交继续；冻结分级、请求结构带硬伤类别，章节页标出瑕疵。 */
+    public function test_loose_book_records_detail_contradiction_without_blocking(): void
+    {
+        $this->scenario = 'review_detail';
+        [$run, $operator] = self::prepared();
+        $this->assertSame(['version' => ReviewTiers::VERSION, 'strictness' => 'loose'], $run->config['review_tier']);
+        $this->assertSame('ready', $run->status);
+        $review = ChapterReview::where('submission_run_id', $run->id)->sole();
+        $this->assertSame('pass', $review->verdict);
+        $this->assertSame('needs_revision', $review->result['tier_adjusted_from']);
+        $this->assertSame('advisory', $review->result['findings'][0]['severity']);
+        $this->assertTrue($review->result['findings'][0]['downgraded']);
+        $audit = CostLog::findOrFail($review->cost_log_id)->request_parameters['prompt_audit'];
+        $this->assertStringContainsString('评审分级', $audit['system_prompt']);
+        $this->assertStringContainsString('"defect"', json_encode($audit['response_schema']));
+        $this->actingAs($operator);
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        Livewire::test(ViewChapterContent::class, ['record' => $run->novel_id])->assertSee('瑕疵（按本书严格度只记录）');
+    }
+
+    /** 严格书沿用原有口径：同样的细节矛盾仍拦下提交，运行不冻结分级，请求结构不变。 */
+    public function test_strict_book_still_blocks_detail_contradiction(): void
+    {
+        $this->scenario = 'review_detail';
+        [$version, $operator] = self::candidate();
+        $version->chapter->novel->update(['review_strictness' => ReviewStrictness::Strict]);
+        $service = app(ChapterSubmissionService::class);
+        $run = $service->prepare($version->id, $operator, 0, '严格书细节矛盾', dispatch: false);
+        $service->execute($run->id, $run->invocation_id, false);
+        $run->refresh();
+        $this->assertArrayNotHasKey('review_tier', $run->config);
+        $this->assertSame('REVIEW_NOT_PASSED', $run->stop_reason);
+        $audit = CostLog::latest('id')->firstOrFail()->request_parameters['prompt_audit'];
+        $this->assertStringNotContainsString('"defect"', json_encode($audit['response_schema']));
+    }
+
+    /** 小说页修改严格度只影响之后的准备；已冻结的运行保持原口径。 */
+    public function test_author_changes_review_strictness_for_future_submissions(): void
+    {
+        [$run, $operator] = self::prepared();
+        $this->actingAs($operator);
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        Livewire::test(ViewNovel::class, ['record' => $run->novel_id])->callAction('adjustReviewStrictness', ['review_strictness' => 'strict'])->assertHasNoActionErrors();
+        $this->assertSame(ReviewStrictness::Strict, $run->novel->fresh()->review_strictness);
+        $this->assertSame('loose', $run->fresh()->config['review_tier']['strictness']);
     }
 }

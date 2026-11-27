@@ -78,13 +78,15 @@ final class SubmissionPresenter
         $findings = array_map(fn (mixed $finding): array => [
             'kind' => self::FINDING_KINDS[((array) $finding)['kind'] ?? ''] ?? FieldDiff::text(((array) $finding)['kind'] ?? null) ?? '其他',
             'blocking' => (((array) $finding)['severity'] ?? null) === 'blocking',
+            // 评审分级降为瑕疵的问题：评审原本标为阻塞，按本书严格度只记录不阻断。
+            'downgraded' => (((array) $finding)['downgraded'] ?? false) === true,
             'reason' => FieldDiff::text(((array) $finding)['reason'] ?? null) ?? '',
             'quotes' => self::quotes(((array) $finding)['evidence'] ?? null),
         ], FieldDiff::listOf($review['findings'] ?? null));
         usort($findings, fn (array $a, array $b): int => $b['blocking'] <=> $a['blocking']);
         $passed = ($review['verdict'] ?? null) === 'pass';
 
-        return ['passed' => $passed, 'verdict' => $passed ? '评审通过' : '需要修订', 'summary' => FieldDiff::text($review['summary'] ?? null), 'findings' => $findings];
+        return ['passed' => $passed, 'verdict' => $passed ? (isset($review['tier_adjusted_from']) ? '评审通过（细节问题按本书严格度记为瑕疵）' : '评审通过') : '需要修订', 'summary' => FieldDiff::text($review['summary'] ?? null), 'findings' => $findings];
     }
 
     /** 事件提取：事件、状态变化、伏笔流转与新实体。

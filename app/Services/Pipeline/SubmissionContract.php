@@ -50,7 +50,7 @@ final class SubmissionContract
     /** SDK使用严格结构化输出，引用仍由本地逐一复验。
      * @return array<string, mixed>
      */
-    public static function schema(JsonSchema $schema, string $purpose, array $anchors, array $catalog = [], array $foreshadowIds = [], ?array $openItemIds = null): array
+    public static function schema(JsonSchema $schema, string $purpose, array $anchors, array $catalog = [], array $foreshadowIds = [], ?array $openItemIds = null, ?array $reviewTier = null): array
     {
         $evidence = fn () => $schema->array()->min(1)->max(self::MAX_EVIDENCE_PARAGRAPHS)->items($schema->string()->enum(array_keys($anchors)))->required();
         if ($purpose === 'ledger') {
@@ -60,9 +60,14 @@ final class SubmissionContract
             // 通过分支只能包含建议项，供应商结构本身不能表达pass与blocking并存。
             $branches = [];
             foreach ([['pass'], ['needs_revision', 'reject']] as $verdicts) {
+                $finding = ['kind' => $schema->string()->enum(['structure', 'literary', 'continuity', 'rule'])->required(),
+                    'severity' => $schema->string()->enum($verdicts === ['pass'] ? ['advisory'] : ['advisory', 'blocking'])->required(), 'reason' => $schema->string()->required(), 'evidence_ids' => $evidence()];
+                // 冻结了评审分级的运行：每条问题标出硬伤类别，程序据此决定是否阻断。
+                if ($reviewTier !== null) {
+                    $finding['defect'] = $schema->string()->enum([ReviewTiers::NONE, ...array_keys(ReviewTiers::HARD_DEFECTS)])->required();
+                }
                 $branches[] = $schema->object(['verdict' => $schema->string()->enum($verdicts)->required(), 'summary' => $schema->string()->required(), 'evidence_ids' => $evidence(),
-                    'findings' => $schema->array()->max(20)->items($schema->object(['kind' => $schema->string()->enum(['structure', 'literary', 'continuity', 'rule'])->required(),
-                        'severity' => $schema->string()->enum($verdicts === ['pass'] ? ['advisory'] : ['advisory', 'blocking'])->required(), 'reason' => $schema->string()->required(), 'evidence_ids' => $evidence()])->withoutAdditionalProperties())->required(),
+                    'findings' => $schema->array()->max(20)->items($schema->object($finding)->withoutAdditionalProperties())->required(),
                 ])->withoutAdditionalProperties();
             }
 
@@ -240,10 +245,11 @@ final class SubmissionContract
         return array_values(array_unique($issues));
     }
 
-    /** 评审保留逐项证据，禁止带阻塞问题仍宣称PASS。
+    /** 评审保留逐项证据，禁止带阻塞问题仍宣称PASS；冻结了评审分级时按本书严格度把非硬伤降为瑕疵。
+     * @param  array{version: string, strictness: string}|null  $tier
      * @return array<string, mixed>
      */
-    public static function review(array $data, string $body): array
+    public static function review(array $data, string $body, ?array $tier = null): array
     {
         // 模型偶尔把请求的输出格式（"type": "json_object"）或Schema根类型抄进顶层，只容忍这两种明确的回显，其他多余字段仍然拒绝。
         if (array_key_exists('review', $data) && count($data) === 2 && in_array($data['type'] ?? null, ['json_object', 'object'], true)) {
@@ -267,8 +273,11 @@ final class SubmissionContract
             throw new InvalidArgumentException('REVIEW_INVALID');
         }
         foreach ($data['findings'] as $index => &$finding) {
-            ContentSchema::keys($finding, ['kind', 'severity', 'reason', 'evidence_ids']);
+            ContentSchema::keys($finding, $tier === null ? ['kind', 'severity', 'reason', 'evidence_ids'] : ['kind', 'severity', 'reason', 'evidence_ids', 'defect']);
             ContentSchema::text($finding['reason']);
+            if ($tier !== null && ! in_array($finding['defect'], [ReviewTiers::NONE, ...array_keys(ReviewTiers::HARD_DEFECTS)], true)) {
+                throw new InvalidArgumentException('REVIEW_INVALID');
+            }
             if (! in_array($finding['kind'], ['structure', 'literary', 'continuity', 'rule'], true) || ! in_array($finding['severity'], ['advisory', 'blocking'], true)
                 || ($data['verdict'] === 'pass' && $finding['severity'] === 'blocking')) {
                 throw new InvalidArgumentException('REVIEW_INVALID');
@@ -278,6 +287,6 @@ final class SubmissionContract
         unset($finding);
         self::rejectEvidence($problems);
 
-        return $data;
+        return $tier === null ? $data : ReviewTiers::apply($data, $tier);
     }
 }

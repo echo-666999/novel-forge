@@ -179,7 +179,8 @@ class C01SequenceTest extends TestCase
                         $this->assertStringContainsString('待核事项：open_items.pending', $log->request_parameters['prompt_audit']['system_prompt']);
                     }
                     $submission = ChapterSubmissionRun::findOrFail($log->request_parameters['submission_run_id']);
-                    $data = ['review' => ['verdict' => $this->rejectFifthReview && $submission->chapter->number === 5 ? 'needs_revision' : 'pass', 'summary' => '隔离评审通过', 'evidence_ids' => ['p1'], 'findings' => []]];
+                    $reject = $this->rejectFifthReview && $submission->chapter->number === 5;
+                    $data = ['review' => ['verdict' => $reject ? 'needs_revision' : 'pass', 'summary' => '隔离评审通过', 'evidence_ids' => ['p1'], 'findings' => $reject ? [ChapterSubmissionTest::hardDefectFinding($submission)] : []]];
                 } else {
                     $submission = ChapterSubmissionRun::findOrFail($log->request_parameters['submission_run_id']);
                     if ($this->failThirdExtraction && $submission->chapter->number === 3) {

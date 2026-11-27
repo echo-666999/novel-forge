@@ -176,6 +176,7 @@ final class ContentExecutionContract
             $instructions .= '问题带有段号时，范围只能落在这些段及前后'.self::REVISION_SLACK.'段之内；所有范围合计最多覆盖'.$limit.'段，超出整次修订无效。';
             $instructions .= self::textRules();
             $instructions .= ($context['style_rules'] ?? false) === true ? ContentStyleRules::reviseInstructions() : '';
+            $instructions .= isset($context['story_profile']) ? StoryProfile::instructions($context['story_profile']) : '';
             $instructions .= '每个range的text是替换后的自然段列表，与正文分段规则相同：叙述段写完一个动作、场面或情绪节拍再分段，不要一句一段，不夹带人物说出口的原话；对白段是一个人的一次发言，用中文引号写出原话，只带说话人紧邻的一两句动作或神态，引号外不超过'.self::DIALOGUE_ACTION.'字，换人开口另起一段。每段text不含换行和Markdown，以完整句末标点结束。前文固定指令把text说成整段正文时，以此处的段落列表为准。';
         }
         if ($step === 'fine' && isset($context['scene_range'])) {
@@ -214,7 +215,8 @@ final class ContentExecutionContract
                     .'改写后的叙述要再对照前后相邻的对白段自检，包括本次没有改动的对白段，不能形成新的转述，也不能换用提纲里的其他句子。'
                     // 文字问题修复的slot_plan已去掉叙述字段，照搬判定改按清单逐句对照。
                     .'本次slot_plan只保留时间、地点、台词要点和推进点；plan_sentences_to_avoid列出细纲中所有会被判为照搬的分句，改写和保留的每一句都不能原样包含清单中的任何一句。'
-                    .(isset($context['opening_mode']) ? ContentStyleRules::repairInstructions($context['opening_mode']) : '');
+                    .(isset($context['opening_mode']) ? ContentStyleRules::repairInstructions($context['opening_mode']) : '')
+                    .(isset($context['story_profile']) ? StoryProfile::instructions($context['story_profile']) : '');
             }
             // 多场景篇幅修复：各场景给出各自的实测字数与净增或净删范围。
             if (($context['repair_direction'] ?? null) === 'length') {
@@ -248,6 +250,7 @@ final class ContentExecutionContract
                 .'思考与正文共用同一输出上限：思考时只列每个场景的节拍、对白要点和篇幅分配，不要在思考中先写出正文或逐段起草，也不要在思考中逐段复查；正文直接写在输出里，边写边按上述规则自检。'
                 .(($context['scene_state'] ?? false) === true ? self::SCENE_STATE_DRAFT : '')
                 .(isset($context['opening_mode']) ? ContentStyleRules::draftInstructions($context['opening_mode']) : '')
+                .(isset($context['story_profile']) ? StoryProfile::instructions($context['story_profile']) : '')
                 .self::foreshadowInstructions('draft', $context['foreshadow_obligations'] ?? [])
                 .self::openItemInstructions('draft', $context);
         }

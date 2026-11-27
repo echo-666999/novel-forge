@@ -1218,7 +1218,7 @@ class ViewChapterContent extends Page implements HasTable
     {
         return collect($this->submissionView()['review']['findings'] ?? [])->values()->map(fn (array $finding, int $index): array => [
             'title' => '问题'.($index + 1).' · '.$finding['kind'],
-            'verdict' => $finding['blocking'] ? '阻塞' : '建议',
+            'verdict' => $finding['blocking'] ? '阻塞' : (($finding['downgraded'] ?? false) ? '瑕疵（按本书严格度只记录）' : '建议'),
             'reason' => $finding['reason'],
             'evidence' => $this->evidenceLines($finding['quotes']),
         ])->all();

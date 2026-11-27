@@ -2,6 +2,7 @@
 
 namespace App\Services\Ai;
 
+use App\Services\Pipeline\ReviewTiers;
 use App\Services\Pipeline\SubmissionContract;
 use Illuminate\Contracts\JsonSchema\JsonSchema;
 use Laravel\Ai\Attributes\MaxSteps;
@@ -24,7 +25,8 @@ final class SubmissionAgent implements Agent, HasStructuredOutput
     public function instructions(): string
     {
         return ($this->options->builtinInstructions ?? $this->contractInstructions()).$this->options->templateInstructions.self::outputInstructions($this->options->submissionPurpose)
-            .(($this->options->submissionContext['open_items'] ?? false) === true ? self::openItemInstructions($this->options->submissionPurpose) : '');
+            .(($this->options->submissionContext['open_items'] ?? false) === true ? self::openItemInstructions($this->options->submissionPurpose) : '')
+            .($this->reviewTier() === null ? '' : ReviewTiers::instructions($this->reviewTier()));
     }
 
     /** 程序输出约束附加在模板之后，后台补充文本不能覆盖证据上限与提取容量。 */
@@ -58,7 +60,15 @@ final class SubmissionAgent implements Agent, HasStructuredOutput
      */
     public function schema(JsonSchema $schema): array
     {
-        return SubmissionContract::schema($schema, $this->options->submissionPurpose, $this->options->submissionContext['anchors'], $this->options->submissionContext['entity_catalog'] ?? [], $this->options->submissionContext['foreshadow_ids'] ?? [], $this->options->submissionContext['open_item_ids'] ?? null);
+        return SubmissionContract::schema($schema, $this->options->submissionPurpose, $this->options->submissionContext['anchors'], $this->options->submissionContext['entity_catalog'] ?? [], $this->options->submissionContext['foreshadow_ids'] ?? [], $this->options->submissionContext['open_item_ids'] ?? null, $this->reviewTier());
+    }
+
+    /** 评审请求冻结的分级；提取与台账请求不分级。
+     * @return array{version: string, strictness: string}|null
+     */
+    private function reviewTier(): ?array
+    {
+        return $this->options->submissionPurpose === 'review' ? ($this->options->submissionContext['review_tier'] ?? null) : null;
     }
 
     /** 输出容量固定，不能自动扩大。 */

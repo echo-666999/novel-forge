@@ -4,6 +4,7 @@ namespace App\Filament\Resources\Novels\Pages;
 
 use App\Enums\GenerationMode;
 use App\Enums\NovelStatus;
+use App\Enums\ReviewStrictness;
 use App\Enums\Stage;
 use App\Enums\StageStatus;
 use App\Filament\Resources\Novels\NovelResource;
@@ -28,6 +29,7 @@ use Filament\Actions\Action;
 use Filament\Actions\ActionGroup;
 use Filament\Facades\Filament;
 use Filament\Forms\Components\Checkbox;
+use Filament\Forms\Components\Radio;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
@@ -175,6 +177,17 @@ class ViewNovel extends ViewRecord
                 ])->action(function (array $data): void {
                     app(NovelBudget::class)->set($this->getRecord()->id, Filament::auth()->user(), $data['amount'] ?? null, $data['currency'], $data['reason']);
                     Notification::make()->success()->title('预算已更新')->body(app(NovelBudget::class)->describe($this->getRecord()->refresh()))->send();
+                }),
+            // 评审严格度只影响之后新建的提交准备，进行中和已完成的准备沿用各自冻结的口径。
+            Action::make('adjustReviewStrictness')->label('评审严格度')->modalHeading('调整提交评审严格度')
+                ->modalDescription('只影响之后新开始的提交评审；已在评审中的章节沿用原来的严格度。')
+                ->fillForm(fn (): array => ['review_strictness' => $this->getRecord()->review_strictness->value])
+                ->schema([
+                    Radio::make('review_strictness')->label('评审严格度')->options(ReviewStrictness::options())
+                        ->descriptions(collect(ReviewStrictness::cases())->mapWithKeys(fn (ReviewStrictness $case): array => [$case->value => $case->description()])->all())->required(),
+                ])->action(function (array $data): void {
+                    $this->getRecord()->update(['review_strictness' => ReviewStrictness::from($data['review_strictness'])]);
+                    Notification::make()->success()->title('评审严格度已改为「'.$this->getRecord()->review_strictness->label().'」')->send();
                 }),
             // 作者接管：当前登录账号不是本书作者时出现；接管后原账号不能再核对、提交本书章节。
             Action::make('takeOverBook')->label('接管本书')->color('warning')->modalHeading('接管本书作者身份')

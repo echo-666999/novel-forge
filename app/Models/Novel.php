@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Enums\GenerationMode;
 use App\Enums\NovelStatus;
+use App\Enums\ReviewStrictness;
 use App\Enums\Stage;
 use App\Models\Concerns\PreservesJsonFloats;
 use Database\Factories\NovelFactory;
@@ -13,7 +14,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /** 小说及其运行计数骨架，正式剧情由后续提交体系维护。 */
-#[Fillable(['title', 'genre', 'premise_raw', 'target_chapters', 'chapter_length_policy', 'status', 'current_stage', 'execution_count', 'max_execution_count', 'progress', 'chapters_done', 'chapters_total', 'state_version', 'generation_mode', 'generation_config', 'pause_requested', 'run_control_history', 'creative_brief', 'budget_amount', 'budget_currency', 'budget_history', 'active_baseline_id'])]
+#[Fillable(['title', 'genre', 'premise_raw', 'target_chapters', 'chapter_length_policy', 'status', 'current_stage', 'execution_count', 'max_execution_count', 'progress', 'chapters_done', 'chapters_total', 'state_version', 'generation_mode', 'generation_config', 'pause_requested', 'run_control_history', 'creative_brief', 'budget_amount', 'budget_currency', 'budget_history', 'active_baseline_id', 'review_strictness', 'story_profile'])]
 class Novel extends Model
 {
     /** 使用隔离测试工厂创建关联数据。
@@ -35,6 +36,7 @@ class Novel extends Model
         'chapters_done' => 0,
         'chapters_total' => 0,
         'state_version' => 0,
+        'review_strictness' => 'loose',
     ];
 
     /** 定义枚举、结构化快照和不可变时间的转换。
@@ -47,9 +49,11 @@ class Novel extends Model
             'archive_history' => 'array',
             // 补充创作要求与预算；预算金额以十进制字符串读取，不经过浮点数。
             'creative_brief' => 'array',
+            'story_profile' => 'array',
             'budget_amount' => 'decimal:8',
             'budget_history' => 'array',
             'generation_mode' => GenerationMode::class,
+            'review_strictness' => ReviewStrictness::class,
             'generation_config' => 'array',
             // 运行控制独立于冻结生成配置，避免暂停使来源摘要失效。
             'pause_requested' => 'boolean',
@@ -70,7 +74,7 @@ class Novel extends Model
         ];
     }
 
-    /** 冻结进设定、大纲和正文运行的作者输入；只有填写了补充创作要求时才带上该字段，旧书快照保持不变。
+    /** 冻结进设定、大纲和正文运行的作者输入；补充创作要求、题材与文风只在填写时才带上，旧书快照保持不变。
      * @return array<string, mixed>
      */
     public function planningInput(): array
@@ -78,6 +82,10 @@ class Novel extends Model
         $input = $this->only(['id', 'title', 'genre', 'premise_raw', 'target_chapters', 'chapter_length_policy']);
         if (filled($this->creative_brief)) {
             $input['creative_brief'] = $this->creative_brief;
+        }
+        // 建书时选了题材包或文风预设的书，冻结整份副本；后台之后修改列表不影响本书。
+        if (filled($this->story_profile)) {
+            $input['story_profile'] = $this->story_profile;
         }
 
         return $input;

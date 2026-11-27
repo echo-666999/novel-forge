@@ -76,7 +76,7 @@ final class ChapterSubmissionService
         try {
             $data = ContentSchema::decode($log->response_text);
             match ($run->step) {
-                'review' => SubmissionContract::review($data, $body),
+                'review' => SubmissionContract::review($data, $body, ReviewTiers::frozen($run)),
                 'ledger' => app(SubmissionValidator::class)->normalizeOpenItems($data, $body),
                 default => app(SubmissionValidator::class)->normalize($data, $body, $run->snapshot['state']),
             };
@@ -171,6 +171,10 @@ final class ChapterSubmissionService
                 'operator_id' => $operator->id, 'reason' => $reason, 'protocol' => array_map(fn (string $step): string => hash('sha256', SubmissionContract::instructions($step)), array_combine(self::steps($ledger), self::steps($ledger)))];
             if ($ledger) {
                 $config['open_item_step'] = true;
+            }
+            // 评审分级随本书严格度冻结，之后修改严格度只影响新的准备运行。
+            if (($tier = ReviewTiers::config($novel)) !== null) {
+                $config['review_tier'] = $tier;
             }
             // 评审推理强度来自模型配置并冻结在本次准备中，避免将文本提示直接复制成阻塞结论。
             $reasoning = ModelProfiles::profile($model)['review_reasoning'];
@@ -360,6 +364,10 @@ final class ChapterSubmissionService
                     $context['open_item_ids'] = OpenItemLedger::pendingIds($run->snapshot['content_sources']['open_items']);
                 }
             }
+            // 冻结了评审分级的运行：评审结构增加硬伤类别，提示词附加本书严格度。
+            if ($purpose === 'review' && ($tier = ReviewTiers::frozen($run)) !== null) {
+                $context['review_tier'] = $tier;
+            }
             if ($purpose === 'review' && isset($run->config['review_reasoning_effort'])) {
                 $context['deepseek_reasoning_effort'] = $run->config['review_reasoning_effort'];
             }
@@ -392,7 +400,7 @@ final class ChapterSubmissionService
             }
             $data = ContentSchema::decode($log->response_text);
             $result = match ($purpose) {
-                'review' => SubmissionContract::review($data, $version->body),
+                'review' => SubmissionContract::review($data, $version->body, ReviewTiers::frozen($run)),
                 'ledger' => app(SubmissionValidator::class)->normalizeOpenItems($data, $version->body),
                 default => app(SubmissionValidator::class)->normalize($data, $version->body, $run->snapshot['state']),
             };
@@ -627,7 +635,7 @@ final class ChapterSubmissionService
             }
             $raw = ContentSchema::decode($log->response_text);
             $normalized = match ($purpose) {
-                'review' => SubmissionContract::review($raw, $run->version->body),
+                'review' => SubmissionContract::review($raw, $run->version->body, ReviewTiers::frozen($run)),
                 'ledger' => app(SubmissionValidator::class)->normalizeOpenItems($raw, $run->version->body),
                 default => app(SubmissionValidator::class)->normalize($raw, $run->version->body, $run->snapshot['state']),
             };
