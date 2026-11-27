@@ -903,7 +903,7 @@ class ViewChapterContent extends Page implements HasTable
                     'note' => ($handoff['open_promises'] === [] ? '本章没有留下待办约定' : '留下的约定：'.implode('；', array_map(fn (array $promise): string => $promise['who'].'·'.$promise['when'].'·'.$promise['what'].($promise['planned'] ? '' : '（章纲外）'), $handoff['open_promises'])))
                         .'。下一章生成时会先接住这些约定；只作记录，不影响检查结论。']]),
             ...array_map(fn (array $item): array => ['title' => '开篇交代：'.$item['topic'], 'verdict' => OpeningBrief::COVERAGE_LABELS[$item['coverage']] ?? $item['coverage'],
-                'note' => ($item['reason'] === '' ? '' : rtrim($item['reason'], '。').'。').'只作记录，不影响检查结论；没交代清楚时可在正文里手改或按批注重写。'], $opening),
+                'note' => ($item['reason'] === '' ? '' : preg_replace('/。+$/u', '', $item['reason']).'。').'只作记录，不影响检查结论；没交代清楚时可在正文里手改或按批注重写。'], $opening),
             ...($payoff === null ? [] : [['title' => '兑现点：'.OutlineRhythm::SIZES[$planned['size'] ?? 'small'].'兑现·'.($planned['type'] ?? '').'（'.($planned['description'] ?? '').'）',
                 'verdict' => OutlineRhythm::DELIVERY_LABELS[$payoff['delivery']] ?? $payoff['delivery'],
                 'note' => $payoff['reason'].'。只作记录，不影响检查结论；没写足时可在正文里手改或按批注重写。']]),

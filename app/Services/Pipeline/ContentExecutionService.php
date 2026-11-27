@@ -1020,6 +1020,11 @@ final class ContentExecutionService
             // 采用已保存响应时没有新请求：复验失败同样归为响应结构无效。
             $failure = $log?->status === 'succeeded' || $reusedDraft !== null || $reusedRevision !== null ? 'invalid_schema' : (CostLog::where('novel_stage_id', $stage->id)->exists() ? 'unknown' : 'audit_failed');
             $error = $exception instanceof InvalidArgumentException ? $exception->getMessage() : '本地处理异常，保留证据后显式恢复';
+            // 本地异常原样记日志，便于定位；不写进运行结果，避免泄露内部细节。
+            if (! $exception instanceof InvalidArgumentException) {
+                Log::warning('正文步骤本地处理异常', ['run_id' => $id, 'step' => $step, 'exception' => $exception::class, 'message' => mb_substr($exception->getMessage(), 0, 500), 'at' => $exception->getFile().':'.$exception->getLine(),
+                    'trace' => array_map(fn (array $frame): string => basename($frame['file'] ?? '').':'.($frame['line'] ?? '').' '.($frame['class'] ?? '').'::'.$frame['function'], array_slice($exception->getTrace(), 0, 8))]);
+            }
         }
         try {
             $repairSlot = $request['context']['draft_repair_slot'] ?? null;

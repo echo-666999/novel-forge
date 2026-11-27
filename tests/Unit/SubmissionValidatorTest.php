@@ -14,6 +14,20 @@ use PHPUnit\Framework\TestCase;
 /** B05硬约束直接使用正文证据验证，不访问模型或业务数据库。 */
 class SubmissionValidatorTest extends TestCase
 {
+    /** 长场景事件引用超过上限：冻结了提取纠正的运行保留开头和结尾各一半段落并记下原引用数；未冻结的仍拒绝。 */
+    public function test_long_event_evidence_is_trimmed_only_when_repair_frozen(): void
+    {
+        $body = implode("\n", array_map(fn (int $i): string => '第'.$i.'段正文内容。', range(1, 12)));
+        $data = ['proposed_entities' => [], 'patch' => [], 'events' => [['key' => 'event-1', 'event_type' => SubmissionContract::EVENT_TYPES[0], 'narrative_order' => 1, 'actor_ref' => 'entity-1', 'target_refs' => [],
+            'time_scope' => 'present', 'fact_category' => 'objective_confirmed', 'summary' => '长场景', 'evidence_ids' => array_map(fn (int $i): string => 'p'.$i, range(1, 11))]]];
+        $event = (new SubmissionValidator)->normalize($data, $body, [], true)['events'][0];
+        $this->assertSame(['p1', 'p2', 'p3', 'p4', 'p8', 'p9', 'p10', 'p11'], $event['evidence_ids']);
+        $this->assertSame(11, $event['evidence_trimmed_from']);
+        $this->assertCount(SubmissionContract::MAX_EVIDENCE_PARAGRAPHS, $event['evidence']);
+        $this->expectException(SubmissionRejection::class);
+        (new SubmissionValidator)->normalize($data, $body);
+    }
+
     /** 评审通过分支不允许阻塞项；本地仍拒绝绕过供应商Schema的矛盾响应。 */
     public function test_review_schema_and_local_guard_reject_pass_with_blocking(): void
     {

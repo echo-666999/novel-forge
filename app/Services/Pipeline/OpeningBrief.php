@@ -115,7 +115,7 @@ final class OpeningBrief
      */
     public static function chapterInstructions(array $items, string $step): string
     {
-        $list = implode('；', array_map(fn (array $item): string => '「'.$item['topic'].'」'.rtrim($item['content'], '。').'（写法：'.rtrim($item['technique'], '。').'）', $items));
+        $list = implode('；', array_map(fn (array $item): string => '「'.$item['topic'].'」'.preg_replace('/。+$/u', '', $item['content']).'（写法：'.preg_replace('/。+$/u', '', $item['technique']).'）', $items));
         $text = "\n本章必须交代的开篇背景：".$list.'。';
 
         return $text.($step === 'fine'

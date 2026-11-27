@@ -103,6 +103,14 @@ final class SubmissionValidator
                 $event['fact_category'] = FactCategory::CharacterBelief->value;
                 $event['category_repaired_from'] = FactCategory::ObjectiveConfirmed->value;
             }
+            // 冻结了提取纠正的运行：长场景事件引用的段落都存在但超过上限时，保留开头和结尾各一半段落，不让整次提取作废，保留原引用数。
+            $max = SubmissionContract::MAX_EVIDENCE_PARAGRAPHS;
+            if ($repairCategories && is_array($event['evidence_ids']) && array_is_list($event['evidence_ids']) && count($event['evidence_ids']) > $max
+                && count(array_unique($event['evidence_ids'], SORT_REGULAR)) === count($event['evidence_ids'])
+                && array_diff($event['evidence_ids'], array_keys(ContentSchema::anchors($body))) === []) {
+                $event['evidence_trimmed_from'] = count($event['evidence_ids']);
+                $event['evidence_ids'] = [...array_slice($event['evidence_ids'], 0, intdiv($max, 2)), ...array_slice($event['evidence_ids'], -($max - intdiv($max, 2)))];
+            }
             $event['evidence'] = SubmissionContract::collectEvidence($event['evidence_ids'], $body, $event['key'], $problems);
         }
         unset($event);

@@ -7,6 +7,7 @@ use App\Services\Ai\SettingDecisionAgent;
 use App\Services\Ai\SettingGenerationAgent;
 use App\Services\Ai\TextRequestOptions;
 use App\Services\Pipeline\OpeningBrief;
+use App\Services\Pipeline\OutlineRhythm;
 use App\Services\Pipeline\SettingSchema;
 use App\Services\Pipeline\StoryProfile;
 use Illuminate\JsonSchema\JsonSchemaTypeFactory;
@@ -100,6 +101,19 @@ class OpeningBriefTest extends TestCase
         $this->assertSame([], OpeningBrief::chapterItems([], 1));
         $this->assertStringContainsString('「交代0」内容0（写法：回忆）', OpeningBrief::chapterInstructions(OpeningBrief::chapterItems($setting, 1), 'draft'));
         $this->assertStringContainsString('细纲要把每一项落到具体场景里', OpeningBrief::chapterInstructions(OpeningBrief::chapterItems($setting, 1), 'fine'));
+    }
+
+    /** 去掉句末句号时按字符处理：以"一"等末字节与句号相同的字结尾也不会截出非法 UTF-8。 */
+    public function test_trailing_period_is_trimmed_by_character(): void
+    {
+        $text = OpeningBrief::chapterInstructions([['topic' => '统一', 'content' => '口径统一。', 'technique' => '一笔不落地写成一。']], 'draft');
+        $this->assertTrue(mb_check_encoding($text, 'UTF-8'));
+        $this->assertStringContainsString('「统一」口径统一（写法：一笔不落地写成一）', $text);
+        $rhythm = OutlineRhythm::chapterInstructions(['payoff' => ['type' => '打脸', 'size' => 'small', 'description' => '当众说一。'], 'emotional_peak' => '心里一。', 'hook_type' => 'crisis']);
+        $this->assertTrue(mb_check_encoding($rhythm, 'UTF-8'));
+        $this->assertStringContainsString('当众说一', $rhythm);
+        $profile = ['genre' => ['name' => '年代', 'content' => ['core_promise' => '日子过成一。', 'taboos' => []]], 'elements' => [['name' => '重生', 'content' => ['world_rules_hints' => '记忆不唯一。', 'taboos' => []]]]];
+        $this->assertTrue(mb_check_encoding(StoryProfile::instructions($profile), 'UTF-8'));
     }
 
     /** 检查结论条数须与清单一致，证据只保留当前正文里的段落；主题以清单为准。 */

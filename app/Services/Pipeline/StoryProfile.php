@@ -146,12 +146,12 @@ final class StoryProfile
                 .($profile['style']['content']['samples'] === [] ? '' : 'story_profile.style.samples是这种文风的示范段落，只学语气、节奏和用词，不照搬其中的人物、情节和句子。');
         }
         if (isset($profile['genre'])) {
-            $text .= "\n本书题材「".$profile['genre']['name'].'」：给读者的承诺是'.rtrim($profile['genre']['content']['core_promise'], '。').'。本章要让读者感到这个承诺在兑现或在蓄力。'
+            $text .= "\n本书题材「".$profile['genre']['name'].'」：给读者的承诺是'.preg_replace('/。+$/u', '', $profile['genre']['content']['core_promise']).'。本章要让读者感到这个承诺在兑现或在蓄力。'
                 .($profile['genre']['content']['taboos'] === [] ? '' : '题材禁忌：'.implode('；', $profile['genre']['content']['taboos']).'。');
         }
         foreach ($profile['elements'] ?? [] as $element) {
             $content = $element['content'];
-            $text .= "\n本书叠加设定元素「".$element['name'].'」：'.(filled($content['world_rules_hints']) ? rtrim($content['world_rules_hints'], '。').'。' : '')
+            $text .= "\n本书叠加设定元素「".$element['name'].'」：'.(filled($content['world_rules_hints']) ? preg_replace('/。+$/u', '', $content['world_rules_hints']).'。' : '')
                 .($content['taboos'] === [] ? '' : '禁忌：'.implode('；', $content['taboos']).'。');
         }
 

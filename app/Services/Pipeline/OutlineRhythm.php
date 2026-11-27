@@ -170,7 +170,7 @@ final class OutlineRhythm
     public static function reviewInstructions(array $rhythm): string
     {
         return '
-兑现点检查（只记录，不影响points与hook的判断）：章纲计划的兑现点是「'.self::SIZES[$rhythm['payoff']['size']].'兑现·'.$rhythm['payoff']['type'].'：'.rtrim($rhythm['payoff']['description'], '。').'」。'
+兑现点检查（只记录，不影响points与hook的判断）：章纲计划的兑现点是「'.self::SIZES[$rhythm['payoff']['size']].'兑现·'.$rhythm['payoff']['type'].'：'.preg_replace('/。+$/u', '', $rhythm['payoff']['description']).'」。'
             .'在payoff_review里判断正文是否写出了这次兑现：delivered为写成了完整场面，有压力、有出手、有对手或旁人当场的反应；partial为写到了但被一笔带过，或兑现的方向与计划不同、爽感明显打了折扣；missing为没有写到。reason一句话说明差在哪里，evidence_ids引用兑现所在的段落，没有写到时可以为空。';
     }
 
@@ -201,10 +201,10 @@ final class OutlineRhythm
     public static function chapterInstructions(array $rhythm): string
     {
         $payoff = $rhythm['payoff'];
-        $text = $payoff['type'] === self::NONE ? '' : "\n本章兑现点（".self::SIZES[$payoff['size']].'兑现·'.$payoff['type'].'）：'.rtrim($payoff['description'], '。')
+        $text = $payoff['type'] === self::NONE ? '' : "\n本章兑现点（".self::SIZES[$payoff['size']].'兑现·'.$payoff['type'].'）：'.preg_replace('/。+$/u', '', $payoff['description'])
             .'。这是读者读这一章的理由，要写成完整的场面：先让压力或对手的气焰立起来，再让主角出手，写出对手和旁人当场的反应，不要一句话交代结果。';
 
-        return $text.($rhythm['emotional_peak'] === '' ? '' : "\n本章情绪最高点：".rtrim($rhythm['emotional_peak'], '。').'。用人物的言行和身体反应写出来，不要只用旁白点明。')
+        return $text.($rhythm['emotional_peak'] === '' ? '' : "\n本章情绪最高点：".preg_replace('/。+$/u', '', $rhythm['emotional_peak']).'。用人物的言行和身体反应写出来，不要只用旁白点明。')
             ."\n章末钩子类型：".self::HOOK_TYPES[$rhythm['hook_type']].'。';
     }
 }
