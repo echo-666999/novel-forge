@@ -71,8 +71,8 @@ final class ContentExecutionContract
     /** 细纲场景中服务于写戏的字段；v14细纲没有这些字段，复用时只读兼容。 */
     public const DRAMA_FIELDS = ['goal', 'obstacle', 'emotional_beat', 'key_dialogue'];
 
-    /** 允许出现在行尾的完整句末标点，供应商Schema与本地复验共用。 */
-    private const LINE_ENDING = '[。！？…；：][”’」』）】]*';
+    /** 允许出现在行尾的完整句末标点，供应商Schema与本地复验共用；破折号收尾的话是被打断的发言（如“可仓的事——”），也算完整。 */
+    private const LINE_ENDING = '(?:[。！？…；：]|——)[”’」』）】]*';
 
     /** 按冻结版本返回四个步骤的指令摘要。
      * @return array<string, string>
@@ -767,8 +767,9 @@ final class ContentExecutionContract
             if (preg_match('/[\s#*_`~>]/u', $paragraph['text']) === 1) {
                 $errors[] = $position.'不得含换行、其他空白或Markdown';
             }
+            // 与其他分段问题一并列出位置，由逐场景修复补完这一段，不必整章重写。
             if ($complete && ! self::hasCompleteEnding($paragraph['text'])) {
-                throw new InvalidArgumentException('自动首章正文段落未完整结束');
+                $errors[] = $position.'未以完整的句末标点结束（「'.mb_substr($paragraph['text'], -12).'」），补完这句话';
             }
             $kind = $paragraph['kind'];
             $problem = match ($kind) {

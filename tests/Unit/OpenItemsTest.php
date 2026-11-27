@@ -61,7 +61,16 @@ class OpenItemsTest extends TestCase
             'confirm_without_id' => [['action' => 'confirm', 'item_id' => '', 'claim' => '确认', 'evidence_ids' => ['p1']]],
             'unknown_action' => [['action' => 'close', 'item_id' => 'open-7-1', 'claim' => '关闭', 'evidence_ids' => ['p1']]],
             'blank_claim' => [['action' => 'open', 'item_id' => '', 'claim' => ' ', 'evidence_ids' => ['p1']]],
-            'extra_key' => [['action' => 'open', 'item_id' => '', 'claim' => '待核', 'evidence_ids' => ['p1'], 'note' => '多余']]];
+            'missing_key' => [['action' => 'open', 'item_id' => '', 'claim' => '待核']]];
+    }
+
+    /** 必需字段齐全时，模型多写的字段（常见为与action重复的type）被丢弃，不让整次提交失败。 */
+    public function test_extra_keys_are_dropped_when_required_fields_are_present(): void
+    {
+        $data = (new SubmissionValidator)->normalize($this->extraction([['action' => 'open', 'item_id' => '', 'claim' => '待核', 'evidence_ids' => ['p1'], 'type' => 'open']]), self::BODY);
+
+        $this->assertArrayNotHasKey('type', $data['open_items'][0]);
+        $this->assertSame('待核', $data['open_items'][0]['claim']);
     }
 
     /** @param  array<string, mixed>  $entry */

@@ -36,6 +36,8 @@ class ContentStyleRulesTest extends TestCase
             'next_day' => ['次日上午九点，库房外间登记台的灯管有一支不亮。', true],
             'clock_minutes' => ['九点差十分，修复室窗台上的湿度计还停在偏高的位置。', true],
             'evening' => ['傍晚六点多，沈禾推门进屋。', true],
+            'colloquial_next_day' => ['转天上午，周小麦上了厂部楼。', true],
+            'colloquial_dusk' => ['天擦黑收摊，匾里还剩七八块卤豆干。', true],
             'dialogue' => ['“这钱您揣兜里一年了，兜不嫌沉？”', false],
             'action' => ['瓜子壳落在门槛上，她往门框上一靠。', false],
             'dawn_word_later' => ['她一直等到清晨才睡着。', false],

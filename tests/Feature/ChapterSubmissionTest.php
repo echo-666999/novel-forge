@@ -128,7 +128,7 @@ class ChapterSubmissionTest extends TestCase
                 }
                 // 引用超过4个段落：本地证据校验拒绝，记录具体原因。
                 if ($mode === 'too_many_evidence') {
-                    $data['events'][0]['evidence_ids'] = ['p1', 'p2', 'p3', 'p4', 'p5'];
+                    $data['events'][0]['evidence_ids'] = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8', 'p9'];
                 }
                 if ($mode === 'invalid_category') {
                     $data['events'][0]['fact_category'] = [];
@@ -680,8 +680,8 @@ class ChapterSubmissionTest extends TestCase
         $this->scenario = 'too_many_evidence';
         [$run, $operator] = self::prepared();
         $this->assertSame(['failed', 'EVIDENCE_INVALID'], [$run->status, $run->stop_reason]);
-        $expected = '事件提取失败：评审或提取引用的原文证据无效——event-1的evidence_ids引用了5个段落（p1、p2、p3、p4、p5），每条最多4个：只保留最能支撑该项的段落，跨段较长的事件拆成多个事件';
-        $this->assertSame('event-1的evidence_ids引用了5个段落（p1、p2、p3、p4、p5），每条最多4个：只保留最能支撑该项的段落，跨段较长的事件拆成多个事件', collect($run->control_history)->last()['detail']);
+        $expected = '事件提取失败：评审或提取引用的原文证据无效——event-1的evidence_ids引用了9个段落（p1、p2、p3、p4、p5、p6、p7、p8、p9），每条最多8个：只保留最能支撑该项的段落，跨段较长的事件拆成多个事件';
+        $this->assertSame('event-1的evidence_ids引用了9个段落（p1、p2、p3、p4、p5、p6、p7、p8、p9），每条最多8个：只保留最能支撑该项的段落，跨段较长的事件拆成多个事件', collect($run->control_history)->last()['detail']);
         $this->assertSame($expected, app(ChapterSubmissionService::class)->failureReason($run));
         // 没有失败记录的旧运行按已保存响应复验，不发送请求。
         $legacy = clone $run;
@@ -691,12 +691,12 @@ class ChapterSubmissionTest extends TestCase
         $this->assertSame($sent, CostLog::count());
         $this->actingAs($operator);
         Filament::setCurrentPanel(Filament::getPanel('admin'));
-        Livewire::test(ViewChapterContent::class, ['record' => $run->novel_id])->assertSee('每条最多4个')
+        Livewire::test(ViewChapterContent::class, ['record' => $run->novel_id])->assertSee('每条最多8个')
             ->mountAction('retrySubmission')->assertActionDataSet(['reason' => '重跑：'.$expected])
             ->setActionData(['accept_request' => true])->callMountedAction()->assertHasNoActionErrors();
         $successor = ChapterSubmissionRun::where('predecessor_id', $run->id)->sole();
         $this->assertSame('重跑：'.$expected, $successor->config['reason']);
-        $this->assertSame(['stop_reason' => 'EVIDENCE_INVALID', 'detail' => 'event-1的evidence_ids引用了5个段落（p1、p2、p3、p4、p5），每条最多4个：只保留最能支撑该项的段落，跨段较长的事件拆成多个事件'], $successor->config['repair_feedback']);
+        $this->assertSame(['stop_reason' => 'EVIDENCE_INVALID', 'detail' => 'event-1的evidence_ids引用了9个段落（p1、p2、p3、p4、p5、p6、p7、p8、p9），每条最多8个：只保留最能支撑该项的段落，跨段较长的事件拆成多个事件'], $successor->config['repair_feedback']);
     }
 
     /** B08后台显式重跑失败准备，保留旧证据且仅入队新后继。 */

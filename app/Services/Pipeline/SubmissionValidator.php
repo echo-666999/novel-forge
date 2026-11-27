@@ -150,7 +150,12 @@ final class SubmissionValidator
         }
 
         return array_map(function ($entry) use ($body, &$problems): array {
-            ContentSchema::keys($entry, ['action', 'item_id', 'claim', 'evidence_ids']);
+            // 模型常在条目里多写一个与action重复的type等字段：必需字段齐全时丢弃多余字段，缺字段仍然拒绝。
+            $fields = ['action', 'item_id', 'claim', 'evidence_ids'];
+            if (is_array($entry) && ! array_is_list($entry) && array_diff($fields, array_keys($entry)) === []) {
+                $entry = array_intersect_key($entry, array_flip($fields));
+            }
+            ContentSchema::keys($entry, $fields);
             ContentSchema::text($entry['claim']);
             // open 不引用既有编号；confirm、refute 必须引用待核编号，编号是否在目录内由验证门禁判断。
             if (! in_array($entry['action'], OpenItemLedger::ACTIONS, true) || ! is_string($entry['item_id']) || in_array($entry['action'], OpenItemLedger::NEW_ENTRY_ACTIONS, true) !== ($entry['item_id'] === '')) {

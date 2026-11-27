@@ -18,6 +18,15 @@ class ContentRevisionWhitespaceTest extends TestCase
         $this->assertFalse(ContentExecutionContract::hasCompleteEnding(''));
     }
 
+    /** 被打断的发言以破折号收尾算完整句，单个破折号或半截句仍是残句。 */
+    public function test_interrupted_speech_counts_as_complete(): void
+    {
+        $this->assertTrue(ContentExecutionContract::hasCompleteEnding('沈砚之硬着头皮：“东翁这诗，自然是好的。可仓的事——”'));
+        $this->assertTrue(ContentExecutionContract::hasCompleteEnding('他话没说完——'));
+        $this->assertFalse(ContentExecutionContract::hasCompleteEnding('他话没说完—'));
+        $this->assertFalse(ContentExecutionContract::hasCompleteEnding('他话没说完，'));
+    }
+
     /** 增加空行、空格及零宽字符不构成真实改写。 */
     public function test_format_only_revision_is_rejected(): void
     {

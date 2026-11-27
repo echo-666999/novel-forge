@@ -18,6 +18,9 @@ final class SubmissionContract
     /** 每个事件最多携带的状态变化条数；供应商Schema与本地复验共用。 */
     public const MAX_EVENT_STATE_CHANGES = 10;
 
+    /** 每条证据最多引用的段落数：对白一人一段，一次交锋常跨五六段，四段上限会让对白多的章节整次提交失败。 */
+    public const MAX_EVIDENCE_PARAGRAPHS = 8;
+
     public const EVENT_TYPES = ['action', 'observation', 'statement', 'belief_change', 'location_change', 'acquisition', 'transfer', 'life_change'];
 
     public const PROPERTIES = ['location', 'belief', 'knowledge', 'item_owner', 'life_status'];
@@ -49,7 +52,7 @@ final class SubmissionContract
      */
     public static function schema(JsonSchema $schema, string $purpose, array $anchors, array $catalog = [], array $foreshadowIds = [], ?array $openItemIds = null): array
     {
-        $evidence = fn () => $schema->array()->min(1)->max(4)->items($schema->string()->enum(array_keys($anchors)))->required();
+        $evidence = fn () => $schema->array()->min(1)->max(self::MAX_EVIDENCE_PARAGRAPHS)->items($schema->string()->enum(array_keys($anchors)))->required();
         if ($purpose === 'ledger') {
             return ['open_items' => self::openItemsSchema($schema, $evidence, $openItemIds ?? [])];
         }
@@ -136,7 +139,7 @@ final class SubmissionContract
             'type' => $schema->string()->enum($types)->required(), 'name' => $schema->string()->required(),
             'aliases' => $schema->array()->max(10)->items($schema->string())->required(), 'description' => $schema->string()->required(),
             'core' => $schema->boolean()->required(),
-            'evidence_ids' => $schema->array()->min(1)->max(4)->items($schema->string()->enum(array_keys($anchors)))->required(),
+            'evidence_ids' => $schema->array()->min(1)->max(self::MAX_EVIDENCE_PARAGRAPHS)->items($schema->string()->enum(array_keys($anchors)))->required(),
         ])->withoutAdditionalProperties();
 
         return $schema->anyOf($branches);
@@ -199,8 +202,8 @@ final class SubmissionContract
         if ($ids === []) {
             throw new SubmissionRejection('EVIDENCE_INVALID', $field.'为空，每条至少引用1个段落');
         }
-        if (count($ids) > 4) {
-            throw new SubmissionRejection('EVIDENCE_INVALID', $field.'引用了'.count($ids).'个段落（'.$listed.'），每条最多4个：只保留最能支撑该项的段落，跨段较长的事件拆成多个事件');
+        if (count($ids) > self::MAX_EVIDENCE_PARAGRAPHS) {
+            throw new SubmissionRejection('EVIDENCE_INVALID', $field.'引用了'.count($ids).'个段落（'.$listed.'），每条最多'.self::MAX_EVIDENCE_PARAGRAPHS.'个：只保留最能支撑该项的段落，跨段较长的事件拆成多个事件');
         }
         if (count(array_unique($ids, SORT_REGULAR)) !== count($ids)) {
             throw new SubmissionRejection('EVIDENCE_INVALID', $field.'重复引用了同一段落（'.$listed.'）');
