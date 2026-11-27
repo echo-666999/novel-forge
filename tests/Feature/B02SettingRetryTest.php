@@ -188,7 +188,7 @@ class B02SettingRetryTest extends TestCase
     {
         $novel = app(CreateNovelService::class)->createAndStart([...B02SettingTest::input(), 'generation_config' => ['model' => 'forged', 'max_output_tokens' => 999999]])->novel;
         $this->assertSame('gpt-4.1-mini', $novel->generation_config['model']);
-        $this->assertSame(4096, $novel->generation_config['max_output_tokens']);
+        $this->assertSame(8192, $novel->generation_config['max_output_tokens']);
         $this->assertSame(GenerationMode::SettingReal, $novel->generation_mode);
         $this->expectException(ValidationException::class);
         app(CreateNovelService::class)->createAndStart([...B02SettingTest::input(), 'generation_mode' => 'arbitrary']);

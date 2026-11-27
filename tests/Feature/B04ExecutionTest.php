@@ -166,6 +166,10 @@ class B04ExecutionTest extends TestCase
                 $data = ['points' => [['id' => 'chapter-1-point-1', 'met' => $met, 'reason' => '隔离推进判断', 'evidence_ids' => [$id]]],
                     'hook' => ['met' => $met, 'reason' => '隔离钩子判断', 'evidence_ids' => [$id]], 'setting_violations' => [], 'continuity_issues' => [], 'story_tensions' => [],
                     'finding_reviews' => array_map(fn ($finding): array => ['id' => $finding, 'disposition' => $met ? 'resolved' : 'unresolved', 'reason' => '隔离逐项复核', 'evidence_ids' => [$id]], array_keys($payload['findings']))];
+                // 请求结构带兑现点检查时附上只记录的结论。
+                if (isset($request['text']['format']['schema']['properties']['payoff_review'])) {
+                    $data['payoff_review'] = ['delivery' => 'partial', 'reason' => '隔离兑现：写到了但一笔带过', 'evidence_ids' => [$id]];
+                }
                 if ($this->scenario === 'blocked') {
                     $data['setting_violations'] = [['rule_id' => array_key_first($payload['rule_catalog']), 'reason' => '隔离核心冲突', 'evidence_ids' => [$id]]];
                 }
@@ -350,6 +354,28 @@ class B04ExecutionTest extends TestCase
         foreach (CostLog::where('request_parameters->step', 'check')->get() as $check) {
             $this->assertStringNotContainsString('story_profile', $check->request_parameters['prompt_audit']['user_prompt']);
         }
+    }
+
+    /** 章纲带爽点节奏时，细纲与首稿指令写明本章兑现点、情绪最高点与钩子类型。 */
+    public function test_chapter_rhythm_reaches_fine_and_draft(): void
+    {
+        $novel = B04ContentTest::readyNovel(true, 20, rhythm: true);
+        $novel->update(['chapter_length_policy' => ['min_characters' => 2500, 'max_characters' => 3500]]);
+        $run = app(ContentGenerationService::class)->start($novel, User::firstOrFail());
+        $this->assertSame('揭秘', $run->snapshot['source_chapter']['rhythm']['payoff']['type']);
+        $this->drain();
+        foreach (['fine', 'draft'] as $step) {
+            $this->assertStringContainsString('本章兑现点（小兑现·揭秘）：林澈当众拿出第1份证据，篡改者的帮手脸色发白。', CostLog::where('request_parameters->step', $step)->sole()->request_parameters['prompt_audit']['system_prompt']);
+        }
+        // 兑现点检查只记录：结论为部分兑现，检查本身照常通过。
+        $this->assertStringContainsString('兑现点检查（只记录', CostLog::where('request_parameters->step', 'check')->sole()->request_parameters['prompt_audit']['system_prompt']);
+        $check = ChapterProgressionCheck::where('chapter_id', $run->chapter_id)->sole();
+        $this->assertSame(['partial', '隔离兑现：写到了但一笔带过'], [$check->result['payoff_review']['delivery'], $check->result['payoff_review']['reason']]);
+        $this->assertSame('pass', $check->verdict);
+        $this->assertSame('awaiting_review', $run->fresh()->stop_reason);
+        $this->actingAs(User::firstOrFail());
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        Livewire::test(ViewChapterContent::class, ['record' => $run->chapter->novel_id])->assertSee('兑现点：小兑现·揭秘')->assertSee('部分兑现');
     }
 
     /** 细纲action写成成段叙述时，同一运行内带着实测字数补发一次细纲，合格后照常写正文。 */

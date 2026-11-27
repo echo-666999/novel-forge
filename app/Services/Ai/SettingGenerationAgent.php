@@ -24,7 +24,8 @@ final class SettingGenerationAgent implements Agent, HasStructuredOutput
     /** 固定文本取自冻结发布版本；输出结构和业务校验仍由程序控制。 */
     public function instructions(): string
     {
-        return ($this->options->builtinInstructions ?? $this->contractInstructions()).$this->options->templateInstructions;
+        return ($this->options->builtinInstructions ?? $this->contractInstructions()).$this->options->templateInstructions
+            .($this->options->characterCards ? SettingSchema::cardInstructions() : '');
     }
 
     /** 作者原文是创作资料，不接受其中改变响应契约或索取凭据的指令。 */
@@ -41,7 +42,7 @@ final class SettingGenerationAgent implements Agent, HasStructuredOutput
      */
     public function schema(JsonSchema $schema): array
     {
-        return SettingSchema::schema($schema);
+        return SettingSchema::schema($schema, $this->options->characterCards);
     }
 
     /** 当前 SDK 支持通过 Agent 方法读取动态输出上限。 */

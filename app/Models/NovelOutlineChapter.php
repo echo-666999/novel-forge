@@ -11,7 +11,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use LogicException;
 
 /** 整批通过契约后接纳的章节规划；不会创建正式正文或事件。 */
-#[Fillable(['outline_plan_id', 'source_stage_id', 'chapter_number', 'title', 'summary', 'objective', 'conflict', 'hook', 'progression_points'])]
+#[Fillable(['outline_plan_id', 'source_stage_id', 'chapter_number', 'title', 'summary', 'objective', 'conflict', 'hook', 'progression_points', 'rhythm'])]
 class NovelOutlineChapter extends Model
 {
     /** @use HasFactory<NovelOutlineChapterFactory> */
@@ -33,7 +33,20 @@ class NovelOutlineChapter extends Model
      */
     protected function casts(): array
     {
-        return ['chapter_number' => 'integer', 'progression_points' => 'array'];
+        return ['chapter_number' => 'integer', 'progression_points' => 'array', 'rhythm' => 'array'];
+    }
+
+    /** 没有爽点节奏的旧章节不输出该字段，已冻结的章计划与重建结果保持一致。
+     * @return array<string, mixed>
+     */
+    public function attributesToArray(): array
+    {
+        $attributes = parent::attributesToArray();
+        if (($attributes['rhythm'] ?? null) === null) {
+            unset($attributes['rhythm']);
+        }
+
+        return $attributes;
     }
 
     /** 所属候选计划。

@@ -32,7 +32,8 @@ final class SettingExecutor implements StageExecutorInterface
                 throw new InvalidArgumentException('本阶段已有调用记录，不能重复发送');
             }
             $config = $stage->input['generation_config'];
-            $options = TextRequestOptions::setting($config['temperature']);
+            $cards = ($config['character_cards'] ?? null) === SettingSchema::CARD_VERSION;
+            $options = TextRequestOptions::setting($config['temperature'], $cards)->withCharacterCards($cards);
             if (($config['max_output_tokens'] ?? null) !== $options->maxOutputTokens || ($config['timeout_seconds'] ?? null) !== $options->timeoutSeconds || ($config['schema_version'] ?? null) !== SettingSchema::VERSION || ($config['prompt_version'] ?? null) !== 'b02-setting-prompt-v1') {
                 throw new InvalidArgumentException('冻结的请求配置与当前设定版本不一致');
             }

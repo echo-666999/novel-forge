@@ -82,7 +82,9 @@ final class CreateNovelService
             'invocation_id' => (string) Str::uuid7(),
             'model' => trim($modelOverride ?? $settings->default_model),
             'enable_fine_outline' => $fineOutline,
-            ...TextRequestOptions::setting($settings->temperature)->toArray(),
+            // 新书冻结扩展人物卡：设定与设定决策输出完整人物卡。
+            'character_cards' => SettingSchema::CARD_VERSION,
+            ...TextRequestOptions::setting($settings->temperature, cards: true)->toArray(),
             'prompt_version' => 'b02-setting-prompt-v1',
             // 模板正文、版本与变量在小说根运行创建时冻结，恢复和后续章节沿用此快照。
             'prompt_templates' => app(PromptTemplateManager::class)->snapshot(),

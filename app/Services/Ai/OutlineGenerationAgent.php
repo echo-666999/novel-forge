@@ -2,6 +2,7 @@
 
 namespace App\Services\Ai;
 
+use App\Services\Pipeline\OutlineRhythm;
 use App\Services\Pipeline\OutlineSchema;
 use Illuminate\Contracts\JsonSchema\JsonSchema;
 use Illuminate\JsonSchema\Types\Type;
@@ -24,7 +25,8 @@ final class OutlineGenerationAgent implements Agent, HasStructuredOutput
     /** 固定文本取自冻结发布版本；输出结构和业务校验仍由程序控制。 */
     public function instructions(): string
     {
-        return ($this->options->builtinInstructions ?? $this->contractInstructions()).$this->options->templateInstructions;
+        return ($this->options->builtinInstructions ?? $this->contractInstructions()).$this->options->templateInstructions
+            .($this->options->outlineRhythm === null ? '' : OutlineRhythm::instructions($this->options->outlineRhythm));
     }
 
     /** 强制把行动造成的前后变化写清楚，资料中的指令不能改变契约。 */
@@ -43,7 +45,7 @@ final class OutlineGenerationAgent implements Agent, HasStructuredOutput
      */
     public function schema(JsonSchema $schema): array
     {
-        return OutlineSchema::schema($schema, ...array_values($this->options->outlineRange));
+        return OutlineSchema::schema($schema, ...[...array_values($this->options->outlineRange), $this->options->outlineRhythm]);
     }
 
     /** 固定单批输出上限。 */

@@ -190,7 +190,8 @@ class C01SequenceTest extends TestCase
                         'actor_ref' => array_key_first($submission->snapshot['entity_catalog']), 'target_refs' => [], 'time_scope' => 'present',
                         'fact_category' => 'objective_confirmed', 'summary' => '隔离观察', 'evidence_ids' => ['p1'], 'state_changes' => []]]];
                     if ($this->rejectNinthExtraction && $submission->chapter->number === 9) {
-                        $data['events'][0]['event_type'] = 'statement';
+                        // 作者隐藏真相写成已发生事实：任何严格度都由确定性验证阻断（人物陈述标成客观确认在宽松书会被改记，不再适合作为阻断样例）。
+                        $data['events'][0]['fact_category'] = 'author_hidden_truth';
                         $this->rejectNinthExtraction = false;
                     }
                     // 长程伏笔：按冻结上下文的义务报告埋设、强化与回收，可注入故障。

@@ -136,7 +136,12 @@ class ChapterSubmissionTest extends TestCase
                     $data['proposed_entities'] = [['key' => 'new-1', 'type' => 'character', 'name' => '隔离访客', 'aliases' => ['隔离来客'], 'description' => '本章出现的隔离实体', 'core' => true, 'evidence_ids' => ['p1']]];
                     $data['events'][0]['target_refs'] = ['new-1'];
                 }
+                // 作者隐藏真相不能写成已发生事实：任何严格度都阻断。
                 if ($mode === 'bad_fact') {
+                    $data['events'][0]['fact_category'] = 'author_hidden_truth';
+                }
+                // 人物陈述被标成客观确认：宽松与标准书由程序改记为人物所信，严格书仍阻断。
+                if ($mode === 'statement_fact') {
                     $data['events'][0]['event_type'] = 'statement';
                 }
                 // 未定义引用必须保留提取证据并由本地验证阻塞，不能隐式创建实体。
@@ -810,5 +815,27 @@ class ChapterSubmissionTest extends TestCase
         Livewire::test(ViewNovel::class, ['record' => $run->novel_id])->callAction('adjustReviewStrictness', ['review_strictness' => 'strict'])->assertHasNoActionErrors();
         $this->assertSame(ReviewStrictness::Strict, $run->novel->fresh()->review_strictness);
         $this->assertSame('loose', $run->fresh()->config['review_tier']['strictness']);
+    }
+
+    /** 宽松书：人物陈述被标成客观确认时改记为人物所信并保留原标注，提交不被拦下；严格书仍按原口径阻断。 */
+    public function test_statement_marked_objective_is_repaired_only_for_tiered_books(): void
+    {
+        $this->scenario = 'statement_fact';
+        [$run, $operator] = self::prepared();
+        $this->assertSame(SubmissionValidator::CATEGORY_REPAIR, $run->config['extraction_repair']);
+        $this->assertSame('ready', $run->status);
+        $event = ChapterEventExtraction::where('submission_run_id', $run->id)->sole()->result['events'][0];
+        $this->assertSame(['character_belief', 'objective_confirmed'], [$event['fact_category'], $event['category_repaired_from']]);
+        self::commit($run, $operator);
+        $this->assertSame(1, CanonicalCommit::count());
+
+        [$version, $operator] = self::candidate();
+        $version->chapter->novel->update(['review_strictness' => ReviewStrictness::Strict]);
+        $strict = app(ChapterSubmissionService::class)->prepare($version->id, $operator, 0, '严格书人物陈述', dispatch: false);
+        for ($i = 0; $i < 3 && $strict->refresh()->status === 'pending'; $i++) {
+            app(ChapterSubmissionService::class)->execute($strict->id, $strict->invocation_id, false);
+        }
+        $this->assertArrayNotHasKey('extraction_repair', $strict->config);
+        $this->assertSame('EVENT_VALIDATION_BLOCKED', $strict->fresh()->stop_reason);
     }
 }

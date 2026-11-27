@@ -54,7 +54,9 @@ final class OutlineGenerationService
             $plan = NovelOutlinePlan::query()->create([
                 'novel_id' => $novel->id, 'setting_confirmation_id' => $confirmation->id, 'target_chapters' => $novel->target_chapters,
                 'snapshot' => ['confirmation_hash' => $confirmation->content_hash, 'novel' => $novel->planningInput(), 'confirmed_setting' => $confirmation->setting, 'decisions' => $confirmation->decisions],
-                'config' => [...$config, 'model' => $model, 'batch_size' => 10, 'prompt_version' => 'b03-outline-prompt-v1', 'enable_fine_outline' => data_get($novel->generation_config, 'enable_fine_outline')],
+                // 新计划冻结爽点节奏：每章标兑现点、情绪最高点与钩子类型，爽点类型取本书题材包。
+                'config' => [...$config, 'model' => $model, 'batch_size' => 10, 'prompt_version' => 'b03-outline-prompt-v1', 'enable_fine_outline' => data_get($novel->generation_config, 'enable_fine_outline'),
+                    'payoff_rhythm' => OutlineRhythm::config($novel->planningInput())],
                 'next_chapter' => 1, 'status' => 'pending', 'invocation_id' => $token,
                 'control_history' => [$this->control('start', $author->id, $novel->max_execution_count, $novel->max_execution_count, '作者显式启动大纲')],
             ]);
@@ -166,7 +168,10 @@ final class OutlineGenerationService
                 $this->reject('冻结的全书走向已变化，拒绝继续。');
             }
         }
-        $previousChapters = $plan->chapters()->where('chapter_number', '>=', max(1, $start - 10))->orderBy('chapter_number')->get()->map(fn (NovelOutlineChapter $chapter): array => $chapter->only(['chapter_number', 'title', 'summary', 'objective', 'conflict', 'hook', 'progression_points']))->all();
+        $rhythm = OutlineRhythm::frozen($plan->config) !== null;
+        $previousChapters = $plan->chapters()->where('chapter_number', '>=', max(1, $start - 10))->orderBy('chapter_number')->get()->map(fn (NovelOutlineChapter $chapter): array => $chapter->only(['chapter_number', 'title', 'summary', 'objective', 'conflict', 'hook', 'progression_points', ...($rhythm ? ['rhythm'] : [])]))->all();
+        // 前批节奏提醒交给本批，让模型在本批补上；旧计划不带此字段。
+        $feedback = $rhythm ? (data_get($previous?->output, 'data.rhythm_issues') ?? []) : [];
         // 旧计划配置不覆盖；显式恢复的等待时间单独冻结在新尝试与操作记录中。
         $attemptConfig = $plan->config;
         $latestControl = collect($plan->control_history)->last();
@@ -180,6 +185,7 @@ final class OutlineGenerationService
                 'outline_plan_id' => $plan->id, 'invocation_id' => $token, 'generation_config' => $attemptConfig,
                 'range' => ['start' => $start, 'end' => $end, 'total' => $plan->target_chapters],
                 'roadmap' => $plan->roadmap, 'handoff' => $plan->handoff, 'previous_chapters' => $previousChapters,
+                ...($feedback === [] ? [] : ['rhythm_feedback' => ['issues' => $feedback, 'instruction' => '前一批大纲的节奏问题，本批要补上：缺中兑现就尽早安排一次完整的先压后扬，钩子类型换一种。']]),
                 'previous_stage_id' => $previous?->id ?? $plan->confirmation->source_stage_id,
                 'execution' => ['execution_count' => $novel->execution_count + 1, 'max_execution_count' => $novel->max_execution_count]],
             'started_at' => now(),

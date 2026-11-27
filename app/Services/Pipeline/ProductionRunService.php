@@ -203,7 +203,8 @@ final class ProductionRunService
                     if ($log === null || ($artifacts['decision_retry_after'] ?? 0) >= $log->id) {
                         try {
                             $log = app(AiTextGenerationService::class)->generate(PlanningJson::encode(['idea' => $novel->premise_raw, 'candidate' => $draft['setting'], 'policy' => $run->policy]),
-                                'real', $novel->generation_config['model'], $novel->id, promptVersion: 'b10-setting-decision-v1', options: TextRequestOptions::decision());
+                                'real', $novel->generation_config['model'], $novel->id, promptVersion: 'b10-setting-decision-v1',
+                                options: TextRequestOptions::decision()->withCharacterCards(($novel->generation_config['character_cards'] ?? null) === SettingSchema::CARD_VERSION));
                         } catch (AiGenerationException $exception) {
                             // 明确失败（如响应不是有效JSON）归入可自动恢复一次的决策失败；结果未知时保留原错误，等待人工核对。
                             throw $exception->status === 'failed' ? new InvalidArgumentException('SETTING_DECISION_FAILED') : $exception;

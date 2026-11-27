@@ -78,7 +78,7 @@ final class ChapterSubmissionService
             match ($run->step) {
                 'review' => SubmissionContract::review($data, $body, ReviewTiers::frozen($run)),
                 'ledger' => app(SubmissionValidator::class)->normalizeOpenItems($data, $body),
-                default => app(SubmissionValidator::class)->normalize($data, $body, $run->snapshot['state']),
+                default => app(SubmissionValidator::class)->normalize($data, $body, $run->snapshot['state'], SubmissionValidator::repairsCategories($run)),
             };
         } catch (SubmissionRejection $exception) {
             return $exception->detail;
@@ -175,6 +175,8 @@ final class ChapterSubmissionService
             // 评审分级随本书严格度冻结，之后修改严格度只影响新的准备运行。
             if (($tier = ReviewTiers::config($novel)) !== null) {
                 $config['review_tier'] = $tier;
+                // 宽松与标准书同时冻结提取纠正：人物陈述被标成客观确认时改记为人物所信，不整章拦下。
+                $config['extraction_repair'] = SubmissionValidator::CATEGORY_REPAIR;
             }
             // 评审推理强度来自模型配置并冻结在本次准备中，避免将文本提示直接复制成阻塞结论。
             $reasoning = ModelProfiles::profile($model)['review_reasoning'];
@@ -402,7 +404,7 @@ final class ChapterSubmissionService
             $result = match ($purpose) {
                 'review' => SubmissionContract::review($data, $version->body, ReviewTiers::frozen($run)),
                 'ledger' => app(SubmissionValidator::class)->normalizeOpenItems($data, $version->body),
-                default => app(SubmissionValidator::class)->normalize($data, $version->body, $run->snapshot['state']),
+                default => app(SubmissionValidator::class)->normalize($data, $version->body, $run->snapshot['state'], SubmissionValidator::repairsCategories($run)),
             };
         } catch (AiGenerationException $exception) {
             $log = $exception->costLogId === null ? null : CostLog::find($exception->costLogId);
@@ -637,7 +639,7 @@ final class ChapterSubmissionService
             $normalized = match ($purpose) {
                 'review' => SubmissionContract::review($raw, $run->version->body, ReviewTiers::frozen($run)),
                 'ledger' => app(SubmissionValidator::class)->normalizeOpenItems($raw, $run->version->body),
-                default => app(SubmissionValidator::class)->normalize($raw, $run->version->body, $run->snapshot['state']),
+                default => app(SubmissionValidator::class)->normalize($raw, $run->version->body, $run->snapshot['state'], SubmissionValidator::repairsCategories($run)),
             };
             if (PlanningJson::hash($normalized) !== $artifact->result_hash) {
                 throw new InvalidArgumentException('ARTIFACT_RESPONSE_CHANGED');

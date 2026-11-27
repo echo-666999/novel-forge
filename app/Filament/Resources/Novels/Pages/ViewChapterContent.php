@@ -31,6 +31,7 @@ use App\Services\Pipeline\ContentSchema;
 use App\Services\Pipeline\ContentStyleRules;
 use App\Services\Pipeline\ContextBuilder;
 use App\Services\Pipeline\NovelProgressQuery;
+use App\Services\Pipeline\OutlineRhythm;
 use App\Services\Pipeline\PlanningJson;
 use App\Services\Pipeline\RevisionWorkbench;
 use App\Services\Pipeline\StyleSignals;
@@ -883,8 +884,15 @@ class ViewChapterContent extends Page implements HasTable
         $metrics = ContentReadabilityMetrics::measure($body);
         $issues = collect(ContentReadabilityMetrics::issues($metrics))->keyBy('type');
         $cliches = ContentStyleRules::overusedCliches($body);
+        // 兑现点检查只记录：取当前正文对应的独立检查结论。
+        $result = $this->run()?->chapter->progression_result;
+        $payoff = ($result['body_hash'] ?? null) === hash('sha256', $body) ? ($result['payoff_review'] ?? null) : null;
+        $planned = $this->run()?->snapshot['source_chapter']['rhythm']['payoff'] ?? null;
 
         return [
+            ...($payoff === null ? [] : [['title' => '兑现点：'.OutlineRhythm::SIZES[$planned['size'] ?? 'small'].'兑现·'.($planned['type'] ?? '').'（'.($planned['description'] ?? '').'）',
+                'verdict' => OutlineRhythm::DELIVERY_LABELS[$payoff['delivery']] ?? $payoff['delivery'],
+                'note' => $payoff['reason'].'。只作记录，不影响检查结论；没写足时可在正文里手改或按批注重写。']]),
             ['title' => '直接对白占比：'.round(100 * $metrics['dialogue_share'], 1).'%', 'verdict' => $issues->has('readability_dialogue') ? '过低' : '正常',
                 'note' => $issues->get('readability_dialogue')['reason'] ?? '不低于'.round(100 * ContentReadabilityMetrics::MIN_DIALOGUE_SHARE).'%即可，低于时自动送修订'],
             ['title' => '流程词密度：每千字'.$metrics['process_density'].'个', 'verdict' => $issues->has('readability_process') ? '过高' : '正常',

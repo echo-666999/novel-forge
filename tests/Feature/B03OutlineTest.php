@@ -21,6 +21,8 @@ use App\Models\User;
 use App\Services\Pipeline\ConfirmSettingService;
 use App\Services\Pipeline\OutlineExecutor;
 use App\Services\Pipeline\OutlineGenerationService;
+use App\Services\Pipeline\OutlineRhythm;
+use App\Services\Pipeline\OutlineSchema;
 use App\Services\Pipeline\PlanningJson;
 use App\Services\Pipeline\RunControlService;
 use App\Services\Pipeline\SettingExecutor;
@@ -31,11 +33,13 @@ use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Http\Client\Request;
+use Illuminate\JsonSchema\JsonSchemaTypeFactory;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Validation\ValidationException;
+use InvalidArgumentException;
 use Livewire\Livewire;
 use LogicException;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -82,12 +86,17 @@ class B03OutlineTest extends TestCase
     /** 一次最多十章的独立候选样本；前后差异可由后续正文检查定位。
      * @return array<string, mixed>
      */
-    public static function batch(int $start = 1, int $end = 10, int $total = 10): array
+    public static function batch(int $start = 1, int $end = 10, int $total = 10, bool $rhythm = true): array
     {
         $chapters = [];
         foreach (range($start, $end) as $number) {
             $chapters[] = ['chapter_number' => $number, 'title' => '档案室的第'.$number.'份证据', 'summary' => '主角核查档案并找出新的航线信息。', 'objective' => '确认第'.$number.'份线索', 'conflict' => '记录被人刻意涂改', 'hook' => '签名指向下一处调查地点',
                 'progression_points' => [['change_type' => 'information', 'subject' => '林澈', 'before' => '缺少第'.$number.'份航线证据', 'action' => '比对原档与来信', 'after' => '取得第'.$number.'份可验证航线证据', 'verification' => '正文呈现比对过程和新证据，改变下一步调查目的地']]];
+            // 新计划冻结爽点节奏：每三章一次中兑现，钩子类型轮换。
+            if ($rhythm) {
+                $chapters[array_key_last($chapters)]['rhythm'] = ['payoff' => ['type' => '揭秘', 'size' => $number % 3 === 0 ? 'medium' : 'small', 'description' => '林澈当众拿出第'.$number.'份证据，篡改者的帮手脸色发白。'],
+                    'emotional_peak' => '林澈对着涂改的签名压住火气', 'hook_type' => array_keys(OutlineRhythm::HOOK_TYPES)[$number % 5]];
+            }
         }
         $result = ['chapters' => $chapters, 'handoff' => ['continuity_summary' => '候选规划推进到第'.$end.'章，下一章承接已取得的证据。', 'open_threads' => ['幕后篡改者仍待揭示']]];
         if ($start === 1) {
@@ -510,5 +519,44 @@ class B03OutlineTest extends TestCase
         $this->assertSame($before, $plan->chapters()->get()->map->getRawOriginal()->all());
         $this->assertSame(11, $plan->fresh()->next_chapter);
         Http::assertSentCount(1);
+    }
+
+    /** 新计划冻结爽点节奏：请求结构与指令带节奏字段，章节保存兑现点；节奏问题只记提醒并交给下一批，不让大纲停下。 */
+    public function test_payoff_rhythm_is_frozen_checked_and_fed_forward(): void
+    {
+        $confirmation = NovelSettingConfirmation::factory()->create();
+        $novel = $confirmation->novel;
+        $novel->update(['target_chapters' => 20]);
+        $plan = app(OutlineGenerationService::class)->start($novel, $confirmation->id, auth()->user());
+        $this->assertSame(OutlineRhythm::DEFAULT_TYPES, $plan->config['payoff_rhythm']['payoff_types']);
+        // 第一批全是小兑现、钩子都是悬念：连续五章无中兑现、钩子重复都应记为提醒。
+        $flat = self::batch(1, 10, 20);
+        foreach ($flat['chapters'] as &$chapter) {
+            $chapter['rhythm']['payoff']['size'] = 'small';
+            $chapter['rhythm']['hook_type'] = 'suspense';
+        }
+        unset($chapter);
+        Http::fakeSequence('https://api.openai.com/v1/responses')->push(B02SettingTest::response(json_encode($flat)))->push(B02SettingTest::response(json_encode(self::batch(11, 20, 20))));
+        $this->drain();
+        $this->assertSame('completed', $plan->fresh()->status);
+        $this->assertSame('揭秘', $plan->chapters()->where('chapter_number', 1)->sole()->rhythm['payoff']['type']);
+        $first = $novel->stages()->where('stage', 'outline')->oldest('id')->firstOrFail();
+        $issues = $first->output['data']['rhythm_issues'];
+        $this->assertContains('第1至5章连续5章没有中兑现或大兑现', $issues);
+        $this->assertContains('第1至3章的章末钩子都是悬念', $issues);
+        $second = $novel->stages()->where('stage', 'outline')->latest('id')->firstOrFail();
+        $this->assertSame($issues, $second->input['rhythm_feedback']['issues']);
+        $this->assertArrayHasKey('rhythm', $second->input['previous_chapters'][0]);
+        Livewire::test(ViewOutlinePlan::class, ['record' => $novel->id])->assertSee('节奏提醒')->assertSee('第1至5章连续5章没有中兑现或大兑现')->assertSee('小·揭秘');
+        Http::assertSent(fn (Request $request): bool => isset($request['text']['format']['schema']['properties']['chapters']['items']['properties']['rhythm'])
+            && str_contains(json_encode($request->data(), JSON_UNESCAPED_UNICODE), '爽点节奏'));
+    }
+
+    /** 冻结前的旧计划不带节奏：请求结构不变，带节奏字段的响应按多余字段拒绝。 */
+    public function test_plans_without_frozen_rhythm_keep_old_schema(): void
+    {
+        $this->assertArrayNotHasKey('rhythm', OutlineSchema::schema(new JsonSchemaTypeFactory, 1, 10, 10)['chapters']->toArray()['items']['properties']);
+        $this->expectException(InvalidArgumentException::class);
+        OutlineSchema::parse(json_encode(self::batch()), 1, 10, 10);
     }
 }

@@ -24,7 +24,8 @@ final class SettingDecisionAgent implements Agent, HasStructuredOutput
     /** 固定文本取自冻结发布版本；输出结构和业务校验仍由程序控制。 */
     public function instructions(): string
     {
-        return ($this->options->builtinInstructions ?? $this->contractInstructions()).$this->options->templateInstructions;
+        return ($this->options->builtinInstructions ?? $this->contractInstructions()).$this->options->templateInstructions
+            .($this->options->characterCards ? SettingSchema::cardInstructions() : '');
     }
 
     /** 自动创作决策不能违背作者原文，也不能伪称人工确认。 */
@@ -38,7 +39,7 @@ final class SettingDecisionAgent implements Agent, HasStructuredOutput
      */
     public function schema(JsonSchema $schema): array
     {
-        return ['setting' => $schema->object(SettingSchema::schema($schema))->withoutAdditionalProperties()->required(),
+        return ['setting' => $schema->object(SettingSchema::schema($schema, $this->options->characterCards))->withoutAdditionalProperties()->required(),
             'answers' => $schema->array()->items($schema->string())->required()];
     }
 

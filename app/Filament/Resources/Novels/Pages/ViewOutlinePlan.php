@@ -9,6 +9,7 @@ use App\Models\NovelOutlinePlan;
 use App\Models\NovelStage;
 use App\Services\Pipeline\FieldDiff;
 use App\Services\Pipeline\OutlineRevisions;
+use App\Services\Pipeline\OutlineRhythm;
 use Filament\Actions\Action;
 use Filament\Facades\Filament;
 use Filament\Forms\Components\Hidden;
@@ -97,6 +98,9 @@ class ViewOutlinePlan extends Page implements HasTable
                     }),
                 TextEntry::make('roadmap')->label('全书走向候选')->state(fn (): ?string => data_get($this->plan()?->roadmap, 'whole_story_summary'))->extraAttributes(['style' => 'line-height: 1.8']),
                 TextEntry::make('ending')->label('终局方向候选')->state(fn (): ?string => data_get($this->plan()?->roadmap, 'ending_direction'))->extraAttributes(['style' => 'line-height: 1.8']),
+                // 节奏提醒只供参考，不阻断大纲；后一批已收到同样的提醒。
+                TextEntry::make('rhythm_issues')->label('节奏提醒')->listWithLineBreaks()->bulleted()->color('warning')
+                    ->state(fn (): array => $this->rhythmIssues())->visible(fn (): bool => $this->rhythmIssues() !== []),
             ]),
             EmbeddedTable::make(),
             // 请求模型、确认来源与批次尝试统一收起，标题描述给出一行摘要。
@@ -111,6 +115,20 @@ class ViewOutlinePlan extends Page implements HasTable
         ]);
     }
 
+    /** 各成功批次记录的节奏提醒，按批次先后排列。
+     * @return list<string>
+     */
+    private function rhythmIssues(): array
+    {
+        $plan = $this->plan();
+        if ($plan === null) {
+            return [];
+        }
+
+        return $this->getRecord()->stages()->where('stage', 'outline')->where('status', 'completed')->where('input->outline_plan_id', $plan->id)->orderBy('id')->get()
+            ->flatMap(fn ($stage): array => data_get($stage->output, 'data.rhythm_issues') ?? [])->values()->all();
+    }
+
     /** 候选章节按章序分页；完整推进点通过只读弹窗查看。 */
     public function table(Table $table): Table
     {
@@ -119,6 +137,10 @@ class ViewOutlinePlan extends Page implements HasTable
             ->columns([
                 TextColumn::make('chapter_number')->label('章序'), TextColumn::make('title')->label('章名')->wrap(),
                 TextColumn::make('objective')->label('本章目标')->limit(70)->wrap(),
+                TextColumn::make('payoff')->label('兑现点')->placeholder('—')->wrap()->limit(60)
+                    ->state(fn (NovelOutlineChapter $record): ?string => $record->rhythm === null ? null : ($record->rhythm['payoff']['type'] === OutlineRhythm::NONE ? '无'
+                        : OutlineRhythm::SIZES[$record->rhythm['payoff']['size']].'·'.$record->rhythm['payoff']['type'].'：'.$record->rhythm['payoff']['description']))
+                    ->description(fn (NovelOutlineChapter $record): ?string => $record->rhythm === null ? null : '钩子：'.OutlineRhythm::HOOK_TYPES[$record->rhythm['hook_type']]),
                 TextColumn::make('points_count')->label('推进点数')->state(fn (NovelOutlineChapter $record): int => count($record->progression_points)),
                 TextColumn::make('revision')->label('章纲修订')->state(fn (NovelOutlineChapter $record): string => ($latest = app(OutlineRevisions::class)->latest($record->id)) === null ? '原章纲' : '修订 #'.$latest->id)->badge()
                     ->color(fn (string $state): string => $state === '原章纲' ? 'gray' : 'warning'),

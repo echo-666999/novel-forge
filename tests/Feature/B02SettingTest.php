@@ -16,6 +16,7 @@ use App\Models\Novel;
 use App\Models\User;
 use App\Services\Pipeline\CreateNovelService;
 use App\Services\Pipeline\SettingExecutor;
+use App\Services\Pipeline\SettingSchema;
 use App\Settings\GeneralSettings;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
@@ -102,7 +103,9 @@ class B02SettingTest extends TestCase
         $this->assertSame(GenerationMode::SettingReal, $novel->generation_mode);
         $this->assertSame(NovelStatus::Pending, $novel->status);
         $this->assertSame(self::input()['premise_raw'], $novel->premise_raw);
-        $this->assertSame(4096, $novel->generation_config['max_output_tokens']);
+        // 新书冻结扩展人物卡，设定输出上限随之放宽到8192。
+        $this->assertSame(8192, $novel->generation_config['max_output_tokens']);
+        $this->assertSame(SettingSchema::CARD_VERSION, $novel->generation_config['character_cards']);
         $this->assertArrayNotHasKey('key', $novel->generation_config);
         Queue::assertPushed(RunSettingJob::class, 1);
         Queue::assertNotPushed(RunNovelPipelineJob::class);
@@ -123,7 +126,9 @@ class B02SettingTest extends TestCase
             $job->handle(app(SettingExecutor::class));
             $this->assertSame(1, $novel->stages()->count());
             $this->assertSame('gpt-4.1-mini', $request['model']);
-            $this->assertSame(4096, $request['max_output_tokens']);
+            $this->assertSame(8192, $request['max_output_tokens']);
+            $this->assertArrayHasKey('voice_samples', $request['text']['format']['schema']['properties']['characters']['items']['properties']);
+            $this->assertStringContainsString('扩展人物卡', json_encode($request->data(), JSON_UNESCAPED_UNICODE));
             $this->assertSame(0.7, $request['temperature']);
             $this->assertSame('json_schema', $request['text']['format']['type']);
             $this->assertTrue($request['text']['format']['strict']);
@@ -147,7 +152,7 @@ class B02SettingTest extends TestCase
         $this->assertSame(CostLog::query()->sole()->id, $stage->output['data']['cost_log_id']);
         $this->assertSame('unknown', $stage->cost['billing_status']);
         $this->assertNull($stage->cost['actual_cost']);
-        $this->assertSame(45, CostLog::query()->sole()->request_parameters['timeout_seconds']);
+        $this->assertSame(80, CostLog::query()->sole()->request_parameters['timeout_seconds']);
         $before = $stage->getRawOriginal();
         $job->handle(app(SettingExecutor::class));
         (new RunNovelPipelineJob($novel->id, true))->handle();

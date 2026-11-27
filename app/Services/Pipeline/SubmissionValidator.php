@@ -3,11 +3,21 @@
 namespace App\Services\Pipeline;
 
 use App\Enums\FactCategory;
+use App\Models\ChapterSubmissionRun;
 use InvalidArgumentException;
 
 /** 确定性验证只处理明确支持的字段，模型语义判断不能绕过结构与事实类别。 */
 final class SubmissionValidator
 {
+    /** 提取纠正协议：宽松与标准书把被标成客观确认的人物陈述改记为人物所信，不再整章拦下。 */
+    public const CATEGORY_REPAIR = 'c-extraction-repair-v1';
+
+    /** 运行是否冻结了提取纠正。 */
+    public static function repairsCategories(ChapterSubmissionRun $run): bool
+    {
+        return ($run->config['extraction_repair'] ?? null) === self::CATEGORY_REPAIR;
+    }
+
     /** 规范名称只消除空白和大小写，不凭相似度合并人物。 */
     public static function name(string $value): string
     {
@@ -17,7 +27,7 @@ final class SubmissionValidator
     /** 验证提取结构并绑定真实原文，尚不批准新实体。
      * @return array<string, mixed>
      */
-    public function normalize(array $data, string $body, array $priorState = []): array
+    public function normalize(array $data, string $body, array $priorState = [], bool $repairCategories = false): array
     {
         // 证据问题收集完整份结果后一次报出，其他结构问题仍立即停止。
         $problems = [];
@@ -87,6 +97,11 @@ final class SubmissionValidator
             }
             foreach ($event['target_refs'] as $ref) {
                 ContentSchema::text($ref);
+            }
+            // 冻结了提取纠正的运行：人物陈述被标成客观确认时改记为人物所信，保留原标注。陈述不产生客观状态变化，改记不影响状态投影。
+            if ($repairCategories && $event['event_type'] === 'statement' && $event['fact_category'] === FactCategory::ObjectiveConfirmed->value) {
+                $event['fact_category'] = FactCategory::CharacterBelief->value;
+                $event['category_repaired_from'] = FactCategory::ObjectiveConfirmed->value;
             }
             $event['evidence'] = SubmissionContract::collectEvidence($event['evidence_ids'], $body, $event['key'], $problems);
         }

@@ -177,6 +177,7 @@ final class ContentExecutionContract
             $instructions .= self::textRules();
             $instructions .= ($context['style_rules'] ?? false) === true ? ContentStyleRules::reviseInstructions() : '';
             $instructions .= isset($context['story_profile']) ? StoryProfile::instructions($context['story_profile']) : '';
+            $instructions .= ($context['voice_cards'] ?? false) === true ? SettingSchema::voiceInstructions() : '';
             $instructions .= '每个range的text是替换后的自然段列表，与正文分段规则相同：叙述段写完一个动作、场面或情绪节拍再分段，不要一句一段，不夹带人物说出口的原话；对白段是一个人的一次发言，用中文引号写出原话，只带说话人紧邻的一两句动作或神态，引号外不超过'.self::DIALOGUE_ACTION.'字，换人开口另起一段。每段text不含换行和Markdown，以完整句末标点结束。前文固定指令把text说成整段正文时，以此处的段落列表为准。';
         }
         if ($step === 'fine' && isset($context['scene_range'])) {
@@ -187,11 +188,13 @@ final class ContentExecutionContract
                 .'细纲是写作提纲，不是正文：action只按先后列出本场事件节拍（谁做了什么、得到什么结果），约'.self::PLAN_ACTION_CHARACTERS.'字以内，超过'.self::PLAN_ACTION_LIMIT.'字整份细纲无效；不写神态、小动作、环境描写和成句台词，这些留给正文。goal、obstacle、emotional_beat、change各用一两句概括，不写成可以直接放进正文的叙述句。正文与细纲连续'.ContentQualityContract::PLAN_COPY_CHARACTERS.'字相同会被判为照搬。前文固定指令中的场景数量或字段与此处不一致时，以此处为准。'
                 .(($context['scene_state'] ?? false) === true ? self::SCENE_STATE_FINE : '')
                 .(isset($context['opening_mode']) ? ContentStyleRules::fineInstructions($context['opening_mode']) : '')
+                .(isset($context['chapter_rhythm']) ? OutlineRhythm::chapterInstructions($context['chapter_rhythm']).'细纲要给兑现点单独留一个场景，不要挤在场景末尾一笔带过。' : '')
                 .self::foreshadowInstructions('fine', $context['foreshadow_obligations'] ?? [])
                 .self::openItemInstructions('fine', $context);
         }
         if ($step !== 'draft') {
-            return $instructions.self::openItemInstructions($step, $context);
+            return $instructions.self::openItemInstructions($step, $context)
+                .($step === 'check' && isset($context['payoff_review']) ? OutlineRhythm::reviewInstructions($context['payoff_review']) : '');
         }
         $budget = $context['budget'];
         $target = intdiv($budget['min'] + $budget['max'], 2);
@@ -251,6 +254,8 @@ final class ContentExecutionContract
                 .(($context['scene_state'] ?? false) === true ? self::SCENE_STATE_DRAFT : '')
                 .(isset($context['opening_mode']) ? ContentStyleRules::draftInstructions($context['opening_mode']) : '')
                 .(isset($context['story_profile']) ? StoryProfile::instructions($context['story_profile']) : '')
+                .(($context['voice_cards'] ?? false) === true ? SettingSchema::voiceInstructions() : '')
+                .(isset($context['chapter_rhythm']) && ! isset($context['draft_repair_slot']) ? OutlineRhythm::chapterInstructions($context['chapter_rhythm']) : '')
                 .self::foreshadowInstructions('draft', $context['foreshadow_obligations'] ?? [])
                 .self::openItemInstructions('draft', $context);
         }
@@ -673,7 +678,13 @@ final class ContentExecutionContract
                 'hook_transition' => $schema->object($texts(['completed_state', 'trigger', 'next_question']) + ['point_ids' => $schema->array()->items($schema->string())->min(1)->required()])->withoutAdditionalProperties()->required()];
         }
         if (! in_array($step, ['draft', 'revise'], true)) {
-            return ContentContinuationContract::schema($schema, $step, $context);
+            $result = ContentContinuationContract::schema($schema, $step, $context);
+            // 冻结了兑现点检查的独立检查多一个只记录的字段。
+            if ($step === 'check' && isset($context['payoff_review'])) {
+                $result['payoff_review'] = OutlineRhythm::reviewSchema($schema, array_keys($context['anchors']));
+            }
+
+            return $result;
         }
         $budget = $context['budget'] ?? [];
         // 每段一行纯正文，不含空白和Markdown；自动流程额外要求完整收束。

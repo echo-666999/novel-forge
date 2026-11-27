@@ -17,7 +17,7 @@ final class OutlineSchema
     /** 首批带全书走向，后续批次只返回章节和延续摘要，不能悄悄重写走向。
      * @return array<string, Type>
      */
-    public static function schema(JsonSchema $schema, int $start, int $end, int $total): array
+    public static function schema(JsonSchema $schema, int $start, int $end, int $total, ?array $rhythm = null): array
     {
         $point = $schema->object(self::strings($schema, ['subject', 'before', 'action', 'after', 'verification']) + [
             'change_type' => $schema->string()->enum(self::CHANGE_TYPES)->required(),
@@ -25,6 +25,8 @@ final class OutlineSchema
         $chapter = $schema->object(self::strings($schema, ['title', 'summary', 'objective', 'conflict', 'hook']) + [
             'chapter_number' => $schema->integer()->min($start)->max($end)->required(),
             'progression_points' => $schema->array()->items($point)->min(1)->max(3)->required(),
+            // 冻结了爽点节奏的计划每章另有兑现点、情绪最高点与钩子类型。
+            ...($rhythm === null ? [] : ['rhythm' => OutlineRhythm::schema($schema, $rhythm)]),
         ])->withoutAdditionalProperties();
         $fields = [
             'chapters' => $schema->array()->items($chapter)->min($end - $start + 1)->max($end - $start + 1)->required(),
@@ -47,7 +49,7 @@ final class OutlineSchema
     /** 严格解析整批；任何章节不合格时整批不接纳，不做截断或自动补章。
      * @return array<string, mixed>
      */
-    public static function parse(string $text, int $start, int $end, int $total): array
+    public static function parse(string $text, int $start, int $end, int $total, ?array $rhythm = null): array
     {
         try {
             $data = json_decode($text, true, 512, JSON_THROW_ON_ERROR);
@@ -60,7 +62,10 @@ final class OutlineSchema
             throw new InvalidArgumentException('本批章节数与冻结范围不一致');
         }
         foreach ($data['chapters'] as $i => &$chapter) {
-            self::stringObject($chapter, ['title', 'summary', 'objective', 'conflict', 'hook'], ['chapter_number', 'progression_points']);
+            self::stringObject($chapter, ['title', 'summary', 'objective', 'conflict', 'hook'], $rhythm === null ? ['chapter_number', 'progression_points'] : ['chapter_number', 'progression_points', 'rhythm']);
+            if ($rhythm !== null) {
+                $chapter['rhythm'] = OutlineRhythm::parse($chapter['rhythm'], $rhythm, $start + $i);
+            }
             if (! is_int($chapter['chapter_number']) || $chapter['chapter_number'] !== $start + $i || mb_strlen($chapter['title']) > 255 || preg_match('/^第\s*[0-9一二三四五六七八九十百千万零〇]+\s*章[\s：:]*$/u', trim($chapter['title'])) === 1) {
                 throw new InvalidArgumentException('章序不连续或章名只是占位符');
             }

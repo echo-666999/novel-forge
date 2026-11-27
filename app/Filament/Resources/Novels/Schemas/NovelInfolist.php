@@ -16,6 +16,7 @@ use App\Services\Ai\NovelCostSummary;
 use App\Services\Pipeline\CreateNovelService;
 use App\Services\Pipeline\NovelBudget;
 use App\Services\Pipeline\NovelProgressQuery;
+use App\Services\Pipeline\SettingSchema;
 use Filament\Infolists\Components\RepeatableEntry;
 use Filament\Infolists\Components\RepeatableEntry\TableColumn;
 use Filament\Infolists\Components\TextEntry;
@@ -214,6 +215,12 @@ class NovelInfolist
                 TextEntry::make('speech_style')->label('语言习惯')->inlineLabel(),
                 TextEntry::make('abilities')->label('能力')->inlineLabel(),
                 TextEntry::make('limitations')->label('限制')->inlineLabel(),
+                // 扩展人物卡才有以下字段，七项旧卡不显示。
+                TextEntry::make('tier')->label('层级')->inlineLabel()->badge()->formatStateUsing(fn (string $state): string => SettingSchema::TIERS[$state] ?? $state)->visible(fn (?string $state): bool => filled($state)),
+                ...array_map(fn (string $field, string $label): TextEntry => TextEntry::make($field)->label($label)->inlineLabel()->visible(fn (mixed $state): bool => filled($state)),
+                    ['desire', 'fear', 'flaw', 'secret', 'relation_to_protagonist', 'arc'], ['欲望', '恐惧', '毛病', '秘密', '与主角关系', '人物弧线']),
+                TextEntry::make('quirks')->label('小习惯')->inlineLabel()->badge()->visible(fn (mixed $state): bool => filled($state)),
+                TextEntry::make('voice_samples')->label('代表台词')->listWithLineBreaks()->visible(fn (mixed $state): bool => filled($state)),
             ]),
             TextEntry::make($prefix.'preserved_details')->label('保留的创意细节')->listWithLineBreaks()->bulleted(),
             RepeatableEntry::make($prefix.'open_questions')->label('待作者确认')->placeholder('尚无待确认问题记录')->schema([

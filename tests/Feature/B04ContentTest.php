@@ -41,6 +41,10 @@ class B04ContentTest extends TestCase
             $data = ['points' => array_map(fn ($point): array => ['id' => $point['id'], 'met' => $met, 'reason' => '隔离推进', 'evidence_ids' => [$id]], $payload['progression_points']),
                 'hook' => ['met' => $met, 'reason' => '隔离钩子', 'evidence_ids' => [$id]], 'setting_violations' => [], 'continuity_issues' => [], 'story_tensions' => [],
                 'finding_reviews' => array_map(fn ($finding): array => ['id' => $finding, 'disposition' => $met ? 'resolved' : 'unresolved', 'reason' => '隔离复核', 'evidence_ids' => [$id]], array_keys($payload['findings']))];
+            // 请求结构带兑现点检查时附上只记录的结论。
+            if (isset($request['text']['format']['schema']['properties']['payoff_review'])) {
+                $data['payoff_review'] = ['delivery' => 'partial', 'reason' => '隔离兑现：写到了但一笔带过', 'evidence_ids' => [$id]];
+            }
         }
         $response = B02SettingTest::response(PlanningJson::encode($data));
         $response['model'] = $request['model'].'-2025-04-14';
@@ -114,11 +118,11 @@ class B04ContentTest extends TestCase
     }
 
     /** 冻结历史夹具或纯契约回归，不通过旧业务路径生成运行。 */
-    public static function readyNovel(bool $fine = true, int $limit = 20): Novel
+    public static function readyNovel(bool $fine = true, int $limit = 20, bool $rhythm = false): Novel
     {
         $config = (new NovelOutlinePlanFactory)->definition()['config'];
         $config['enable_fine_outline'] = $fine;
-        $batch = B03OutlineTest::batch();
+        $batch = B03OutlineTest::batch(rhythm: $rhythm);
         $plan = NovelOutlinePlan::factory()->create(['status' => 'completed', 'next_chapter' => 11, 'config' => $config, 'roadmap' => $batch['roadmap']]);
         foreach ($batch['chapters'] as &$chapter) {
             $chapter['progression_points'][0]['id'] = 'chapter-'.$chapter['chapter_number'].'-point-1';

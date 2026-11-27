@@ -37,13 +37,18 @@ final class OutlineExecutor implements StageExecutorInterface
             if (($config['max_output_tokens'] ?? null) !== $options->maxOutputTokens || ($config['timeout_seconds'] ?? null) !== $options->timeoutSeconds || ($config['schema_version'] ?? null) !== OutlineSchema::VERSION || ($config['prompt_version'] ?? null) !== 'b03-outline-prompt-v1') {
                 throw new InvalidArgumentException('冻结的请求配置与当前大纲版本不一致');
             }
-            $prompt = '请按范围生成大纲候选。冻结输入 JSON：'.PlanningJson::encode(collect($stage->input)->only(['novel', 'confirmed_setting', 'decisions', 'range', 'roadmap', 'previous_chapters', 'handoff'])->all());
+            // 冻结了爽点节奏的计划：结构与指令带节奏字段，前批的节奏提醒随输入交给本批。
+            $rhythm = OutlineRhythm::frozen($config);
+            $options = $options->withOutlineRhythm($rhythm);
+            $prompt = '请按范围生成大纲候选。冻结输入 JSON：'.PlanningJson::encode(collect($stage->input)->only(['novel', 'confirmed_setting', 'decisions', 'range', 'roadmap', 'previous_chapters', 'handoff', 'rhythm_feedback'])->all());
             $log = $this->ai->generate($prompt, 'real', $config['model'], $novel->id, $stage->id, $config['prompt_version'], $options);
-            $batch = OutlineSchema::parse($log->response_text, $range['start'], $range['end'], $range['total']);
+            $batch = OutlineSchema::parse($log->response_text, $range['start'], $range['end'], $range['total'], $rhythm);
+            // 节奏只记录提醒，不让本批失败。
+            $issues = $rhythm === null ? [] : ['rhythm_issues' => OutlineRhythm::issues([...($stage->input['previous_chapters'] ?? []), ...$batch['chapters']], $range['start'])];
 
             return StageResult::completed([
                 'schema_version' => OutlineSchema::VERSION, 'candidate_status' => 'candidate',
-                ...$batch, 'cost_log_id' => $log->id,
+                ...$batch, ...$issues, 'cost_log_id' => $log->id,
             ], self::cost($log));
         } catch (AiGenerationException $exception) {
             $log = $exception->costLogId === null ? null : CostLog::query()->find($exception->costLogId);

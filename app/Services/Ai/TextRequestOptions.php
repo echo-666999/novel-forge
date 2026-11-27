@@ -21,7 +21,21 @@ final readonly class TextRequestOptions
      * @param  string|null  $builtinInstructions  根运行冻结的固定提示词，空值兼容历史程序文本。
      * @param  array<string, mixed>|null  $executionContext
      */
-    private function __construct(public int $maxOutputTokens, public int $timeoutSeconds, public ?float $temperature, public bool $structuredSetting, public ?array $outlineRange = null, public ?string $chapterStep = null, public ?array $executionContext = null, public ?string $submissionPurpose = null, public ?array $submissionContext = null, public bool $settingDecision = false, public string $templateInstructions = '', public ?array $templateSnapshot = null, public ?string $builtinInstructions = null, public ?string $formalRevisionPurpose = null, public ?array $formalRevisionContext = null) {}
+    private function __construct(public int $maxOutputTokens, public int $timeoutSeconds, public ?float $temperature, public bool $structuredSetting, public ?array $outlineRange = null, public ?string $chapterStep = null, public ?array $executionContext = null, public ?string $submissionPurpose = null, public ?array $submissionContext = null, public bool $settingDecision = false, public string $templateInstructions = '', public ?array $templateSnapshot = null, public ?string $builtinInstructions = null, public ?string $formalRevisionPurpose = null, public ?array $formalRevisionContext = null, public ?array $outlineRhythm = null, public bool $characterCards = false) {}
+
+    /** 冻结了扩展人物卡的书：设定与设定决策结构带扩展字段，指令附加字段说明。 */
+    public function withCharacterCards(bool $cards): self
+    {
+        return new self(...[...get_object_vars($this), 'characterCards' => $cards]);
+    }
+
+    /** 冻结了爽点节奏的大纲计划：本批结构增加 rhythm 字段，指令附加节奏要求。
+     * @param  array{version: string, payoff_types: list<string>}|null  $rhythm
+     */
+    public function withOutlineRhythm(?array $rhythm): self
+    {
+        return new self(...[...get_object_vars($this), 'outlineRhythm' => $rhythm]);
+    }
 
     /** 复制不可变选项并附加根运行冻结模板；正文和审计引用使用同一份快照。 */
     public function withTemplates(array $snapshot, array $variables): self
@@ -108,13 +122,14 @@ final readonly class TextRequestOptions
     }
 
     /** 冻结 B02 输出上限，温度只接受模型支持的有限数值。 */
-    public static function setting(float $temperature): self
+    /** 扩展人物卡每张约多一倍字段，输出上限与等待时间相应放宽，仍小于设定任务的执行时限。 */
+    public static function setting(float $temperature, bool $cards = false): self
     {
         if (! is_finite($temperature) || $temperature < 0 || $temperature > 2) {
             throw new InvalidArgumentException('设定生成温度必须在0至2之间');
         }
 
-        return new self(4096, 45, $temperature, true);
+        return new self($cards ? 8192 : 4096, $cards ? 80 : 45, $temperature, true);
     }
 
     /** 冻结大纲单批范围和调用边界，不允许任意扩展 Schema 或批次大小。 */

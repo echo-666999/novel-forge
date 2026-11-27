@@ -171,6 +171,9 @@ class B03PostgresTest extends TestCase
         // 待核台账表依附准备运行，最先撤销、最后重建。
         $openItemMigration = require database_path('migrations/2026_11_26_161013_create_chapter_open_item_extractions_table.php');
         $backfillMigration = require database_path('migrations/2026_11_26_222031_create_open_item_backfills_table.php');
+        // 爽点节奏列依附大纲章节表，最先撤销、最后重建。
+        $rhythmMigration = require database_path('migrations/2026_11_27_213237_add_rhythm_to_novel_outline_chapters_table.php');
+        $rhythmMigration->down();
         $backfillMigration->down();
         $openItemMigration->down();
         $formalRevisionMigration = require database_path('migrations/2026_11_12_140653_create_formal_revisions_table.php');
@@ -207,6 +210,7 @@ class B03PostgresTest extends TestCase
         $formalRevisionMigration->up();
         $openItemMigration->up();
         $backfillMigration->up();
+        $rhythmMigration->up();
         // 回滚重建旧迁移会把后加的小说列排到末尾；列序不是业务数据，按列名比较。
         $this->assertSame(collect($beforeNovel)->sortKeys()->all(), collect(Novel::findOrFail($stage->novel_id)->getRawOriginal())->sortKeys()->all());
         $this->assertSame($beforeStage, $stage->fresh()->getRawOriginal());

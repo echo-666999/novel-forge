@@ -25,8 +25,8 @@ class RunSettingJob implements ShouldQueue
     /** 重试必须由显式命令创建新尝试。 */
     public int $tries = 1;
 
-    /** 留出请求45秒以外的记账时间，并小于 Redis 的90秒投递间隔。 */
-    public int $timeout = 60;
+    /** 留出请求（扩展人物卡最长80秒）以外的记账时间，并小于 Redis 的90秒投递间隔。 */
+    public int $timeout = 85;
 
     /** 请求令牌限制迟到消息及失败回调的归属，不携带创意或凭据。 */
     public function __construct(public int $novelId, public string $invocationId)

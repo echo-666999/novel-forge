@@ -2,13 +2,17 @@
 
 namespace App\Filament\Resources\Novels\Schemas;
 
+use App\Services\Pipeline\SettingSchema;
 use Filament\Forms\Components\Checkbox;
 use Filament\Forms\Components\Hidden;
 use Filament\Forms\Components\Repeater;
+use Filament\Forms\Components\Select;
+use Filament\Forms\Components\TagsInput;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Schemas\Components\Component;
 use Filament\Schemas\Components\Section;
+use Filament\Schemas\Components\Utilities\Get;
 
 /** 完整修订候选并回答来源问题，不预填决定或自动批准故事。 */
 final class SettingConfirmationForm
@@ -22,6 +26,14 @@ final class SettingConfirmationForm
         foreach (['name' => '姓名', 'role' => '角色', 'goal' => '目标', 'personality' => '性格', 'speech_style' => '语言习惯', 'abilities' => '能力', 'limitations' => '限制'] as $name => $label) {
             $characterFields[] = Textarea::make($name)->label($label)->required()->rows(2);
         }
+        // 扩展人物卡（带层级）才显示新增字段；七项旧卡隐藏这些字段，保存结构不变。
+        $extended = fn (Get $get): bool => filled($get('tier'));
+        $characterFields[] = Select::make('tier')->label('人物层级')->options(SettingSchema::TIERS)->native(false)->required()->visible($extended);
+        foreach (['desire' => '欲望（具体、可能失去）', 'fear' => '最怕什么', 'flaw' => '会让他吃亏的毛病', 'secret' => '秘密（没有写“暂无”）', 'relation_to_protagonist' => '与主角的关系及变化', 'arc' => '人物弧线（起点→终点）'] as $name => $label) {
+            $characterFields[] = Textarea::make($name)->label($label)->required()->rows(2)->visible($extended);
+        }
+        $characterFields[] = TagsInput::make('quirks')->label('小习惯（口头禅、动作、穿着，1–3个）')->required()->visible($extended);
+        $characterFields[] = Repeater::make('voice_samples')->label('代表台词（1–3句）')->simple(Textarea::make('line')->required()->rows(1))->minItems(1)->maxItems(3)->visible($extended);
 
         return [
             Hidden::make('source_hash')->required(),

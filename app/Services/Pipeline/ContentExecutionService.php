@@ -257,6 +257,19 @@ final class ContentExecutionService
         if ($profile !== null && in_array($step, ['draft', 'revise'], true)) {
             $context['story_profile'] = $profile;
         }
+        // 章纲带爽点节奏时，细纲与首稿写明本章兑现点和情绪最高点；修复与修订不重复。
+        if (isset($run->snapshot['source_chapter']['rhythm']) && in_array($step, ['fine', 'draft'], true)) {
+            $context['chapter_rhythm'] = $run->snapshot['source_chapter']['rhythm'];
+        }
+        // 扩展人物卡的书：首稿与修订带本章出场人物的声纹。
+        $voices = in_array($step, ['draft', 'revise'], true) ? SettingSchema::voiceCards($run->snapshot['confirmed_setting'], PlanningJson::encode($run->plan_data ?? $run->snapshot['source_chapter'])) : [];
+        if ($voices !== []) {
+            $context['voice_cards'] = true;
+        }
+        // 独立检查顺带判断兑现点是否写出：只记录，不影响检查结论。
+        if ($step === 'check' && OutlineRhythm::reviewable($run->snapshot['source_chapter']['rhythm'] ?? null)) {
+            $context['payoff_review'] = $run->snapshot['source_chapter']['rhythm'];
+        }
         // 细纲与正文首稿把到期伏笔写进系统指令；单场景修复只改一个场景，不重复要求。
         if (in_array($step, ['fine', 'draft'], true)) {
             $obligations = ContentExecutionContract::foreshadowObligations($run->snapshot['foreshadow_context'] ?? null);
@@ -271,7 +284,7 @@ final class ContentExecutionService
         }
         // 原始创意保留具体时间、视角和限制；失败反馈只用于修复响应，不成为故事事实。
         $payload = ['chapter_number' => $run->chapter->number, 'prior_context' => $run->snapshot['prior_context'] ?? null, 'writing_requirements' => ['原始创意中的时间、人物称谓及具体限制不得被规划摘要覆盖。', '以可观察的具体行动、对白、阻力及结果推进，每段须有新信息；不反复宣告调查方向明确或决心坚定。', '不得输出故事将在后续展开、待续等写作说明。每段必须以完整句子的结束标点收束，不允许为满足字数而在句中截断或把半句拆到下一段。'], 'author_idea' => $run->snapshot['novel']['premise_raw'], ...(isset($run->snapshot['novel']['creative_brief']) ? ['creative_brief' => $run->snapshot['novel']['creative_brief']] : []),
-            ...($profile !== null && $step !== 'check' ? ['story_profile' => StoryProfile::bodyPayload($profile)] : []), 'previous_response_failure' => $run->config['recovery_validation_error'] ?? null, 'author_decisions' => $run->snapshot['decisions'], 'confirmed_setting' => $run->snapshot['confirmed_setting'], 'candidate_roadmap' => $run->snapshot['roadmap'],
+            ...($profile !== null && $step !== 'check' ? ['story_profile' => StoryProfile::bodyPayload($profile)] : []), ...($voices === [] ? [] : ['voice_cards' => $voices]), 'previous_response_failure' => $run->config['recovery_validation_error'] ?? null, 'author_decisions' => $run->snapshot['decisions'], 'confirmed_setting' => $run->snapshot['confirmed_setting'], 'candidate_roadmap' => $run->snapshot['roadmap'],
             'rule_catalog' => $context['rules'], 'chapter_plan' => $run->plan_data ?? $run->snapshot['source_chapter'], 'word_policy' => $run->snapshot['novel']['chapter_length_policy'],
             'progression_points' => $run->snapshot['source_chapter']['progression_points'], 'findings' => $context['findings'], 'count_rule' => ContentSchema::COUNT_VERSION];
         // 字数失败时提供原段和实际计数错误，避免后继请求看不到失败正文而盲目重写。
@@ -738,6 +751,28 @@ final class ContentExecutionService
         return self::slotRepair($run) && ($run->config['version'] ?? null) === ContentExecutionContract::VERSION;
     }
 
+    /** 独立检查结果；冻结了兑现点检查的请求先取出 payoff_review 单独校验，再交原检查契约，结论不受其影响。
+     * @param  array<string, mixed>  $response
+     * @param  array<string, mixed>  $context
+     * @return array<string, mixed>
+     */
+    private function checkResult(array $response, string $body, ChapterGenerationRun $run, array $context): array
+    {
+        $review = null;
+        if (isset($context['payoff_review'])) {
+            // 只记录的字段不能让检查失败：缺失或格式不对时记为未检查。
+            try {
+                $review = OutlineRhythm::parseReview($response['payoff_review'] ?? null, ContentSchema::anchors($body));
+            } catch (InvalidArgumentException $exception) {
+                $review = ['delivery' => 'unchecked', 'reason' => $exception->getMessage(), 'evidence' => []];
+            }
+            unset($response['payoff_review']);
+        }
+        $data = ContentContinuationContract::check($response, $body, array_column($run->snapshot['source_chapter']['progression_points'], 'id'), $context['rules'], $context['findings']);
+
+        return $review === null ? $data : [...$data, 'payoff_review' => $review];
+    }
+
     /** 运行是否冻结了当前文风规则；旧运行没有该值，保持原协议。 */
     public static function styleRules(ChapterGenerationRun $run): bool
     {
@@ -921,7 +956,7 @@ final class ContentExecutionService
                 'draft' => $this->draftBody($run, $response, $request['context']['full_draft_budget'] ?? $request['context']['budget'],
                     self::styleRules($run) && ! isset($request['context']['draft_repair_slot']) && $this->hasRepairQuota($run, $novel)),
                 'revise' => $this->revisionBody($response, $source, $request, $droppedRanges),
-                'check' => ContentContinuationContract::check($response, $source->body, array_column($run->snapshot['source_chapter']['progression_points'], 'id'), $request['context']['rules'], $request['context']['findings']),
+                'check' => $this->checkResult($response, $source->body, $run, $request['context']),
             };
             if ($step === 'fine') {
                 ContentExecutionContract::budget($run->snapshot['novel']['chapter_length_policy'], $data, true);
