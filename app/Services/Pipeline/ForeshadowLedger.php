@@ -63,6 +63,19 @@ final class ForeshadowLedger
         });
     }
 
+    /** 撤回尚未埋设的计划（账本不删除，状态记为已撤回）：只限没有任何证据、埋设章及之后都还没生成的伏笔，撤回后不进入任何新运行；已生成章节的冻结快照不含它。 */
+    public function withdraw(Foreshadow $reference, User $author): void
+    {
+        DB::transaction(function () use ($reference): void {
+            $novel = Novel::lockForUpdate()->findOrFail($reference->novel_id);
+            $ledger = Foreshadow::lockForUpdate()->findOrFail($reference->id);
+            $this->idle($novel);
+            $this->require($ledger->status === 'planned' && $ledger->revision === 0 && ! $ledger->evidence()->exists(), '只能撤回尚未埋设、没有证据的伏笔计划');
+            $this->require(! $novel->chapters()->where('number', '>=', $ledger->plant_chapter)->exists(), '埋设章已经生成，不能撤回');
+            $ledger->update(['status' => 'withdrawn']);
+        });
+    }
+
     /** 原文定位、状态转换、并发修订及幂等请求在同一事务中验证。 */
     public function record(Foreshadow $reference, User $author, int $revision, string $status, int $versionId, int $paragraph, string $quote, string $reason, string $key): ForeshadowEvidence
     {
@@ -110,7 +123,7 @@ final class ForeshadowLedger
     public function context(Novel $novel, int $chapterNumber): array
     {
         $items = [];
-        foreach (Foreshadow::where('novel_id', $novel->id)->with('evidence')->orderBy('id')->get() as $ledger) {
+        foreach (Foreshadow::where('novel_id', $novel->id)->active()->with('evidence')->orderBy('id')->get() as $ledger) {
             $status = 'planned';
             $sources = [];
             $this->require($ledger->revision === $ledger->evidence->count() && $ledger->status === ($ledger->evidence->last()?->to_status ?? 'planned'), '伏笔当前状态与证据链不一致');
@@ -189,7 +202,7 @@ final class ForeshadowLedger
     {
         $done = $novel->chapters_done;
 
-        return Foreshadow::where('novel_id', $novel->id)->with('evidence')->orderBy('id')->get()->map(function (Foreshadow $ledger) use ($done): array {
+        return Foreshadow::where('novel_id', $novel->id)->active()->with('evidence')->orderBy('id')->get()->map(function (Foreshadow $ledger) use ($done): array {
             [$from, $to] = $ledger->window();
             $reinforced = $ledger->evidence->where('to_status', 'reinforced')->count();
             $last = $ledger->evidence->last()?->chapter_number;

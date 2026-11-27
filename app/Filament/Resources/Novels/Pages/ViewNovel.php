@@ -220,7 +220,7 @@ class ViewNovel extends ViewRecord
                 }),
             Action::make('generateOutline')->label('生成大纲')->modalHeading('启动真实大纲生成')
                 ->visible(fn (): bool => $this->canStartOutline())
-                ->modalDescription(fn (): HtmlString => $this->briefing('按每批10章生成全书大纲候选，共'.(int) ceil($this->getRecord()->target_chapters / 10).'批；额度不足会暂停，不自动增加。', $this->startDescription()))
+                ->modalDescription(fn (): HtmlString => $this->briefing('按每批10章生成全书大纲候选（新书首批5章），约'.OutlineGenerationService::batchCount($this->getRecord()->target_chapters).'批；额度不足会暂停，不自动增加。', $this->startDescription()))
                 ->schema([
                     Select::make('confirmation_id')->label('确认设定版本')->required()->native()
                         ->options(fn (): array => $this->getRecord()->settingConfirmations()->orderByDesc('id')->get()->mapWithKeys(fn ($confirmation): array => [$confirmation->id => '确认记录 #'.$confirmation->id.' · '.mb_substr($confirmation->content_hash, 0, 12)])->all())
@@ -345,6 +345,6 @@ class ViewNovel extends ViewRecord
         /** @var Novel $novel */
         $novel = $this->getRecord();
 
-        return '目标'.$novel->target_chapters.'章，共'.(int) ceil($novel->target_chapters / 10).'批；模型'.app(GeneralSettings::class)->default_model.'，在启动时冻结。每批最多8192输出Token，剩余执行额度'.max(0, $novel->max_execution_count - $novel->execution_count).'次；不足则暂停，不自动增加。'.$this->forecast((int) ceil($novel->target_chapters / 10), (int) ceil($novel->target_chapters / 10));
+        return '目标'.$novel->target_chapters.'章，共'.OutlineGenerationService::batchCount($novel->target_chapters).'批；模型'.app(GeneralSettings::class)->default_model.'，在启动时冻结。每批最多8192输出Token，剩余执行额度'.max(0, $novel->max_execution_count - $novel->execution_count).'次；不足则暂停，不自动增加。'.$this->forecast((int) ceil($novel->target_chapters / 10), (int) ceil($novel->target_chapters / 10));
     }
 }

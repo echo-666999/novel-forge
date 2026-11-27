@@ -31,6 +31,7 @@ use App\Services\Pipeline\ContentSchema;
 use App\Services\Pipeline\ContentStyleRules;
 use App\Services\Pipeline\ContextBuilder;
 use App\Services\Pipeline\NovelProgressQuery;
+use App\Services\Pipeline\OpeningBrief;
 use App\Services\Pipeline\OutlineRhythm;
 use App\Services\Pipeline\PlanningJson;
 use App\Services\Pipeline\RevisionWorkbench;
@@ -888,8 +889,21 @@ class ViewChapterContent extends Page implements HasTable
         $result = $this->run()?->chapter->progression_result;
         $payoff = ($result['body_hash'] ?? null) === hash('sha256', $body) ? ($result['payoff_review'] ?? null) : null;
         $planned = $this->run()?->snapshot['source_chapter']['rhythm']['payoff'] ?? null;
+        // 开篇交代检查同样只记录：前三章逐项列出交代情况。
+        $opening = ($result['body_hash'] ?? null) === hash('sha256', $body) ? ($result['opening_review'] ?? []) : [];
+
+        // 章末交接只记录：故事时间、人物所在和新留下的约定；章纲外的约定单独标出。
+        $handoff = ($result['body_hash'] ?? null) === hash('sha256', $body) ? ($result['handoff'] ?? null) : null;
+        $unplanned = array_values(array_filter($handoff['open_promises'] ?? [], fn (array $promise): bool => ! $promise['planned']));
 
         return [
+            ...($handoff === null ? [] : [isset($handoff['unchecked'])
+                ? ['title' => '章末交接', 'verdict' => '未检查', 'note' => $handoff['reason'].'。只作记录。']
+                : ['title' => '章末交接：'.$handoff['story_time'].' · '.$handoff['location'], 'verdict' => $unplanned === [] ? '正常' : '章纲外约定'.count($unplanned).'条',
+                    'note' => ($handoff['open_promises'] === [] ? '本章没有留下待办约定' : '留下的约定：'.implode('；', array_map(fn (array $promise): string => $promise['who'].'·'.$promise['when'].'·'.$promise['what'].($promise['planned'] ? '' : '（章纲外）'), $handoff['open_promises'])))
+                        .'。下一章生成时会先接住这些约定；只作记录，不影响检查结论。']]),
+            ...array_map(fn (array $item): array => ['title' => '开篇交代：'.$item['topic'], 'verdict' => OpeningBrief::COVERAGE_LABELS[$item['coverage']] ?? $item['coverage'],
+                'note' => ($item['reason'] === '' ? '' : rtrim($item['reason'], '。').'。').'只作记录，不影响检查结论；没交代清楚时可在正文里手改或按批注重写。'], $opening),
             ...($payoff === null ? [] : [['title' => '兑现点：'.OutlineRhythm::SIZES[$planned['size'] ?? 'small'].'兑现·'.($planned['type'] ?? '').'（'.($planned['description'] ?? '').'）',
                 'verdict' => OutlineRhythm::DELIVERY_LABELS[$payoff['delivery']] ?? $payoff['delivery'],
                 'note' => $payoff['reason'].'。只作记录，不影响检查结论；没写足时可在正文里手改或按批注重写。']]),

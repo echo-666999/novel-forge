@@ -52,6 +52,8 @@ final class CreateNovelService
             'review_strictness' => ['nullable', 'in:loose,standard,strict'],
             'genre_pack' => ['nullable', 'string', 'max:64'],
             'style_preset' => ['nullable', 'string', 'max:64'],
+            'story_elements' => ['nullable', 'array', 'max:3'],
+            'story_elements.*' => ['string', 'max:64'],
         ], [
             'required' => '请填写:attribute。', 'string' => ':attribute必须为文本。',
             'max' => ':attribute超出允许范围。', 'min' => ':attribute必须大于0。',
@@ -64,7 +66,7 @@ final class CreateNovelService
             ...collect(self::BRIEF_FIELDS)->mapWithKeys(fn (string $label, string $key): array => ['creative_brief.'.$key => $label])->all(),
         ])->validate();
         try {
-            $profile = StoryProfile::freeze($data['genre_pack'] ?? null, $data['style_preset'] ?? null);
+            $profile = StoryProfile::freeze($data['genre_pack'] ?? null, $data['style_preset'] ?? null, array_values($data['story_elements'] ?? []));
         } catch (InvalidArgumentException $exception) {
             throw ValidationException::withMessages(['genre_pack' => $exception->getMessage()]);
         }
@@ -84,6 +86,8 @@ final class CreateNovelService
             'enable_fine_outline' => $fineOutline,
             // 新书冻结扩展人物卡：设定与设定决策输出完整人物卡。
             'character_cards' => SettingSchema::CARD_VERSION,
+            // 新书冻结开篇交代：设定列出前三章必须交代的背景，大纲、正文和检查据此安排与记录。
+            'story_foundation' => StoryFoundation::VERSION,
             ...TextRequestOptions::setting($settings->temperature, cards: true)->toArray(),
             'prompt_version' => 'b02-setting-prompt-v1',
             // 模板正文、版本与变量在小说根运行创建时冻结，恢复和后续章节沿用此快照。

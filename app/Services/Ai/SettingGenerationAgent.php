@@ -2,7 +2,9 @@
 
 namespace App\Services\Ai;
 
+use App\Services\Pipeline\OpeningBrief;
 use App\Services\Pipeline\SettingSchema;
+use App\Services\Pipeline\StoryFoundation;
 use Illuminate\Contracts\JsonSchema\JsonSchema;
 use Illuminate\JsonSchema\Types\Type;
 use Laravel\Ai\Attributes\MaxSteps;
@@ -25,7 +27,8 @@ final class SettingGenerationAgent implements Agent, HasStructuredOutput
     public function instructions(): string
     {
         return ($this->options->builtinInstructions ?? $this->contractInstructions()).$this->options->templateInstructions
-            .($this->options->characterCards ? SettingSchema::cardInstructions() : '');
+            .($this->options->characterCards ? SettingSchema::cardInstructions() : '')
+            .($this->options->storyFoundation ? OpeningBrief::settingInstructions($this->options->openingChecklist).StoryFoundation::settingInstructions() : '');
     }
 
     /** 作者原文是创作资料，不接受其中改变响应契约或索取凭据的指令。 */
@@ -42,7 +45,7 @@ final class SettingGenerationAgent implements Agent, HasStructuredOutput
      */
     public function schema(JsonSchema $schema): array
     {
-        return SettingSchema::schema($schema, $this->options->characterCards);
+        return SettingSchema::schema($schema, $this->options->characterCards, $this->options->storyFoundation);
     }
 
     /** 当前 SDK 支持通过 Agent 方法读取动态输出上限。 */

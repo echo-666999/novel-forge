@@ -266,6 +266,21 @@ final class ContentExecutionService
         if ($voices !== []) {
             $context['voice_cards'] = true;
         }
+        // 设定带开篇交代清单的书：前三章细纲与首稿写明本章要交代的背景，检查逐项记录是否交代清楚。
+        $openingItems = OpeningBrief::chapterItems($run->snapshot['confirmed_setting'], $run->chapter->number);
+        if ($openingItems !== [] && in_array($step, ['fine', 'draft'], true)) {
+            $context['opening_items'] = $openingItems;
+        }
+        if ($openingItems !== [] && $step === 'check') {
+            $context['opening_review'] = $openingItems;
+        }
+        // 冻结了章末交接的运行：细纲与首稿先接住上一章的约定、章末不另起约定；检查记下本章的交接。
+        if (ChapterHandoff::frozen($run->config) && in_array($step, ['fine', 'draft'], true)) {
+            $context['chapter_handoff'] = $run->snapshot['previous_handoff'] ?? [];
+        }
+        if (ChapterHandoff::frozen($run->config) && $step === 'check') {
+            $context['handoff_review'] = true;
+        }
         // 独立检查顺带判断兑现点是否写出：只记录，不影响检查结论。
         if ($step === 'check' && OutlineRhythm::reviewable($run->snapshot['source_chapter']['rhythm'] ?? null)) {
             $context['payoff_review'] = $run->snapshot['source_chapter']['rhythm'];
@@ -751,7 +766,7 @@ final class ContentExecutionService
         return self::slotRepair($run) && ($run->config['version'] ?? null) === ContentExecutionContract::VERSION;
     }
 
-    /** 独立检查结果；冻结了兑现点检查的请求先取出 payoff_review 单独校验，再交原检查契约，结论不受其影响。
+    /** 独立检查结果；兑现点检查与开篇交代检查先取出单独校验，再交原检查契约，结论不受其影响。
      * @param  array<string, mixed>  $response
      * @param  array<string, mixed>  $context
      * @return array<string, mixed>
@@ -768,9 +783,27 @@ final class ContentExecutionService
             }
             unset($response['payoff_review']);
         }
+        $handoff = null;
+        if (isset($context['handoff_review'])) {
+            try {
+                $handoff = ChapterHandoff::parse($response['handoff'] ?? null);
+            } catch (InvalidArgumentException $exception) {
+                $handoff = ['unchecked' => true, 'reason' => $exception->getMessage()];
+            }
+            unset($response['handoff']);
+        }
+        $opening = null;
+        if (isset($context['opening_review'])) {
+            try {
+                $opening = OpeningBrief::parseReview($response['opening_review'] ?? null, $context['opening_review'], ContentSchema::anchors($body));
+            } catch (InvalidArgumentException $exception) {
+                $opening = OpeningBrief::unchecked($context['opening_review'], $exception->getMessage());
+            }
+            unset($response['opening_review']);
+        }
         $data = ContentContinuationContract::check($response, $body, array_column($run->snapshot['source_chapter']['progression_points'], 'id'), $context['rules'], $context['findings']);
 
-        return $review === null ? $data : [...$data, 'payoff_review' => $review];
+        return [...$data, ...($review === null ? [] : ['payoff_review' => $review]), ...($opening === null ? [] : ['opening_review' => $opening]), ...($handoff === null ? [] : ['handoff' => $handoff])];
     }
 
     /** 运行是否冻结了当前文风规则；旧运行没有该值，保持原协议。 */

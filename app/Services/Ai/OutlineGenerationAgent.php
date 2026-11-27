@@ -2,8 +2,11 @@
 
 namespace App\Services\Ai;
 
+use App\Services\Pipeline\OpeningBrief;
+use App\Services\Pipeline\OutlineForeshadows;
 use App\Services\Pipeline\OutlineRhythm;
 use App\Services\Pipeline\OutlineSchema;
+use App\Services\Pipeline\StoryFoundation;
 use Illuminate\Contracts\JsonSchema\JsonSchema;
 use Illuminate\JsonSchema\Types\Type;
 use Laravel\Ai\Attributes\MaxSteps;
@@ -26,7 +29,10 @@ final class OutlineGenerationAgent implements Agent, HasStructuredOutput
     public function instructions(): string
     {
         return ($this->options->builtinInstructions ?? $this->contractInstructions()).$this->options->templateInstructions
-            .($this->options->outlineRhythm === null ? '' : OutlineRhythm::instructions($this->options->outlineRhythm));
+            .($this->options->outlineRhythm === null ? '' : OutlineRhythm::instructions($this->options->outlineRhythm))
+            .($this->options->storyFoundation && $this->options->outlineRange['start'] <= OpeningBrief::LAST_CHAPTER ? OpeningBrief::outlineInstructions() : '')
+            .($this->options->storyFoundation ? StoryFoundation::outlineInstructions() : '')
+            .($this->options->outlineForeshadows && $this->options->outlineRange['start'] === 1 ? OutlineForeshadows::instructions() : '');
     }
 
     /** 强制把行动造成的前后变化写清楚，资料中的指令不能改变契约。 */
@@ -45,7 +51,7 @@ final class OutlineGenerationAgent implements Agent, HasStructuredOutput
      */
     public function schema(JsonSchema $schema): array
     {
-        return OutlineSchema::schema($schema, ...[...array_values($this->options->outlineRange), $this->options->outlineRhythm]);
+        return OutlineSchema::schema($schema, ...[...array_values($this->options->outlineRange), $this->options->outlineRhythm, $this->options->outlineForeshadows && $this->options->outlineRange['start'] === 1]);
     }
 
     /** 固定单批输出上限。 */

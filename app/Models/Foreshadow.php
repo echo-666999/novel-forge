@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Database\Factories\ForeshadowFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -29,6 +30,15 @@ class Foreshadow extends Model
         static::deleting(fn () => throw new LogicException('伏笔账本不可删除'));
     }
 
+    /** 作者撤回的计划不再参与上下文、回收检查和基线切换。
+     * @param  Builder<self>  $query
+     * @return Builder<self>
+     */
+    public function scopeActive(Builder $query): Builder
+    {
+        return $query->where('status', '!=', 'withdrawn');
+    }
+
     /** 数值类型参与严格边界和并发校验。
      * @return array<string, string>
      */
@@ -50,7 +60,7 @@ class Foreshadow extends Model
     public static function statusLabel(string $status): string
     {
         return match ($status) {
-            'planned' => '计划中', 'planted' => '已埋设', 'reinforced' => '已强化', 'resolved' => '已回收', 'due' => '待回收', 'overdue' => '已逾期未回收', default => '状态异常',
+            'planned' => '计划中', 'planted' => '已埋设', 'reinforced' => '已强化', 'resolved' => '已回收', 'withdrawn' => '已撤回', 'due' => '待回收', 'overdue' => '已逾期未回收', default => '状态异常',
         };
     }
 

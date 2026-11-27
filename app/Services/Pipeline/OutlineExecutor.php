@@ -40,9 +40,14 @@ final class OutlineExecutor implements StageExecutorInterface
             // 冻结了爽点节奏的计划：结构与指令带节奏字段，前批的节奏提醒随输入交给本批。
             $rhythm = OutlineRhythm::frozen($config);
             $options = $options->withOutlineRhythm($rhythm);
+            // 设定带故事根基时：每批按主线目标阶梯安排，本批包含前三章时另按开篇交代清单安排前三章。
+            $options = $options->withStoryFoundation(isset($stage->input['confirmed_setting']['opening_brief']));
+            // 冻结了自动登记伏笔的计划：首批另列长程伏笔。
+            $foreshadows = OutlineForeshadows::frozen($config) && $range['start'] === 1;
+            $options = $options->withOutlineForeshadows($foreshadows);
             $prompt = '请按范围生成大纲候选。冻结输入 JSON：'.PlanningJson::encode(collect($stage->input)->only(['novel', 'confirmed_setting', 'decisions', 'range', 'roadmap', 'previous_chapters', 'handoff', 'rhythm_feedback'])->all());
             $log = $this->ai->generate($prompt, 'real', $config['model'], $novel->id, $stage->id, $config['prompt_version'], $options);
-            $batch = OutlineSchema::parse($log->response_text, $range['start'], $range['end'], $range['total'], $rhythm);
+            $batch = OutlineSchema::parse($log->response_text, $range['start'], $range['end'], $range['total'], $rhythm, $foreshadows);
             // 节奏只记录提醒，不让本批失败。
             $issues = $rhythm === null ? [] : ['rhythm_issues' => OutlineRhythm::issues([...($stage->input['previous_chapters'] ?? []), ...$batch['chapters']], $range['start'])];
 

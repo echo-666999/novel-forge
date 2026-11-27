@@ -1,5 +1,5 @@
 {{--
-    场景规划“版本与覆盖”弹窗：先列本章必须覆盖的推进点（变化前 → 行动 → 变化后），再按时间倒序列出场景规划版本；
+    场景规划“版本与覆盖”弹窗：先列本章必须覆盖的推进点（变化前 → 行动 → 变化后），已写作的章节列出细纲自动拆分的场景，再按时间倒序列出场景规划版本；
     最新版本展开，旧版本折叠。预检问题醒目标出。后台未编译自定义主题，使用本组件局部样式。
 --}}
 <div class="nf-scene">
@@ -64,10 +64,29 @@
         @endif
     </section>
 
+    @if ($auto_scenes !== [])
+        <section aria-label="细纲自动拆分的场景">
+            <h3>本章写作时细纲自动拆分的场景（{{ count($auto_scenes) }}）</h3>
+            <div class="nf-scene-list">
+                @foreach ($auto_scenes as $sceneIndex => $scene)
+                    <div class="nf-scene-card">
+                        <div class="nf-scene-card-head">场景 {{ $sceneIndex + 1 }}：{{ $scene['title'] ?? '未命名' }}</div>
+                        <dl class="nf-scene-fields">
+                            @foreach ($scene['rows'] as $row)
+                                <dt>{{ $row['label'] }}</dt>
+                                <dd>{{ $row['value'] }}</dd>
+                            @endforeach
+                        </dl>
+                    </div>
+                @endforeach
+            </div>
+        </section>
+    @endif
+
     <section aria-label="场景规划版本">
         <h3>场景规划版本（{{ count($versions) }}）</h3>
         @if ($versions === [])
-            <p class="nf-scene-empty">尚未规划场景；使用“编辑 / 拆分 / 合并”保存第一个版本。</p>
+            <p class="nf-scene-empty">{{ $auto_scenes === [] ? '尚未规划场景；使用“编辑 / 拆分 / 合并”保存第一个版本。' : '作者没有为本章做场景规划，写作时使用了上面细纲自动拆分的场景。' }}</p>
         @else
             <div class="nf-scene-list">
                 @foreach ($versions as $version)

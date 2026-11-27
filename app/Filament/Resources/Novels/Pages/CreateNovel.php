@@ -55,6 +55,7 @@ class CreateNovel extends CreateRecord
             'review_strictness' => $source->review_strictness->value,
             'genre_pack' => $source->story_profile['genre']['key'] ?? null,
             'style_preset' => $source->story_profile['style']['key'] ?? null,
+            'story_elements' => array_column($source->story_profile['elements'] ?? [], 'key'),
         ]);
     }
 

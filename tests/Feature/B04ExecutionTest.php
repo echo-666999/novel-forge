@@ -20,12 +20,14 @@ use App\Providers\AppServiceProvider;
 use App\Services\Ai\AiTextGenerationService;
 use App\Services\Ai\TextRequestOptions;
 use App\Services\Pipeline\BookAuthorship;
+use App\Services\Pipeline\ChapterHandoff;
 use App\Services\Pipeline\ContentExecutionContract;
 use App\Services\Pipeline\ContentExecutionService;
 use App\Services\Pipeline\ContentGenerationService;
 use App\Services\Pipeline\ContentPromptAudit;
 use App\Services\Pipeline\ContentSchema;
 use App\Services\Pipeline\ContentStyleRules;
+use App\Services\Pipeline\OpeningBrief;
 use App\Services\Pipeline\PlanningJson;
 use App\Services\Pipeline\ProgressionChecker;
 use App\Services\Pipeline\RunControlService;
@@ -169,6 +171,15 @@ class B04ExecutionTest extends TestCase
                 // 请求结构带兑现点检查时附上只记录的结论。
                 if (isset($request['text']['format']['schema']['properties']['payoff_review'])) {
                     $data['payoff_review'] = ['delivery' => 'partial', 'reason' => '隔离兑现：写到了但一笔带过', 'evidence_ids' => [$id]];
+                }
+                // 冻结了章末交接的检查记下故事时间与留下的约定：一条章纲钩子、一条章纲外的约定。
+                if (isset($request['text']['format']['schema']['properties']['handoff'])) {
+                    $data['handoff'] = ['story_time' => '第一天傍晚', 'location' => '灯塔', 'open_promises' => [['who' => '守塔人', 'when' => '明早', 'what' => '去档案室', 'planned' => true], ['who' => '工头', 'when' => '明天中午', 'what' => '来港口见面', 'planned' => false]]];
+                }
+                // 前三章带开篇交代清单时逐项给出交代情况：第一项写清，其余一笔带过。
+                if (isset($request['text']['format']['schema']['properties']['opening_review'])) {
+                    $data['opening_review'] = array_map(fn (int $i): array => ['topic' => '隔离项'.$i, 'coverage' => $i === 0 ? 'covered' : 'brief', 'reason' => $i === 0 ? '隔离交代：前世结局写清楚了' : '只提了一句', 'evidence_ids' => [$id]],
+                        range(0, $request['text']['format']['schema']['properties']['opening_review']['minItems'] - 1));
                 }
                 if ($this->scenario === 'blocked') {
                     $data['setting_violations'] = [['rule_id' => array_key_first($payload['rule_catalog']), 'reason' => '隔离核心冲突', 'evidence_ids' => [$id]]];
@@ -354,6 +365,58 @@ class B04ExecutionTest extends TestCase
         foreach (CostLog::where('request_parameters->step', 'check')->get() as $check) {
             $this->assertStringNotContainsString('story_profile', $check->request_parameters['prompt_audit']['user_prompt']);
         }
+    }
+
+    /** 新运行冻结章末交接：细纲与首稿要求章末只按章纲钩子收束，检查记下故事时间和留下的约定，章纲外的约定在章节页标出；不影响检查结论。 */
+    public function test_chapter_handoff_is_recorded(): void
+    {
+        $run = $this->start();
+        $this->assertSame(ChapterHandoff::VERSION, $run->config['chapter_handoff']);
+        $this->assertArrayNotHasKey('previous_handoff', $run->snapshot);
+        $this->drain();
+        foreach (['fine', 'draft'] as $step) {
+            $system = CostLog::where('request_parameters->step', $step)->latest('id')->firstOrFail()->request_parameters['prompt_audit']['system_prompt'];
+            $this->assertStringContainsString('章间衔接：本章结尾只按章纲hook收束', $system);
+            $this->assertStringNotContainsString('上一章（第', $system);
+        }
+        $this->assertStringContainsString('章末交接（只记录', CostLog::where('request_parameters->step', 'check')->latest('id')->firstOrFail()->request_parameters['prompt_audit']['system_prompt']);
+        $check = ChapterProgressionCheck::where('chapter_id', $run->chapter_id)->latest('id')->firstOrFail();
+        $this->assertSame(['第一天傍晚', '灯塔', [true, false]], [$check->result['handoff']['story_time'], $check->result['handoff']['location'], array_column($check->result['handoff']['open_promises'], 'planned')]);
+        $this->assertSame('awaiting_review', $run->fresh()->stop_reason);
+        $this->actingAs(User::firstOrFail());
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        Livewire::test(ViewChapterContent::class, ['record' => $run->chapter->novel_id])->assertSee('章末交接：第一天傍晚 · 灯塔')->assertSee('章纲外约定1条')->assertSee('工头·明天中午·来港口见面（章纲外）');
+    }
+
+    /** 设定带开篇交代清单时，第1章细纲与首稿写明本章要交代的背景，检查逐项记录且不影响结论；第4章起不再附加。 */
+    public function test_opening_brief_reaches_first_chapter_and_check(): void
+    {
+        $novel = B04ContentTest::readyNovel(true, 20);
+        $novel->update(['chapter_length_policy' => ['min_characters' => 2500, 'max_characters' => 3500]]);
+        $confirmation = $novel->outlinePlans()->sole()->confirmation;
+        $setting = [...$confirmation->setting, 'opening_brief' => ['premise_hook' => '林澈重生回到灯塔失火前一年', 'items' => [
+            ['topic' => '前世的结局', 'content' => '前世灯塔失火，林澈被当成纵火者关了十年', 'technique' => '闻到煤油味触发回忆', 'chapter' => 1],
+            ['topic' => '重生的时间点', 'content' => '回到失火前一年的冬至', 'technique' => '看日历时的内心独白', 'chapter' => 1],
+            ['topic' => '这一世的打算', 'content' => '先找出真正的纵火者', 'technique' => '与守塔人的对话里点破', 'chapter' => 2],
+        ]]];
+        DB::table('novel_setting_confirmations')->where('id', $confirmation->id)->update(['setting' => PlanningJson::encode($setting),
+            'content_hash' => PlanningJson::hash(['source_hash' => $confirmation->source_hash, 'setting' => $setting, 'decisions' => $confirmation->decisions])]);
+        $run = app(ContentGenerationService::class)->start($novel, User::firstOrFail());
+        $this->drain();
+        foreach (['fine', 'draft'] as $step) {
+            $system = CostLog::where('request_parameters->step', $step)->sole()->request_parameters['prompt_audit']['system_prompt'];
+            $this->assertStringContainsString('本章必须交代的开篇背景：「前世的结局」前世灯塔失火，林澈被当成纵火者关了十年（写法：闻到煤油味触发回忆）；「重生的时间点」', $system);
+            $this->assertStringNotContainsString('这一世的打算', $system);
+        }
+        $this->assertStringContainsString('开篇交代检查', CostLog::where('request_parameters->step', 'check')->sole()->request_parameters['prompt_audit']['system_prompt']);
+        $check = ChapterProgressionCheck::where('chapter_id', $run->chapter_id)->sole();
+        $this->assertSame([['前世的结局', 'covered'], ['重生的时间点', 'brief']], array_map(fn (array $item): array => [$item['topic'], $item['coverage']], $check->result['opening_review']));
+        $this->assertSame('pass', $check->verdict);
+        $this->assertSame('awaiting_review', $run->fresh()->stop_reason);
+        $this->actingAs(User::firstOrFail());
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        Livewire::test(ViewChapterContent::class, ['record' => $run->chapter->novel_id])->assertSee('开篇交代：前世的结局')->assertSee('已交代')->assertSee('一笔带过');
+        $this->assertSame([], OpeningBrief::chapterItems($setting, 4));
     }
 
     /** 章纲带爽点节奏时，细纲与首稿指令写明本章兑现点、情绪最高点与钩子类型。 */

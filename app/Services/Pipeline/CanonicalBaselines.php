@@ -239,7 +239,7 @@ final class CanonicalBaselines
                 throw new InvalidArgumentException('候选基线事件数量与活动基线不一致');
             }
             $ledgers = [];
-            foreach (Foreshadow::where('novel_id', $novel->id)->orderBy('id')->get() as $ledger) {
+            foreach (Foreshadow::where('novel_id', $novel->id)->active()->orderBy('id')->get() as $ledger) {
                 $status = 'planned';
                 $entries = ForeshadowEvidence::where('foreshadow_id', $ledger->id)->where('baseline_id', $candidate->id)->orderBy('revision')->get();
                 foreach ($entries->values() as $index => $entry) {
@@ -291,7 +291,7 @@ final class CanonicalBaselines
             $candidate->update(['status' => 'active', 'activated_by' => $actor->id, 'activated_at' => now(),
                 'verification' => [...$candidate->verification, 'switch_reason' => $reason, 'previous_baseline_id' => $active->id]]);
             $novel->update(['active_baseline_id' => $candidate->id]);
-            foreach (Foreshadow::where('novel_id', $novel->id)->get() as $ledger) {
+            foreach (Foreshadow::where('novel_id', $novel->id)->active()->get() as $ledger) {
                 $entries = ForeshadowEvidence::where('foreshadow_id', $ledger->id)->where('baseline_id', $candidate->id)->orderBy('revision')->get();
                 $ledger->update(['status' => $entries->last()?->to_status ?? 'planned', 'revision' => $entries->count()]);
             }

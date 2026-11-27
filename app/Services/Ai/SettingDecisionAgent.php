@@ -2,7 +2,9 @@
 
 namespace App\Services\Ai;
 
+use App\Services\Pipeline\OpeningBrief;
 use App\Services\Pipeline\SettingSchema;
+use App\Services\Pipeline\StoryFoundation;
 use Illuminate\Contracts\JsonSchema\JsonSchema;
 use Illuminate\JsonSchema\Types\Type;
 use Laravel\Ai\Attributes\MaxSteps;
@@ -25,7 +27,8 @@ final class SettingDecisionAgent implements Agent, HasStructuredOutput
     public function instructions(): string
     {
         return ($this->options->builtinInstructions ?? $this->contractInstructions()).$this->options->templateInstructions
-            .($this->options->characterCards ? SettingSchema::cardInstructions() : '');
+            .($this->options->characterCards ? SettingSchema::cardInstructions() : '')
+            .($this->options->storyFoundation ? OpeningBrief::settingInstructions($this->options->openingChecklist).StoryFoundation::settingInstructions(decision: true) : '');
     }
 
     /** 自动创作决策不能违背作者原文，也不能伪称人工确认。 */
@@ -39,7 +42,7 @@ final class SettingDecisionAgent implements Agent, HasStructuredOutput
      */
     public function schema(JsonSchema $schema): array
     {
-        return ['setting' => $schema->object(SettingSchema::schema($schema, $this->options->characterCards))->withoutAdditionalProperties()->required(),
+        return ['setting' => $schema->object(SettingSchema::schema($schema, $this->options->characterCards, $this->options->storyFoundation))->withoutAdditionalProperties()->required(),
             'answers' => $schema->array()->items($schema->string())->required()];
     }
 

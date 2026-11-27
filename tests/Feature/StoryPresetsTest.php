@@ -82,6 +82,25 @@ class StoryPresetsTest extends TestCase
         $this->assertArrayNotHasKey('story_profile', app(CreateNovelService::class)->createAndStart($this->input(['title' => '未选题材']))->novel->planningInput());
     }
 
+    /** 主题材包之外可叠加设定元素：其世界规则、禁忌和开篇必备交代一并冻结并进入设定指令；主题材包本身不会重复叠加。 */
+    public function test_story_elements_are_frozen_with_checklist(): void
+    {
+        Livewire::test(CreateNovel::class)->fillForm($this->input())->set('data.genre_pack', 'history')->set('data.story_elements', ['transmigration'])
+            ->call('create')->assertHasNoFormErrors();
+        $profile = Novel::sole()->story_profile;
+        $this->assertSame(['transmigration'], array_column($profile['elements'], 'key'));
+        $checklist = StoryProfile::openingChecklist($profile);
+        $this->assertContains('主角的身份、官职或出身，以及眼下的处境', $checklist);
+        $this->assertContains('怎么穿来的', $checklist);
+        $this->assertStringContainsString('本书叠加设定元素「穿越」：现代知识要落地', StoryProfile::instructions($profile));
+        $this->assertSame(2, StoryPreset::where('key', 'rebirth')->value('version'));
+        // 服务端同样去掉与主题材包相同的元素。
+        $direct = app(CreateNovelService::class)->createAndStart($this->input(['title' => '直接建书', 'genre_pack' => 'history', 'story_elements' => ['history', 'transmigration']]))->novel;
+        $this->assertSame(['transmigration'], array_column($direct->story_profile['elements'], 'key'));
+        $this->expectException(ValidationException::class);
+        app(CreateNovelService::class)->createAndStart($this->input(['title' => '未知元素', 'story_elements' => ['nope']]));
+    }
+
     /** 停用的项不能用于建书，也不出现在下拉框。 */
     public function test_disabled_preset_cannot_be_used(): void
     {
@@ -89,6 +108,14 @@ class StoryPresetsTest extends TestCase
         $this->assertArrayNotHasKey('era', StoryPreset::options('genre'));
         $this->expectException(ValidationException::class);
         app(CreateNovelService::class)->createAndStart($this->input(['genre_pack' => 'era']));
+    }
+
+    /** 文风必选：默认口语化，清空后不能建书。 */
+    public function test_wizard_requires_style(): void
+    {
+        Livewire::test(CreateNovel::class)->assertSet('data.style_preset', 'colloquial')->fillForm([...$this->input(), 'style_preset' => null])
+            ->call('create')->assertHasFormErrors(['style_preset' => 'required']);
+        $this->assertSame(0, Novel::count());
     }
 
     /** 向导选题材包后自动带出推荐文风，建书后两者都冻结。 */

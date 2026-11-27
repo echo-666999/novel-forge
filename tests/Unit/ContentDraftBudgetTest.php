@@ -37,6 +37,18 @@ class ContentDraftBudgetTest extends TestCase
         ContentExecutionContract::body(['title' => '标题', 'paragraphs' => ['p1' => [self::narration('短。')], 'p2' => [self::narration('这一段长。')]]], ['slots' => ['p1', 'p2'], 'min' => 3, 'max' => 4]);
     }
 
+    /** 正文标题带"第N章"前缀时去掉前缀；只有前缀的占位标题仍被拒绝。 */
+    public function test_draft_title_drops_chapter_prefix(): void
+    {
+        $scene = [self::narration(str_repeat('甲', 149).'。')];
+        $budget = ['slots' => ['s1'], 'count' => 1, 'min' => 100, 'max' => 200];
+        $this->assertSame('那个嘛，试一回', ContentExecutionContract::body(['title' => '第3章 那个嘛，试一回', 'paragraphs' => ['s1' => $scene]], $budget)['title']);
+        $this->assertSame('夜雨', ContentExecutionContract::body(['title' => '第十二章：夜雨', 'paragraphs' => ['s1' => $scene]], $budget)['title']);
+        $this->assertSame('灶膛里的卤方', ContentExecutionContract::body(['title' => '灶膛里的卤方', 'paragraphs' => ['s1' => $scene]], $budget)['title']);
+        $this->expectException(InvalidArgumentException::class);
+        ContentExecutionContract::body(['title' => '第3章', 'paragraphs' => ['s1' => $scene]], $budget);
+    }
+
     /** 单场景字数允许偏离区间5%：区间外5%以内接受，超过5%拒绝；整章合计仍不得超出各场景区间之和。 */
     public function test_scene_length_tolerance_keeps_chapter_total(): void
     {

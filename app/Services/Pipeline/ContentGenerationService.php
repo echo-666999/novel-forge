@@ -104,6 +104,11 @@ final class ContentGenerationService
             $snapshot['foreshadow_context'] = app(ForeshadowLedger::class)->context($novel, $chapterNumber);
             // 待核台账只在新运行冻结：前文尚未核实与已核实的事项随各步骤共享。
             $snapshot['open_items'] = app(OpenItemLedger::class)->context($novel, $chapterNumber);
+            // 上一章正式版本检查时记下的章末交接（故事时间、人物所在、留下的约定），只在新运行冻结。
+            $handoff = ChapterHandoff::previous($novel, $chapterNumber);
+            if ($handoff !== null) {
+                $snapshot['previous_handoff'] = $handoff;
+            }
             // 跨章文风信号只在新运行冻结，来自已提交近章；历史运行不补写。
             $styleSignals = app(StyleSignals::class)->context($novel, $chapterNumber);
             if ($styleSignals !== null) {
@@ -614,7 +619,7 @@ final class ContentGenerationService
             throw new InvalidArgumentException('模型或修订设置无效');
         }
         $config = ['version' => ContentExecutionContract::VERSION, 'model' => trim($model), 'temperature' => $temperature,
-            'enable_fine_outline' => $fine, 'scene_state' => true, 'style_rules' => ContentStyleRules::VERSION, 'max_output_tokens' => $tokens, 'max_retries' => min(1, $retries), 'author_id' => $authorId,
+            'enable_fine_outline' => $fine, 'scene_state' => true, 'style_rules' => ContentStyleRules::VERSION, 'chapter_handoff' => ChapterHandoff::VERSION, 'max_output_tokens' => $tokens, 'max_retries' => min(1, $retries), 'author_id' => $authorId,
             'authorization' => ['scope' => 'bounded_content', 'reason' => $reason, 'at' => now()->toIso8601String()],
             'protocol' => array_combine(['fine', 'draft', 'revise', 'check'], array_map(fn (string $step): string => hash('sha256', ContentExecutionContract::instructions($step)), ['fine', 'draft', 'revise', 'check']))];
 

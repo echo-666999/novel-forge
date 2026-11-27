@@ -21,12 +21,26 @@ final readonly class TextRequestOptions
      * @param  string|null  $builtinInstructions  根运行冻结的固定提示词，空值兼容历史程序文本。
      * @param  array<string, mixed>|null  $executionContext
      */
-    private function __construct(public int $maxOutputTokens, public int $timeoutSeconds, public ?float $temperature, public bool $structuredSetting, public ?array $outlineRange = null, public ?string $chapterStep = null, public ?array $executionContext = null, public ?string $submissionPurpose = null, public ?array $submissionContext = null, public bool $settingDecision = false, public string $templateInstructions = '', public ?array $templateSnapshot = null, public ?string $builtinInstructions = null, public ?string $formalRevisionPurpose = null, public ?array $formalRevisionContext = null, public ?array $outlineRhythm = null, public bool $characterCards = false) {}
+    private function __construct(public int $maxOutputTokens, public int $timeoutSeconds, public ?float $temperature, public bool $structuredSetting, public ?array $outlineRange = null, public ?string $chapterStep = null, public ?array $executionContext = null, public ?string $submissionPurpose = null, public ?array $submissionContext = null, public bool $settingDecision = false, public string $templateInstructions = '', public ?array $templateSnapshot = null, public ?string $builtinInstructions = null, public ?string $formalRevisionPurpose = null, public ?array $formalRevisionContext = null, public ?array $outlineRhythm = null, public bool $characterCards = false, public array $openingChecklist = [], public bool $storyFoundation = false, public bool $outlineForeshadows = false) {}
 
     /** 冻结了扩展人物卡的书：设定与设定决策结构带扩展字段，指令附加字段说明。 */
     public function withCharacterCards(bool $cards): self
     {
         return new self(...[...get_object_vars($this), 'characterCards' => $cards]);
+    }
+
+    /** 冻结了开篇交代的书：设定与设定决策结构带开篇交代清单，指令附加说明与题材必备项；大纲批次包含前三章时附加安排要求。
+     * @param  list<string>  $checklist
+     */
+    public function withStoryFoundation(bool $storyFoundation, array $checklist = []): self
+    {
+        return new self(...[...get_object_vars($this), 'storyFoundation' => $storyFoundation, 'openingChecklist' => $storyFoundation ? $checklist : []]);
+    }
+
+    /** 冻结了自动登记伏笔的大纲计划：首批 roadmap 另列长程伏笔，指令附加要求。 */
+    public function withOutlineForeshadows(bool $foreshadows): self
+    {
+        return new self(...[...get_object_vars($this), 'outlineForeshadows' => $foreshadows]);
     }
 
     /** 冻结了爽点节奏的大纲计划：本批结构增加 rhythm 字段，指令附加节奏要求。

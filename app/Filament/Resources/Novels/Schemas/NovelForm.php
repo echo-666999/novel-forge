@@ -7,6 +7,7 @@ use App\Models\StoryPreset;
 use App\Services\Ai\CostForecast;
 use App\Services\Ai\ModelProfiles;
 use App\Services\Pipeline\CreateNovelService;
+use App\Services\Pipeline\OutlineGenerationService;
 use App\Settings\GeneralSettings;
 use Filament\Forms\Components\Radio;
 use Filament\Forms\Components\Select;
@@ -29,15 +30,18 @@ class NovelForm
         'ending_preference' => '例如：开放式结局，但主线冲突必须解决',
     ];
 
-    /** 三种生产方式；“逐章确认”是默认推荐。 */
     /** 预算币种选项，通用设置的默认币种共用。 */
     public const CURRENCIES = ['CNY' => '人民币（CNY）', 'USD' => '美元（USD）'];
 
+    /** 三种生产方式；“逐章确认”是默认推荐。 */
     public const MODES = [
         'manual' => '逐章确认（推荐）：先生成设定，等你确认后再生成大纲，之后每一章都由你批准提交',
         'auto_first' => '自动生成并正式提交第1章：自动决定设定问题、采纳通过校验的新实体',
         'auto_ten' => '自动生成并正式提交前10章：同上，目标章数至少10章',
     ];
+
+    /** 没有题材包推荐时的默认文风。 */
+    public const DEFAULT_STYLE = 'colloquial';
 
     /** 向导的四个步骤。
      * @return list<Step>
@@ -58,11 +62,19 @@ class NovelForm
                             }
                         })
                         ->helperText('决定爽点类型、节奏和题材禁忌。'),
-                    Select::make('style_preset')->label('文风')->options(fn (): array => StoryPreset::options('style'))->native(false)->placeholder('不使用')
-                        ->helperText('选题材包后自动带出推荐文风，可以改。'),
+                    // 不选文风时正文会落回通用腔（第23、24本），因此必选：默认口语化，选题材包后换成它推荐的文风。
+                    Select::make('style_preset')->label('文风')->options(fn (): array => StoryPreset::options('style'))->native(false)->required()
+                        ->default(fn (): ?string => array_key_exists(self::DEFAULT_STYLE, StoryPreset::options('style')) ? self::DEFAULT_STYLE : array_key_first(StoryPreset::options('style')))
+                        ->validationMessages(['required' => '请选择文风。'])
+                        ->helperText('默认口语化；选题材包后自动带出推荐文风，可以改。'),
                     TextInput::make('genre')->label('题材补充（可选）')->maxLength(255)->placeholder('例如：年代·重生·美食')
                         ->helperText('不填时用题材包名称。'),
                 ]),
+                // 一本书只有一个主题材包；创意里另有重生、穿越等设定时，勾选为叠加元素，其世界规则、禁忌和开篇必备交代一并冻结。
+                Select::make('story_elements')->label('叠加设定元素（可选）')->multiple()->maxItems(3)->native(false)
+                    ->options(fn (Get $get): array => array_diff_key(StoryPreset::options('genre'), [(string) $get('genre_pack') => true]))
+                    ->placeholder('例如历史题材里的主角是穿越来的，就勾选“穿越”')
+                    ->helperText('选中的题材包只取世界规则、禁忌和开篇必备交代，爽点类型和节奏仍按主题材包。'),
                 Textarea::make('premise_raw')->label('原始创意')->required()->rows(10)
                     ->placeholder('写下故事背景、人物目标和主要矛盾，保留你希望实现的具体细节。')
                     ->helperText('原始创意会完整保存，不做摘要或改写。')->regex('/(*UCP)\S/u')
@@ -104,12 +116,13 @@ class NovelForm
         $chapters = (int) $get('target_chapters');
         $mode = $get('production_mode') ?? 'manual';
         $model = $get('automatic_model') ?: app(GeneralSettings::class)->default_model;
-        $batches = max(1, (int) ceil($chapters / 10));
+        $batches = OutlineGenerationService::batchCount(max(1, $chapters));
         $lines = [
             '书名：'.($get('title') ?: '（未填写）'),
             '篇幅：'.$chapters.'章，每章'.$get('chapter_length_policy.min_characters').'～'.$get('chapter_length_policy.max_characters').'字',
             '生产方式：'.(self::MODES[$mode] ?? $mode),
-            '题材与文风：'.(StoryPreset::options('genre')[$get('genre_pack')] ?? '未选题材包').' · '.(StoryPreset::options('style')[$get('style_preset')] ?? '未选文风'),
+            '题材与文风：'.(StoryPreset::options('genre')[$get('genre_pack')] ?? '未选题材包').' · '.(StoryPreset::options('style')[$get('style_preset')] ?? '未选文风')
+                .(($elements = array_values(array_intersect_key(StoryPreset::options('genre'), array_flip((array) $get('story_elements'))))) === [] ? '' : ' · 叠加'.implode('、', $elements)),
             '模型：'.$model,
             '评审严格度：'.(ReviewStrictness::tryFrom((string) $get('review_strictness')) ?? ReviewStrictness::Loose)->label(),
             '预算：'.(filled($get('budget_amount')) ? $get('budget_amount').' '.$get('budget_currency') : '未设（只受执行次数上限约束）'),

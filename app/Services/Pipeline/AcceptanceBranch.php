@@ -111,7 +111,7 @@ final class AcceptanceBranch
             }
             $first = $plan->chapters()->where('chapter_number', 1)->firstOrFail();
             // 只继承伏笔计划，旧书的埋设证据不能当作新分支已发生事实。
-            foreach (Foreshadow::where('novel_id', $original->id)->orderBy('id')->get() as $foreshadow) {
+            foreach (Foreshadow::where('novel_id', $original->id)->active()->orderBy('id')->get() as $foreshadow) {
                 app(ForeshadowLedger::class)->plan($novel, $author, $foreshadow->title, $foreshadow->description,
                     $foreshadow->plant_chapter, $foreshadow->target_chapter, (string) Str::uuid7());
             }

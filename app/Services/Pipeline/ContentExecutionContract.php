@@ -189,12 +189,16 @@ final class ContentExecutionContract
                 .(($context['scene_state'] ?? false) === true ? self::SCENE_STATE_FINE : '')
                 .(isset($context['opening_mode']) ? ContentStyleRules::fineInstructions($context['opening_mode']) : '')
                 .(isset($context['chapter_rhythm']) ? OutlineRhythm::chapterInstructions($context['chapter_rhythm']).'细纲要给兑现点单独留一个场景，不要挤在场景末尾一笔带过。' : '')
+                .(isset($context['opening_items']) ? OpeningBrief::chapterInstructions($context['opening_items'], 'fine') : '')
+                .(isset($context['chapter_handoff']) ? ChapterHandoff::planInstructions($context['chapter_handoff'] === [] ? null : $context['chapter_handoff'], 'fine') : '')
                 .self::foreshadowInstructions('fine', $context['foreshadow_obligations'] ?? [])
                 .self::openItemInstructions('fine', $context);
         }
         if ($step !== 'draft') {
             return $instructions.self::openItemInstructions($step, $context)
-                .($step === 'check' && isset($context['payoff_review']) ? OutlineRhythm::reviewInstructions($context['payoff_review']) : '');
+                .($step === 'check' && isset($context['payoff_review']) ? OutlineRhythm::reviewInstructions($context['payoff_review']) : '')
+                .($step === 'check' && isset($context['opening_review']) ? OpeningBrief::reviewInstructions($context['opening_review']) : '')
+                .($step === 'check' && isset($context['handoff_review']) ? ChapterHandoff::reviewInstructions() : '');
         }
         $budget = $context['budget'];
         $target = intdiv($budget['min'] + $budget['max'], 2);
@@ -256,6 +260,8 @@ final class ContentExecutionContract
                 .(isset($context['story_profile']) ? StoryProfile::instructions($context['story_profile']) : '')
                 .(($context['voice_cards'] ?? false) === true ? SettingSchema::voiceInstructions() : '')
                 .(isset($context['chapter_rhythm']) && ! isset($context['draft_repair_slot']) ? OutlineRhythm::chapterInstructions($context['chapter_rhythm']) : '')
+                .(isset($context['opening_items']) && ! isset($context['draft_repair_slot']) ? OpeningBrief::chapterInstructions($context['opening_items'], 'draft') : '')
+                .(isset($context['chapter_handoff']) && ! isset($context['draft_repair_slot']) ? ChapterHandoff::planInstructions($context['chapter_handoff'] === [] ? null : $context['chapter_handoff'], 'draft') : '')
                 .self::foreshadowInstructions('draft', $context['foreshadow_obligations'] ?? [])
                 .self::openItemInstructions('draft', $context);
         }
@@ -683,6 +689,13 @@ final class ContentExecutionContract
             if ($step === 'check' && isset($context['payoff_review'])) {
                 $result['payoff_review'] = OutlineRhythm::reviewSchema($schema, array_keys($context['anchors']));
             }
+            // 前三章带开篇交代清单的检查另记每项交代情况。
+            if ($step === 'check' && isset($context['opening_review'])) {
+                $result['opening_review'] = OpeningBrief::reviewSchema($schema, count($context['opening_review']), array_keys($context['anchors']));
+            }
+            if ($step === 'check' && isset($context['handoff_review'])) {
+                $result['handoff'] = ChapterHandoff::schema($schema);
+            }
 
             return $result;
         }
@@ -748,7 +761,7 @@ final class ContentExecutionContract
             throw new InvalidArgumentException('正文场景预算或格式无效：'.implode('；', $errors));
         }
 
-        return ContentSchema::body(['title' => $data['title'], 'body' => implode("\n", $sections)]);
+        return ContentSchema::body(['title' => ContentSchema::chapterTitle($data['title']), 'body' => implode("\n", $sections)]);
     }
 
     /** 校验一组标明叙述或对白的自然段并按序拼成正文；正文槽位与修订范围共用同一分段规则。

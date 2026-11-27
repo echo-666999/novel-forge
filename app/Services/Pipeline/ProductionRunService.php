@@ -48,7 +48,7 @@ final class ProductionRunService
         $novel = app(CreateNovelService::class)->createAndStart([...$input, 'generation_mode' => 'setting_real'], false, $model)->novel;
         $run = DB::transaction(function () use ($novel, $author, $chapterLimit): ProductionRun {
             // 总执行额度覆盖所有规划批次及授权章节，单个模型步骤仍有独立上限。
-            $novel->update(['max_execution_count' => max($novel->max_execution_count, (int) ceil($novel->target_chapters / 10) + app(GeneralSettings::class)->continuation_executions_per_chapter * $chapterLimit)]);
+            $novel->update(['max_execution_count' => max($novel->max_execution_count, OutlineGenerationService::batchCount($novel->target_chapters) + app(GeneralSettings::class)->continuation_executions_per_chapter * $chapterLimit)]);
 
             return ProductionRun::create(['novel_id' => $novel->id, 'author_id' => $author->id, 'start_chapter' => 1, 'chapter_limit' => $chapterLimit, 'policy' => ProductionRun::policy($chapterLimit === 10 ? 3 : 2),
                 'policy_hash' => PlanningJson::hash(ProductionRun::policy($chapterLimit === 10 ? 3 : 2)), 'commit_key' => (string) Str::uuid7(), 'status' => 'pending', 'step' => 'setting',
@@ -204,7 +204,8 @@ final class ProductionRunService
                         try {
                             $log = app(AiTextGenerationService::class)->generate(PlanningJson::encode(['idea' => $novel->premise_raw, 'candidate' => $draft['setting'], 'policy' => $run->policy]),
                                 'real', $novel->generation_config['model'], $novel->id, promptVersion: 'b10-setting-decision-v1',
-                                options: TextRequestOptions::decision()->withCharacterCards(($novel->generation_config['character_cards'] ?? null) === SettingSchema::CARD_VERSION));
+                                options: TextRequestOptions::decision()->withCharacterCards(($novel->generation_config['character_cards'] ?? null) === SettingSchema::CARD_VERSION)
+                                    ->withStoryFoundation(($novel->generation_config['story_foundation'] ?? null) === StoryFoundation::VERSION, StoryProfile::openingChecklist($novel->story_profile)));
                         } catch (AiGenerationException $exception) {
                             // 明确失败（如响应不是有效JSON）归入可自动恢复一次的决策失败；结果未知时保留原错误，等待人工核对。
                             throw $exception->status === 'failed' ? new InvalidArgumentException('SETTING_DECISION_FAILED') : $exception;

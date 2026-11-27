@@ -16,16 +16,17 @@ final class StoryProfile
     public const HUMOR_LEVELS = ['none' => '无', 'low' => '低', 'mid' => '中', 'high' => '高'];
 
     /** 题材包字段：键为字段名，值为是否列表。 */
-    public const GENRE_FIELDS = ['core_promise' => false, 'payoff_types' => true, 'beat_template' => false, 'world_rules_hints' => false, 'archetypes' => true, 'taboos' => true, 'default_style' => false];
+    public const GENRE_FIELDS = ['core_promise' => false, 'payoff_types' => true, 'beat_template' => false, 'world_rules_hints' => false, 'archetypes' => true, 'taboos' => true, 'default_style' => false, 'opening_checklist' => true];
 
     /** 文风预设字段：键为字段名，值为是否列表。 */
     public const STYLE_FIELDS = ['narrator_attitude' => false, 'sentence_rhythm' => false, 'dialogue_share' => false, 'humor_level' => false, 'humor_devices' => true,
         'emotion_expression' => false, 'vocabulary' => false, 'banned_words' => true, 'samples' => true, 'draft_fragment' => false];
 
-    /** 建书时冻结所选题材包与文风预设；两者都没选时返回 null，旧书输入保持不变。
+    /** 建书时冻结所选题材包、文风预设和叠加的设定元素（其他题材包，如历史书里的"穿越"）；都没选时返回 null，旧书输入保持不变。
+     * @param  list<string>  $elementKeys
      * @return array<string, mixed>|null
      */
-    public static function freeze(?string $genreKey, ?string $styleKey): ?array
+    public static function freeze(?string $genreKey, ?string $styleKey, array $elementKeys = []): ?array
     {
         $profile = [];
         foreach (['genre' => $genreKey, 'style' => $styleKey] as $kind => $key) {
@@ -37,6 +38,17 @@ final class StoryProfile
                 throw new InvalidArgumentException(StoryPreset::KINDS[$kind].'「'.$key.'」不存在或已停用');
             }
             $profile[$kind] = ['key' => $preset->key, 'name' => $preset->name, 'version' => $preset->version, 'content' => self::normalize($kind, $preset->content)];
+        }
+        $elements = [];
+        foreach (array_values(array_unique(array_filter($elementKeys, fn (mixed $key): bool => is_string($key) && $key !== '' && $key !== $genreKey))) as $key) {
+            $preset = StoryPreset::query()->enabled()->where('kind', 'genre')->where('key', $key)->first();
+            if ($preset === null) {
+                throw new InvalidArgumentException('设定元素「'.$key.'」不存在或已停用');
+            }
+            $elements[] = ['key' => $preset->key, 'name' => $preset->name, 'version' => $preset->version, 'content' => self::normalize('genre', $preset->content)];
+        }
+        if ($elements !== []) {
+            $profile['elements'] = $elements;
         }
 
         return $profile === [] ? null : ['version' => self::VERSION, ...$profile];
@@ -71,6 +83,17 @@ final class StoryProfile
         }
 
         return $normalized;
+    }
+
+    /** 题材包与设定元素给出的开篇必备交代项，去重后按出现顺序返回；没有题材包时为空。
+     * @param  array<string, mixed>|null  $profile
+     * @return list<string>
+     */
+    public static function openingChecklist(?array $profile): array
+    {
+        $packs = [...(isset($profile['genre']) ? [$profile['genre']] : []), ...($profile['elements'] ?? [])];
+
+        return array_values(array_unique(array_merge([], ...array_map(fn (array $pack): array => $pack['content']['opening_checklist'] ?? [], $packs))));
     }
 
     /** 正文写法要求：作者手改过的 draft_fragment 优先，否则按各字段渲染。
@@ -125,6 +148,11 @@ final class StoryProfile
         if (isset($profile['genre'])) {
             $text .= "\n本书题材「".$profile['genre']['name'].'」：给读者的承诺是'.rtrim($profile['genre']['content']['core_promise'], '。').'。本章要让读者感到这个承诺在兑现或在蓄力。'
                 .($profile['genre']['content']['taboos'] === [] ? '' : '题材禁忌：'.implode('；', $profile['genre']['content']['taboos']).'。');
+        }
+        foreach ($profile['elements'] ?? [] as $element) {
+            $content = $element['content'];
+            $text .= "\n本书叠加设定元素「".$element['name'].'」：'.(filled($content['world_rules_hints']) ? rtrim($content['world_rules_hints'], '。').'。' : '')
+                .($content['taboos'] === [] ? '' : '禁忌：'.implode('；', $content['taboos']).'。');
         }
 
         return $text;

@@ -18,13 +18,14 @@ class OutlineRhythmTest extends TestCase
         $this->assertNull(OutlineRhythm::frozen(['payoff_rhythm' => ['version' => 'old', 'payoff_types' => []]]));
     }
 
-    /** 类型不在冻结列表、缺字段或多字段时整批不合格。 */
+    /** 类型不在冻结列表或缺字段时整批不合格；模型多给的无用字段丢掉，不算不合格。 */
     public function test_parse_rejects_unknown_values(): void
     {
         $rhythm = OutlineRhythm::config([]);
         $valid = ['payoff' => ['type' => '打脸', 'size' => 'medium', 'description' => ' 当众打脸 '], 'emotional_peak' => '她笑了', 'hook_type' => 'crisis'];
         $this->assertSame('当众打脸', OutlineRhythm::parse($valid, $rhythm, 1)['payoff']['description']);
-        foreach ([[...$valid, 'hook_type' => 'cliff'], [...$valid, 'extra' => 1], ['payoff' => [...$valid['payoff'], 'type' => '修仙'], 'emotional_peak' => '', 'hook_type' => 'crisis']] as $bad) {
+        $this->assertSame(OutlineRhythm::parse($valid, $rhythm, 1), OutlineRhythm::parse([...$valid, 'extra' => 1, 'payoff' => [...$valid['payoff'], 'size_note' => '']], $rhythm, 1));
+        foreach ([[...$valid, 'hook_type' => 'cliff'], ['payoff' => ['type' => '打脸', 'size' => 'medium'], 'emotional_peak' => '她笑了', 'hook_type' => 'crisis'], ['payoff' => [...$valid['payoff'], 'type' => '修仙'], 'emotional_peak' => '', 'hook_type' => 'crisis']] as $bad) {
             try {
                 OutlineRhythm::parse($bad, $rhythm, 3);
                 $this->fail('应拒绝');

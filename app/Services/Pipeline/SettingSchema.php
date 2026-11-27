@@ -29,7 +29,7 @@ final class SettingSchema
     /** 为 SDK 构造严格字段结构，不把仅能解析 JSON 等同于契约通过。
      * @return array<string, Type>
      */
-    public static function schema(JsonSchema $schema, bool $cards = false): array
+    public static function schema(JsonSchema $schema, bool $cards = false, bool $storyFoundation = false): array
     {
         $character = self::strings($schema, self::CHARACTER_FIELDS);
         // 冻结了扩展人物卡的书：每张卡另有层级、欲望、恐惧、毛病、秘密、与主角关系、人物弧线、小习惯和代表台词。
@@ -40,7 +40,7 @@ final class SettingSchema
             }
         }
 
-        return [
+        $fields = [
             'world' => $schema->object(self::strings($schema, ['era', 'background']) + [
                 'rules' => $schema->array()->items($schema->string())->min(1)->required(),
             ])->withoutAdditionalProperties()->required(),
@@ -52,6 +52,12 @@ final class SettingSchema
                 'blocking' => $schema->boolean()->required(),
             ])->withoutAdditionalProperties())->required(),
         ];
+        // 冻结了故事根基的书：另有前三章开篇交代清单、主角处境和主线目标阶梯。
+        if ($storyFoundation) {
+            $fields += StoryFoundation::schema($schema);
+        }
+
+        return $fields;
     }
 
     /** 只接受供应商原文中的完整 JSON，不使用 SDK 的代码围栏或引号修补结果。
@@ -64,7 +70,9 @@ final class SettingSchema
         } catch (JsonException) {
             throw new InvalidArgumentException('设定响应不是完整有效的 JSON');
         }
-        self::keys($data, ['world', 'characters', 'tone', 'core_conflict', 'preserved_details', 'open_questions']);
+        // 故事根基字段可选：有哪一项就校验哪一项，旧书没有这些字段。
+        $optional = is_array($data) ? array_values(array_intersect(['opening_brief', 'protagonist_situation', 'goal_ladder'], array_keys($data))) : [];
+        self::keys($data, ['world', 'characters', 'tone', 'core_conflict', 'preserved_details', 'open_questions', ...$optional]);
         self::stringObject($data['world'], ['era', 'background'], ['rules']);
         self::stringList($data['world']['rules']);
         self::list($data['characters'], 1);
@@ -90,11 +98,25 @@ final class SettingSchema
         self::text($data['core_conflict']);
         self::stringList($data['preserved_details']);
         self::list($data['open_questions'], 0);
-        foreach ($data['open_questions'] as $question) {
+        foreach ($data['open_questions'] as &$question) {
+            // 模型有时把取舍方案写成列表：逐项是文字时合成一段，内容不丢。
+            if (is_array($question) && is_array($question['impact'] ?? null) && array_is_list($question['impact']) && $question['impact'] !== [] && array_filter($question['impact'], 'is_string') === $question['impact']) {
+                $question['impact'] = implode('；', array_map('trim', $question['impact']));
+            }
             self::stringObject($question, ['question', 'impact'], ['blocking']);
             if (! is_bool($question['blocking'])) {
                 throw new InvalidArgumentException('待确认问题的阻塞标记必须为布尔值');
             }
+        }
+        unset($question);
+        if (in_array('opening_brief', $optional, true)) {
+            $data['opening_brief'] = OpeningBrief::parse($data['opening_brief']);
+        }
+        if (in_array('protagonist_situation', $optional, true)) {
+            self::text($data['protagonist_situation']);
+        }
+        if (in_array('goal_ladder', $optional, true)) {
+            $data['goal_ladder'] = StoryFoundation::parseLadder($data['goal_ladder']);
         }
 
         return $data;

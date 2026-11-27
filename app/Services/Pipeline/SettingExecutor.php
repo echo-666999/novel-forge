@@ -33,7 +33,8 @@ final class SettingExecutor implements StageExecutorInterface
             }
             $config = $stage->input['generation_config'];
             $cards = ($config['character_cards'] ?? null) === SettingSchema::CARD_VERSION;
-            $options = TextRequestOptions::setting($config['temperature'], $cards)->withCharacterCards($cards);
+            $options = TextRequestOptions::setting($config['temperature'], $cards)->withCharacterCards($cards)
+                ->withStoryFoundation(($config['story_foundation'] ?? null) === StoryFoundation::VERSION, StoryProfile::openingChecklist($stage->input['novel']['story_profile'] ?? null));
             if (($config['max_output_tokens'] ?? null) !== $options->maxOutputTokens || ($config['timeout_seconds'] ?? null) !== $options->timeoutSeconds || ($config['schema_version'] ?? null) !== SettingSchema::VERSION || ($config['prompt_version'] ?? null) !== 'b02-setting-prompt-v1') {
                 throw new InvalidArgumentException('冻结的请求配置与当前设定版本不一致');
             }

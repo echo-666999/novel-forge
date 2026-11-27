@@ -154,6 +154,7 @@ class ManageStoryPresets extends Page implements HasTable
                 Textarea::make('content.world_rules_hints')->label('世界观要点')->rows(2),
                 TagsInput::make('content.archetypes')->label('常见人物原型'),
                 TagsInput::make('content.taboos')->label('题材禁忌')->helperText('会写进正文要求，例如“主角受辱后长期不反击”。'),
+                TagsInput::make('content.opening_checklist')->label('开篇必备交代')->helperText('前三章必须让读者知道的背景，例如“前世的结局和最大的遗憾”。设定阶段会据此列出本书的开篇交代清单。'),
                 Select::make('content.default_style')->label('推荐文风')->options(fn (): array => StoryPreset::options('style'))->native(false)->placeholder('不推荐'),
             ]),
             Section::make('文风内容')->compact()->visible(fn (Get $get): bool => $kind($get) === 'style')->columns(2)->schema([

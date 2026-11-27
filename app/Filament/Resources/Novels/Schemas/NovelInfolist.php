@@ -223,6 +223,22 @@ class NovelInfolist
                 TextEntry::make('voice_samples')->label('代表台词')->listWithLineBreaks()->visible(fn (mixed $state): bool => filled($state)),
             ]),
             TextEntry::make($prefix.'preserved_details')->label('保留的创意细节')->listWithLineBreaks()->bulleted(),
+            // 冻结了故事根基的书才有处境、目标阶梯和开篇交代清单。
+            TextEntry::make($prefix.'protagonist_situation')->label('主角当前处境')->visible(fn (mixed $state): bool => filled($state)),
+            RepeatableEntry::make($prefix.'goal_ladder')->label('主线目标阶梯')->visible(fn (mixed $state): bool => filled($state))->schema([
+                TextEntry::make('goal')->hiddenLabel()->weight('bold'),
+                TextEntry::make('done_when')->label('做成的标志')->inlineLabel(),
+                TextEntry::make('tradeoff')->label('代价')->inlineLabel()->color('gray'),
+            ]),
+            TextEntry::make($prefix.'opening_brief.premise_hook')->label('开篇交代 · 本书立足的设定')->visible(fn (mixed $state): bool => filled($state)),
+            RepeatableEntry::make($prefix.'opening_brief.items')->label('开篇交代 · 前三章交代项')->visible(fn (mixed $state): bool => filled($state))->schema([
+                Flex::make([
+                    TextEntry::make('topic')->hiddenLabel()->weight('bold'),
+                    TextEntry::make('chapter')->hiddenLabel()->badge()->grow(false)->formatStateUsing(fn (mixed $state): string => '第'.$state.'章'),
+                ])->verticallyAlignCenter(),
+                TextEntry::make('content')->hiddenLabel(),
+                TextEntry::make('technique')->label('写法')->inlineLabel()->color('gray'),
+            ]),
             RepeatableEntry::make($prefix.'open_questions')->label('待作者确认')->placeholder('尚无待确认问题记录')->schema([
                 Flex::make([
                     TextEntry::make('question')->hiddenLabel()->weight('bold'),

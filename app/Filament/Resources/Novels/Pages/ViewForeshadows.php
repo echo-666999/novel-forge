@@ -8,6 +8,7 @@ use App\Models\Chapter;
 use App\Models\Foreshadow;
 use App\Models\ForeshadowEvidence;
 use App\Services\Pipeline\ForeshadowLedger;
+use App\Services\Pipeline\OutlineForeshadows;
 use Filament\Actions\Action;
 use Filament\Forms\Components\Checkbox;
 use Filament\Forms\Components\Hidden;
@@ -62,10 +63,10 @@ class ViewForeshadows extends Page implements HasTable
     /** 到期提示基于下一章，计划不会被当作已经发生的事实。 */
     public function content(Schema $schema): Schema
     {
-        return $schema->components([Section::make('计划与正式事实')->compact()->description('登记伏笔计划；带回收窗口的伏笔随正式提交自动流转。')->headerActions([HelpHint::action('先登记计划。带回收窗口的伏笔由正式提交时的正文自动流转（埋设、强化、回收），必回收伏笔在窗口末章未回收时会阻塞提交；旧伏笔仍可依据正式正文手工登记。已有未提交章节时暂停维护，避免改变冻结输入。')])->schema([
+        return $schema->components([Section::make('计划与正式事实')->compact()->description('新书的大纲首批会自动登记长程伏笔（来源标“大纲自动登记”，埋设前可撤回），也可以手工登记；带回收窗口的伏笔随正式提交自动流转。')->headerActions([HelpHint::action('先登记计划。带回收窗口的伏笔由正式提交时的正文自动流转（埋设、强化、回收），必回收伏笔在窗口末章未回收时会阻塞提交；旧伏笔仍可依据正式正文手工登记。已有未提交章节时暂停维护，避免改变冻结输入。')])->schema([
             TextEntry::make('due')->label('下一章提醒')->state(function (): string {
                 $number = $this->getRecord()->chapters_done + 1;
-                $count = Foreshadow::where('novel_id', $this->getRecord()->id)->where('status', '!=', 'resolved')->where('target_chapter', '<=', $number)->count();
+                $count = Foreshadow::where('novel_id', $this->getRecord()->id)->active()->where('status', '!=', 'resolved')->where('target_chapter', '<=', $number)->count();
 
                 return '第'.$number.'章：'.$count.'条伏笔到期或逾期，未回收项将持续注入后续上下文。';
             }),
@@ -83,6 +84,8 @@ class ViewForeshadows extends Page implements HasTable
     {
         return $table->query(Foreshadow::where('novel_id', $this->getRecord()->id))->defaultSort('id')->columns([
             TextColumn::make('title')->label('伏笔')->searchable(),
+            TextColumn::make('source')->label('来源')->state(fn (Foreshadow $record): string => str_starts_with($record->description, OutlineForeshadows::MARK) ? '大纲自动登记' : '作者登记')->badge()
+                ->color(fn (string $state): string => $state === '大纲自动登记' ? 'info' : 'gray'),
             TextColumn::make('status')->label('状态')->formatStateUsing(fn (string $state, Foreshadow $record): string => Foreshadow::statusLabel($record->displayStatus($this->getRecord()->chapters_done))),
             TextColumn::make('plant_chapter')->label('计划埋设章'),
             TextColumn::make('target_chapter')->label('回收窗口')->formatStateUsing(fn (Foreshadow $record): string => $record->hasWindow() ? '第'.$record->payoff_from.'～'.$record->payoff_to.'章' : '最迟第'.$record->target_chapter.'章'),
@@ -102,7 +105,15 @@ class ViewForeshadows extends Page implements HasTable
                     TextEntry::make('source'.$entry->id)->label('正式来源')->state('正文记录 #'.$entry->version_id.' / 提交 '.$entry->commit_id)->url(NovelResource::getUrl('state', ['record' => $record->novel_id, 'chapter' => $entry->chapter_number])),
                 ]))->all(),
             ]),
-            Action::make('recordEvidence')->label('登记进展')->visible(fn (Foreshadow $record): bool => $record->status !== 'resolved')->schema(fn (Foreshadow $record): array => [
+            Action::make('withdraw')->label('撤回')->color('danger')->requiresConfirmation()->modalDescription('撤回后这条伏笔不再进入以后的生成；只能撤回尚未埋设、埋设章还没生成的计划。')
+                ->visible(fn (Foreshadow $record): bool => $record->status === 'planned' && $record->revision === 0)
+                ->action(function (Foreshadow $record): void {
+                    $this->perform(function () use ($record): void {
+                        abort_unless($record->novel_id === $this->getRecord()->id, 403);
+                        app(ForeshadowLedger::class)->withdraw($record, auth()->user());
+                    });
+                }),
+            Action::make('recordEvidence')->label('登记进展')->visible(fn (Foreshadow $record): bool => ! in_array($record->status, ['resolved', 'withdrawn'], true))->schema(fn (Foreshadow $record): array => [
                 Hidden::make('revision')->default($record->revision), Hidden::make('key')->default(fn (): string => (string) Str::uuid7()),
                 Select::make('status')->label('新状态')->options($record->status === 'planned' ? ['planted' => '已埋设'] : ($record->must_payoff ? ['reinforced' => '已强化'] : ['reinforced' => '已强化', 'resolved' => '已回收']))->required()
                     ->helperText($record->must_payoff ? '必回收伏笔只能由正式提交的正文自动回收。' : null),
@@ -118,7 +129,7 @@ class ViewForeshadows extends Page implements HasTable
         ]);
     }
 
-    /** 新计划和证据操作都使用可重放请求编号，不提供覆盖和删除入口。
+    /** 新计划和证据操作都使用可重放请求编号，不提供覆盖入口；尚未埋设的计划可以撤回。
      * @return list<Action>
      */
     protected function getHeaderActions(): array

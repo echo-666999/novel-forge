@@ -7,19 +7,23 @@ use App\Enums\NovelStatus;
 use App\Enums\Stage;
 use App\Enums\StageStatus;
 use App\Filament\Resources\Novels\Pages\BlueprintVersions;
+use App\Filament\Resources\Novels\Pages\ViewForeshadows;
 use App\Filament\Resources\Novels\Pages\ViewNovel;
 use App\Filament\Resources\Novels\Pages\ViewOutlinePlan;
 use App\Jobs\RunOutlineBatchJob;
 use App\Jobs\RunSettingJob;
 use App\Models\Chapter;
 use App\Models\CostLog;
+use App\Models\Foreshadow;
 use App\Models\Novel;
 use App\Models\NovelOutlinePlan;
 use App\Models\NovelSettingConfirmation;
 use App\Models\NovelStage;
 use App\Models\User;
 use App\Services\Pipeline\ConfirmSettingService;
+use App\Services\Pipeline\ForeshadowLedger;
 use App\Services\Pipeline\OutlineExecutor;
+use App\Services\Pipeline\OutlineForeshadows;
 use App\Services\Pipeline\OutlineGenerationService;
 use App\Services\Pipeline\OutlineRhythm;
 use App\Services\Pipeline\OutlineSchema;
@@ -76,7 +80,7 @@ class B03OutlineTest extends TestCase
         $this->assertSame('sqlite', DB::connection()->getDriverName());
         $this->assertSame(':memory:', DB::connection()->getDatabaseName());
         $this->assertSame(0, Chapter::query()->count());
-        foreach (['novel_outline_chapters', 'novel_outline_plans', 'novel_setting_confirmations'] as $table) {
+        foreach (['foreshadow_evidence', 'foreshadows', 'novel_outline_chapters', 'novel_outline_plans', 'novel_setting_confirmations'] as $table) {
             DB::table($table)->delete();
         }
         DB::table('novels')->update(['generation_mode' => 'simulation']);
@@ -346,6 +350,26 @@ class B03OutlineTest extends TestCase
         Http::assertNothingSent();
     }
 
+    /** 带故事根基的设定：确认表单显示并保存开篇交代清单、主角处境和目标阶梯，表单提交的章号存为整数；小说页显示清单。 */
+    public function test_confirmation_form_keeps_opening_brief(): void
+    {
+        $setting = [...NovelSettingConfirmationFactory::setting(), 'opening_brief' => ['premise_hook' => '林澈重生回到灯塔失火前一年', 'items' => [
+            ['topic' => '前世的结局', 'content' => '被当成纵火者', 'technique' => '回忆', 'chapter' => 1],
+            ['topic' => '重生的时间点', 'content' => '冬至', 'technique' => '内心独白', 'chapter' => 1],
+            ['topic' => '这一世的打算', 'content' => '找出纵火者', 'technique' => '对话', 'chapter' => 2],
+        ]], 'protagonist_situation' => '灯塔见习守塔人，住塔下小屋', 'goal_ladder' => [['goal' => '保住灯塔', 'done_when' => '失火当夜无人伤亡', 'tradeoff' => '得罪工头'], ['goal' => '找出纵火者', 'done_when' => '当众揭穿', 'tradeoff' => '离开港口']]];
+        $confirmation = NovelSettingConfirmation::factory()->create(['confirmed_by' => auth()->id(), 'setting' => $setting]);
+        $novel = $confirmation->novel;
+        Livewire::test(ViewNovel::class, ['record' => $novel->id])->callAction('confirmSetting', ['setting.opening_brief.premise_hook' => '林澈重生回到失火前一年的冬至', 'setting.protagonist_situation' => '灯塔见习守塔人，夜里值班', 'acknowledged' => true])->assertHasNoActionErrors()->assertNotified('设定版本已确认');
+        // 清单字段只有可见时才会提交，改动被保存说明这一节对带清单的设定可见。
+        $latest = $novel->settingConfirmations()->latest('id')->firstOrFail();
+        $this->assertSame('林澈重生回到失火前一年的冬至', $latest->setting['opening_brief']['premise_hook']);
+        $this->assertSame([1, 1, 2], array_column($latest->setting['opening_brief']['items'], 'chapter'));
+        $this->assertSame('灯塔见习守塔人，夜里值班', $latest->setting['protagonist_situation']);
+        $this->assertSame(['保住灯塔', '找出纵火者'], array_column($latest->setting['goal_ladder'], 'goal'));
+        Livewire::test(ViewNovel::class, ['record' => $novel->id])->assertSee('开篇交代 · 前三章交代项')->assertSee('这一世的打算')->assertSee('主线目标阶梯')->assertSee('失火当夜无人伤亡');
+    }
+
     /** 后台确认和付费启动分开提交，未同意请求时绝不投递。 */
     public function test_filament_confirmation_then_explicit_paid_start(): void
     {
@@ -550,6 +574,54 @@ class B03OutlineTest extends TestCase
         Livewire::test(ViewOutlinePlan::class, ['record' => $novel->id])->assertSee('节奏提醒')->assertSee('第1至5章连续5章没有中兑现或大兑现')->assertSee('小·揭秘');
         Http::assertSent(fn (Request $request): bool => isset($request['text']['format']['schema']['properties']['chapters']['items']['properties']['rhythm'])
             && str_contains(json_encode($request->data(), JSON_UNESCAPED_UNICODE), '爽点节奏'));
+    }
+
+    /** 新计划首批列出长程伏笔：合格条目在接纳时登记进伏笔账本，不合格的丢弃，不影响大纲接纳；未埋设的可以撤回。 */
+    public function test_outline_foreshadows_are_registered(): void
+    {
+        $confirmation = NovelSettingConfirmation::factory()->create(['confirmed_by' => auth()->id()]);
+        $novel = $confirmation->novel;
+        $novel->update(['target_chapters' => 20]);
+        $plan = app(OutlineGenerationService::class)->start($novel, $confirmation->id, auth()->user());
+        $this->assertSame(OutlineForeshadows::VERSION, $plan->config['outline_foreshadows']);
+        $first = self::batch(1, 10, 20);
+        $foreshadow = fn (string $title, int $plant, int $from, int $to): array => ['title' => $title, 'surface_clue' => $title.'的表面线索', 'hidden_meaning' => '师父留下的暗号', 'payoff_effect' => '林澈据此改道', 'plant_chapter' => $plant, 'payoff_from' => $from, 'payoff_to' => $to];
+        $first['roadmap']['foreshadows'] = [$foreshadow('褪色的签名', 2, 8, 12), $foreshadow('灯塔的第三格', 3, 15, 20), $foreshadow('回收早于埋设', 9, 5, 6)];
+        Http::fakeSequence('https://api.openai.com/v1/responses')->push(B02SettingTest::response(json_encode($first)))->push(B02SettingTest::response(json_encode(self::batch(11, 20, 20))));
+        $this->drain();
+        $this->assertSame('completed', $plan->fresh()->status);
+        $stage = $novel->stages()->where('stage', 'outline')->oldest('id')->firstOrFail();
+        $this->assertSame(1, $stage->output['data']['foreshadow_dropped']);
+        $this->assertSame(['registered' => 2, 'failed' => []], $stage->output['data']['foreshadow_registration']);
+        $ledger = Foreshadow::where('novel_id', $novel->id)->orderBy('id')->get();
+        $this->assertSame([['褪色的签名', 2, 8, 12], ['灯塔的第三格', 3, 15, 20]], $ledger->map(fn (Foreshadow $item): array => [$item->title, $item->plant_chapter, $item->payoff_from, $item->payoff_to])->all());
+        $this->assertTrue($ledger[0]->hasWindow());
+        $this->assertStringStartsWith(OutlineForeshadows::MARK, $ledger[0]->description);
+        // 后续批次的请求不再要求伏笔字段。
+        Http::assertSent(fn (Request $request): bool => isset($request['text']['format']['schema']['properties']['roadmap']['properties']['foreshadows']) && str_contains(json_encode($request->data(), JSON_UNESCAPED_UNICODE), '长程伏笔'));
+        $this->assertSame('planned', app(ForeshadowLedger::class)->context($novel, 2)['items'][0]['status']);
+        Livewire::test(ViewForeshadows::class, ['record' => $novel->id])->assertSee('大纲自动登记')->callTableAction('withdraw', $ledger[1]);
+        $this->assertSame('withdrawn', $ledger[1]->fresh()->status);
+        $this->assertSame(['褪色的签名'], array_column(app(ForeshadowLedger::class)->context($novel, 5)['items'], 'title'));
+        $this->assertSame(['褪色的签名'], array_column(app(ForeshadowLedger::class)->readiness($novel), 'title'));
+    }
+
+    /** 带故事根基的设定：首批只排5章，之后每批10章。 */
+    public function test_foundation_plan_uses_short_first_batch(): void
+    {
+        $setting = [...NovelSettingConfirmationFactory::setting(), 'opening_brief' => ['premise_hook' => '重生', 'items' => [['topic' => 'a', 'content' => 'b', 'technique' => 'c', 'chapter' => 1], ['topic' => 'd', 'content' => 'e', 'technique' => 'f', 'chapter' => 1], ['topic' => 'g', 'content' => 'h', 'technique' => 'i', 'chapter' => 2]]]];
+        $confirmation = NovelSettingConfirmation::factory()->create(['setting' => $setting]);
+        $novel = $confirmation->novel;
+        $novel->update(['target_chapters' => 15]);
+        $plan = app(OutlineGenerationService::class)->start($novel, $confirmation->id, auth()->user());
+        $this->assertSame(OutlineGenerationService::FIRST_BATCH_SIZE, $plan->config['first_batch_size']);
+        Http::fakeSequence('https://api.openai.com/v1/responses')->push(B02SettingTest::response(json_encode(self::batch(1, 5, 15))))->push(B02SettingTest::response(json_encode(self::batch(6, 15, 15))));
+        $this->drain();
+        $this->assertSame('completed', $plan->fresh()->status);
+        $this->assertSame([['start' => 1, 'end' => 5, 'total' => 15], ['start' => 6, 'end' => 15, 'total' => 15]], $novel->stages()->where('stage', 'outline')->orderBy('id')->get()->map(fn ($stage): array => $stage->input['range'])->all());
+        $this->assertSame(2, OutlineGenerationService::batchCount(15));
+        $this->assertSame(2, OutlineGenerationService::batchCount(15, false));
+        $this->assertSame(11, OutlineGenerationService::batchCount(100));
     }
 
     /** 冻结前的旧计划不带节奏：请求结构不变，带节奏字段的响应按多余字段拒绝。 */

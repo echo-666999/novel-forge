@@ -17,6 +17,7 @@ use App\Models\User;
 use App\Services\Pipeline\CreateNovelService;
 use App\Services\Pipeline\SettingExecutor;
 use App\Services\Pipeline\SettingSchema;
+use App\Services\Pipeline\StoryFoundation;
 use App\Settings\GeneralSettings;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
@@ -106,6 +107,7 @@ class B02SettingTest extends TestCase
         // 新书冻结扩展人物卡，设定输出上限随之放宽到8192。
         $this->assertSame(8192, $novel->generation_config['max_output_tokens']);
         $this->assertSame(SettingSchema::CARD_VERSION, $novel->generation_config['character_cards']);
+        $this->assertSame(StoryFoundation::VERSION, $novel->generation_config['story_foundation']);
         $this->assertArrayNotHasKey('key', $novel->generation_config);
         Queue::assertPushed(RunSettingJob::class, 1);
         Queue::assertNotPushed(RunNovelPipelineJob::class);
@@ -129,6 +131,10 @@ class B02SettingTest extends TestCase
             $this->assertSame(8192, $request['max_output_tokens']);
             $this->assertArrayHasKey('voice_samples', $request['text']['format']['schema']['properties']['characters']['items']['properties']);
             $this->assertStringContainsString('扩展人物卡', json_encode($request->data(), JSON_UNESCAPED_UNICODE));
+            // 新书设定另列前三章必须交代的背景。
+            $this->assertArrayHasKey('opening_brief', $request['text']['format']['schema']['properties']);
+            $this->assertArrayHasKey('goal_ladder', $request['text']['format']['schema']['properties']);
+            $this->assertStringContainsString('开篇交代清单', json_encode($request->data(), JSON_UNESCAPED_UNICODE));
             $this->assertSame(0.7, $request['temperature']);
             $this->assertSame('json_schema', $request['text']['format']['type']);
             $this->assertTrue($request['text']['format']['strict']);

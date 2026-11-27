@@ -17,7 +17,7 @@ final class OutlineSchema
     /** 首批带全书走向，后续批次只返回章节和延续摘要，不能悄悄重写走向。
      * @return array<string, Type>
      */
-    public static function schema(JsonSchema $schema, int $start, int $end, int $total, ?array $rhythm = null): array
+    public static function schema(JsonSchema $schema, int $start, int $end, int $total, ?array $rhythm = null, bool $foreshadows = false): array
     {
         $point = $schema->object(self::strings($schema, ['subject', 'before', 'action', 'after', 'verification']) + [
             'change_type' => $schema->string()->enum(self::CHANGE_TYPES)->required(),
@@ -40,6 +40,8 @@ final class OutlineSchema
                     'chapter_number' => $schema->integer()->min(1)->max($total)->required(),
                     'change' => $schema->string()->required(),
                 ])->withoutAdditionalProperties())->min(1)->required(),
+                // 冻结了自动登记伏笔的计划，首批另列长程伏笔。
+                ...($foreshadows ? ['foreshadows' => OutlineForeshadows::schema($schema, $total)] : []),
             ])->withoutAdditionalProperties()->required();
         }
 
@@ -49,7 +51,7 @@ final class OutlineSchema
     /** 严格解析整批；任何章节不合格时整批不接纳，不做截断或自动补章。
      * @return array<string, mixed>
      */
-    public static function parse(string $text, int $start, int $end, int $total, ?array $rhythm = null): array
+    public static function parse(string $text, int $start, int $end, int $total, ?array $rhythm = null, bool $foreshadows = false): array
     {
         try {
             $data = json_decode($text, true, 512, JSON_THROW_ON_ERROR);
@@ -85,6 +87,13 @@ final class OutlineSchema
         unset($chapter);
         self::stringObject($data['handoff'], ['continuity_summary'], ['open_threads']);
         self::texts($data['handoff']['open_threads']);
+        // 伏笔只是建议：单独宽松整理，不合格的条目丢弃，不让整批失败。
+        $foreshadowDropped = null;
+        if ($start === 1 && $foreshadows && is_array($data['roadmap'])) {
+            $parsedForeshadows = OutlineForeshadows::parse($data['roadmap']['foreshadows'] ?? null, $total);
+            unset($data['roadmap']['foreshadows']);
+            $foreshadowDropped = $parsedForeshadows['dropped'];
+        }
         if ($start === 1) {
             self::stringObject($data['roadmap'], ['whole_story_summary', 'ending_direction'], ['major_turning_points']);
             self::list($data['roadmap']['major_turning_points']);
@@ -97,6 +106,10 @@ final class OutlineSchema
                     throw new InvalidArgumentException('全书转折章序越界');
                 }
             }
+        }
+        if ($foreshadowDropped !== null) {
+            $data['roadmap']['foreshadows'] = $parsedForeshadows['items'];
+            $data['foreshadow_dropped'] = $foreshadowDropped;
         }
 
         return $data;

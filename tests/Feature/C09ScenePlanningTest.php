@@ -3,6 +3,8 @@
 namespace Tests\Feature;
 
 use App\Filament\Resources\Novels\Pages\ScenePlans;
+use App\Models\Chapter;
+use App\Models\ChapterGenerationRun;
 use App\Models\CostLog;
 use App\Models\NovelOutlineChapter;
 use App\Models\ScenePlanVersion;
@@ -121,6 +123,27 @@ class C09ScenePlanningTest extends TestCase
         $page->callTableAction('edit', $outline, ['expected_id' => ScenePlanVersion::firstOrFail()->id, 'scenes' => $this->scenes($outline), 'reason' => '修改场景', 'freeze' => false, 'acknowledged' => true])->assertHasNoTableActionErrors();
         $this->assertSame(2, ScenePlanVersion::count());
         $page->filterTable('scene_plan', 'none')->assertCanNotSeeTableRecords([$outline]);
+    }
+
+    /** 已写作且没有作者规划的章节显示细纲自动拆分的场景，而不是"未使用"；作者冻结版本优先。 */
+    public function test_started_chapter_shows_auto_scenes(): void
+    {
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        $this->actingAs(User::factory()->create());
+        $novel = B04ContentTest::readyNovel();
+        $outline = NovelOutlineChapter::orderBy('chapter_number')->firstOrFail();
+        $chapter = Chapter::factory()->create(['novel_id' => $novel->id, 'number' => $outline->chapter_number]);
+        ChapterGenerationRun::factory()->create(['outline_chapter_id' => $outline->id, 'chapter_id' => $chapter->id, 'status' => 'completed', 'plan_data' => B04ContentTest::fine()]);
+        $page = Livewire::test(ScenePlans::class, ['record' => $novel->id])->assertCanSeeTableRecords([$outline])
+            ->assertSee('已写作 · 细纲自动拆分 3 场')->assertDontSee('未使用')->assertSee('3 个')->assertSee('1 / 1');
+        $modal = $page->mountTableAction('history', $outline)->instance()->getMountedAction()->getModalContent()->render();
+        $this->assertStringContainsString('本章写作时细纲自动拆分的场景（3）', $modal);
+        $this->assertStringContainsString('林澈想弄清来信真伪', $modal);
+        $this->assertStringContainsString('守塔人问她图什么', $modal);
+        $this->assertStringContainsString('写作时使用了上面细纲自动拆分的场景', $modal);
+        // 没有生成记录的章节仍按"未规划"列出，默认筛选不显示。
+        $other = NovelOutlineChapter::where('chapter_number', 2)->firstOrFail();
+        $page->assertCanNotSeeTableRecords([$other]);
     }
 
     /** 拆分和合并均建立完整新列表，旧场景内容保留。 */

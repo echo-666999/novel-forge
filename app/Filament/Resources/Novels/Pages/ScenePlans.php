@@ -4,6 +4,7 @@ namespace App\Filament\Resources\Novels\Pages;
 
 use App\Filament\Resources\Novels\NovelResource;
 use App\Filament\Support\HelpHint;
+use App\Models\ChapterGenerationRun;
 use App\Models\NovelOutlineChapter;
 use App\Models\ScenePlanVersion;
 use App\Services\Pipeline\FieldDiff;
@@ -64,7 +65,7 @@ class ScenePlans extends Page implements HasTable
     /** 作者通过新增、删除与重排列表表达拆分或合并，保存形成新版本。 */
     public function content(Schema $schema): Schema
     {
-        return $schema->components([Section::make('章节场景规划（可选）')->compact()->description('默认只列出已有场景规划的章节；章纲的目标和推进点请到“章节大纲”查看。场景规划是可选步骤：不规划时，生成会在细纲阶段自行拆分场景；只有冻结的版本才会进入以后的新运行，草稿不会。每次保存产生新版本；已开始写作的章节只读。')->headerActions([HelpHint::action('新增场景或拆分时填写不同目标；合并时将事件与推进点合入保留场景再移除旧项。每次保存产生新版本。冻结检查推进点覆盖和总字数，并进入以后新运行的细纲、正文和检查请求；已经开始的章节只能查看。')])->schema([]), EmbeddedTable::make()]);
+        return $schema->components([Section::make('章节场景规划（可选）')->compact()->description('默认列出已有场景规划或已经写作的章节；章纲的目标和推进点请到“章节大纲”查看。场景规划是可选步骤：不规划时，生成会在细纲阶段自行拆分场景；只有冻结的版本才会进入以后的新运行，草稿不会。每次保存产生新版本；已写作的章节只读，可在“版本与覆盖”里查看写作时实际使用的场景。')->headerActions([HelpHint::action('新增场景或拆分时填写不同目标；合并时将事件与推进点合入保留场景再移除旧项。每次保存产生新版本。冻结检查推进点覆盖和总字数，并进入以后新运行的细纲、正文和检查请求；已经开始的章节只能查看。')])->schema([]), EmbeddedTable::make()]);
     }
 
     /** 按章列出场景规划版本概况与编辑入口；章纲内容在章节大纲页查看。 */
@@ -76,14 +77,17 @@ class ScenePlans extends Page implements HasTable
             TextColumn::make('outline_plan_id')->label('所属大纲记录编号')->toggleable(isToggledHiddenByDefault: true),
             TextColumn::make('chapter_number')->label('章号')->sortable(), TextColumn::make('title')->label('章名')->searchable()->wrap(),
             TextColumn::make('scene_status')->label('场景规划')->badge()->state(fn (NovelOutlineChapter $record): string => $this->sceneStatus($record))
-                ->color(fn (NovelOutlineChapter $record): string => match ($this->latest($record)?->status) {
-                    'frozen' => 'success', 'draft' => 'warning', default => 'gray',
+                ->color(fn (NovelOutlineChapter $record): string => match (true) {
+                    $this->latest($record)?->status === 'frozen' => 'success',
+                    $this->started($record) && $this->autoScenes($record) !== null => 'info',
+                    $this->latest($record)?->status === 'draft' => 'warning',
+                    default => 'gray',
                 }),
-            // 以下各列只描述最新场景规划版本；未规划时显示占位，避免重复章节大纲页的内容。
+            // 以下各列描述实际进入生成的场景：作者规划优先，已写作且没有作者冻结版本的章节取细纲自动拆分的场景。
             TextColumn::make('scene_count')->label('场景数')->placeholder('—')
-                ->state(fn (NovelOutlineChapter $record): ?string => ($latest = $this->latest($record)) === null ? null : count($latest->scenes).' 个'),
+                ->state(fn (NovelOutlineChapter $record): ?string => ($scenes = $this->displayScenes($record)) === null ? null : count($scenes).' 个'),
             TextColumn::make('scene_words')->label('目标字数合计')->placeholder('—')
-                ->state(fn (NovelOutlineChapter $record): ?string => ($latest = $this->latest($record)) === null ? null : array_sum(array_map(fn (mixed $scene): int => (int) data_get($scene, 'words', 0), $latest->scenes)).' 字'),
+                ->state(fn (NovelOutlineChapter $record): ?string => ($scenes = $this->displayScenes($record)) === null || ($words = array_sum(array_map(fn (mixed $scene): int => (int) data_get($scene, 'words', 0), $scenes))) === 0 ? null : $words.' 字'),
             TextColumn::make('point_coverage')->label('推进点覆盖')->placeholder('—')->state(fn (NovelOutlineChapter $record): ?string => $this->coverage($record)),
             TextColumn::make('scene_versions')->label('版本数')->placeholder('—')
                 ->state(fn (NovelOutlineChapter $record): ?int => ($count = ScenePlanVersion::where('outline_chapter_id', $record->id)->count()) === 0 ? null : $count),
@@ -92,9 +96,9 @@ class ScenePlans extends Page implements HasTable
         ])->filters([
             SelectFilter::make('outline_plan_id')->label('大纲记录')->options(fn (): array => $this->getRecord()->outlinePlans()->orderByDesc('id')->pluck('id', 'id')->map(fn ($id): string => '大纲记录 #'.$id)->all()),
             // 默认只列有场景规划版本的章节，清空筛选即逐章查看全部大纲章节。
-            SelectFilter::make('scene_plan')->label('场景规划')->options(['planned' => '已规划（草稿或冻结）', 'frozen' => '有冻结版本', 'none' => '未规划'])->default('planned')->placeholder('全部章节')
+            SelectFilter::make('scene_plan')->label('场景规划')->options(['planned' => '已规划或已写作', 'frozen' => '有冻结版本', 'none' => '未规划'])->default('planned')->placeholder('全部章节')
                 ->query(fn (Builder $query, array $data): Builder => match ($data['value'] ?? null) {
-                    'planned' => $query->whereIn('id', ScenePlanVersion::select('outline_chapter_id')),
+                    'planned' => $query->where(fn (Builder $query): Builder => $query->whereIn('id', ScenePlanVersion::select('outline_chapter_id'))->orWhereIn('id', ChapterGenerationRun::select('outline_chapter_id')->whereNotNull('plan_data'))),
                     'frozen' => $query->whereIn('id', ScenePlanVersion::select('outline_chapter_id')->where('status', 'frozen')),
                     'none' => $query->whereNotIn('id', ScenePlanVersion::select('outline_chapter_id')),
                     default => $query,
@@ -177,8 +181,32 @@ class ScenePlans extends Page implements HasTable
     /** 场景字段的中文名与展示顺序，与编辑表单一致；标题单独作为卡片标题。 */
     private const SCENE_FIELDS = ['goal' => '场景目标', 'pov' => '视角人物', 'time' => '故事时间', 'place' => '地点', 'participants' => '参与者', 'conflict' => '冲突', 'change' => '人物及状态变化', 'transition' => '前后衔接', 'prohibited' => '禁止变更', 'words' => '目标字数', 'point_ids' => '必要推进点'];
 
+    /** 细纲自动拆分场景的字段中文名。 */
+    private const AUTO_SCENE_FIELDS = ['time' => '故事时间', 'place' => '地点', 'present' => '在场人物', 'obstacle' => '阻碍', 'action' => '行动', 'change' => '人物及状态变化', 'key_dialogue' => '关键对白', 'emotional_beat' => '情绪节拍', 'props' => '道具', 'point_ids' => '必要推进点'];
+
+    /** 场景字段逐项转成中文行，推进点编号换成序号，未知字段按原键名列出。
+     * @param  array<string, mixed>  $scene
+     * @param  array<string, string>  $labels
+     * @param  array<string, string>  $numbers
+     * @return list<array{label: string, value: string}>
+     */
+    private function sceneRows(array $scene, array $labels, array $numbers): array
+    {
+        $rows = [];
+        foreach ([...$labels, ...array_fill_keys(array_diff(array_keys($scene), ['title', 'goal', ...array_keys($labels)]), null)] as $key => $label) {
+            $value = $key === 'point_ids'
+                ? implode('、', array_map(fn (mixed $id): string => $numbers[(string) $id] ?? (string) $id, FieldDiff::listOf($scene[$key] ?? null)))
+                : (is_array($scene[$key] ?? null) ? implode('；', SettingVersionDiff::lines($scene[$key])) : FieldDiff::text($scene[$key] ?? null));
+            if (filled($value)) {
+                $rows[] = ['label' => $label ?? (string) $key, 'value' => $value];
+            }
+        }
+
+        return $rows;
+    }
+
     /** “版本与覆盖”弹窗数据：推进点结构化展示，场景规划版本按时间倒序并附预检结果。
-     * @return array{points: list<array<string, ?string>>, versions: list<array<string, mixed>>}
+     * @return array{points: list<array<string, ?string>>, versions: list<array<string, mixed>>, auto_scenes: list<array<string, mixed>>}
      */
     private function historyViewData(NovelOutlineChapter $record): array
     {
@@ -195,16 +223,7 @@ class ScenePlans extends Page implements HasTable
             $scenes = [];
             foreach (FieldDiff::listOf($version->scenes) as $scene) {
                 $scene = (array) $scene;
-                $rows = [];
-                foreach ([...self::SCENE_FIELDS, ...array_fill_keys(array_diff(array_keys($scene), ['title', ...array_keys(self::SCENE_FIELDS)]), null)] as $key => $label) {
-                    $value = $key === 'point_ids'
-                        ? implode('、', array_map(fn (mixed $id): string => $numbers[(string) $id] ?? (string) $id, FieldDiff::listOf($scene[$key] ?? null)))
-                        : (is_array($scene[$key] ?? null) ? implode('；', SettingVersionDiff::lines($scene[$key])) : FieldDiff::text($scene[$key] ?? null));
-                    if (filled($value)) {
-                        $rows[] = ['label' => $label ?? (string) $key, 'value' => $value];
-                    }
-                }
-                $scenes[] = ['title' => FieldDiff::text($scene['title'] ?? null), 'rows' => $rows];
+                $scenes[] = ['title' => FieldDiff::text($scene['title'] ?? null), 'rows' => $this->sceneRows($scene, self::SCENE_FIELDS, $numbers)];
             }
 
             return ['id' => $version->id, 'frozen' => $version->status === 'frozen', 'status' => $version->status === 'frozen' ? '已冻结' : '草稿',
@@ -212,7 +231,10 @@ class ScenePlans extends Page implements HasTable
                 'issues' => app(ScenePlanning::class)->issues($this->getRecord(), $record, $version->scenes), 'scenes' => $scenes];
         })->all();
 
-        return ['points' => $points, 'versions' => $versions];
+        $auto = $this->started($record) ? $this->autoScenes($record) : null;
+        $autoScenes = $auto === null ? [] : array_map(fn (array $scene): array => ['title' => FieldDiff::text($scene['goal'] ?? null), 'rows' => $this->sceneRows($scene, self::AUTO_SCENE_FIELDS, $numbers)], $auto);
+
+        return ['points' => $points, 'versions' => $versions, 'auto_scenes' => $autoScenes];
     }
 
     /** 按大纲章节读取最新编辑版本，不混入其他书或其他大纲。 */
@@ -230,15 +252,15 @@ class ScenePlans extends Page implements HasTable
      */
     private array $latestVersions = [];
 
-    /** 最新场景版本覆盖了本章多少个推进点。 */
+    /** 实际进入生成的场景覆盖了本章多少个推进点。 */
     private function coverage(NovelOutlineChapter $record): ?string
     {
-        $latest = $this->latest($record);
-        if ($latest === null) {
+        $scenes = $this->displayScenes($record);
+        if ($scenes === null) {
             return null;
         }
         $points = array_map('strval', array_column($record->progression_points, 'id'));
-        $covered = array_map('strval', array_merge([], ...array_map(fn (mixed $scene): array => (array) data_get($scene, 'point_ids', []), $latest->scenes)));
+        $covered = array_map('strval', array_merge([], ...array_map(fn (mixed $scene): array => (array) data_get($scene, 'point_ids', []), $scenes)));
 
         return count(array_intersect($points, array_unique($covered))).' / '.count($points);
     }
@@ -256,18 +278,59 @@ class ScenePlans extends Page implements HasTable
         return in_array((int) $record->chapter_number, $this->startedNumbers, true);
     }
 
-    /** 列表状态：说明场景规划是否会进入生成，已开始写作的章节另行标明只读。 */
+    /** 列表状态：说明场景规划是否会进入生成；已写作的章节标明实际按哪份场景写成。 */
     private function sceneStatus(NovelOutlineChapter $record): string
     {
-        $status = match ($this->latest($record)?->status) {
-            'frozen' => '已冻结',
-            'draft' => '草稿（未冻结，不进入生成）',
-            null => $this->started($record) ? '未使用' : '未规划（可选）',
-            default => (string) $this->latest($record)->status,
-        };
+        $status = $this->latest($record)?->status;
+        if (! $this->started($record)) {
+            return match ($status) {
+                'frozen' => '已冻结',
+                'draft' => '草稿（未冻结，不进入生成）',
+                null => '未规划（可选）',
+                default => (string) $status,
+            };
+        }
+        if ($status === 'frozen') {
+            return '已写作 · 按作者规划';
+        }
+        $auto = $this->autoScenes($record);
+        $used = $auto === null ? '未拆分场景' : '细纲自动拆分 '.count($auto).' 场';
 
-        return $this->started($record) ? '已开始写作 · '.$status : $status;
+        return $status === 'draft' ? '已写作 · '.$used.'（作者草稿未采用）' : '已写作 · '.$used;
     }
+
+    /** 作者冻结版本优先，其次是已写作章节的细纲自动场景，最后是作者草稿。
+     * @return list<mixed>|null
+     */
+    private function displayScenes(NovelOutlineChapter $record): ?array
+    {
+        $latest = $this->latest($record);
+        if ($latest?->status === 'frozen') {
+            return $latest->scenes;
+        }
+
+        return ($this->started($record) ? $this->autoScenes($record) : null) ?? $latest?->scenes;
+    }
+
+    /** 本章最近一次生成在细纲阶段自动拆分的场景；没有细纲时为 null。
+     * @return list<array<string, mixed>>|null
+     */
+    private function autoScenes(NovelOutlineChapter $record): ?array
+    {
+        if (! array_key_exists($record->id, $this->autoSceneCache)) {
+            $run = ChapterGenerationRun::where('outline_chapter_id', $record->id)->whereHas('chapter', fn (Builder $query): Builder => $query->where('novel_id', $this->getRecord()->id))
+                ->whereNotNull('plan_data')->latest('id')->first();
+            $scenes = $run === null ? [] : array_values(array_filter((array) data_get($run->plan_data, 'scenes', []), 'is_array'));
+            $this->autoSceneCache[$record->id] = $scenes === [] ? null : $scenes;
+        }
+
+        return $this->autoSceneCache[$record->id];
+    }
+
+    /** 同一次渲染内各列共用的细纲自动场景。
+     * @var array<int, list<array<string, mixed>>|null>
+     */
+    private array $autoSceneCache = [];
 
     /** 返回小说详情。 */
     protected function getHeaderActions(): array

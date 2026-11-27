@@ -323,6 +323,16 @@ final class ContentSchema
         return $data;
     }
 
+    /** 模型给的章名带"第N章"前缀时去掉前缀，与章纲标题一致；只有前缀时原样返回，由 body() 拒绝。 */
+    public static function chapterTitle(mixed $title): mixed
+    {
+        if (! is_string($title) || preg_match('/^\s*第\s*[0-9一二三四五六七八九十百千零〇]+\s*章[\s：:·、.\-—]*(\S.*)$/u', $title, $matches) !== 1) {
+            return $title;
+        }
+
+        return trim($matches[1]);
+    }
+
     /** 字数只计算正文可见非空白字符，排除约定 Markdown 格式标记。 */
     public static function count(string $body): int
     {

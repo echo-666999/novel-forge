@@ -76,8 +76,8 @@ final class OutlineRhythm
     public static function parse(mixed $value, array $rhythm, int $chapterNumber): array
     {
         $payoff = is_array($value) ? ($value['payoff'] ?? null) : null;
-        if (! is_array($value) || array_diff(array_keys($value), ['payoff', 'emotional_peak', 'hook_type']) !== [] || ! is_array($payoff)
-            || array_diff(array_keys($payoff), ['type', 'size', 'description']) !== []
+        // 节奏只是提醒：模型多给的无用字段直接丢掉，只校验需要的字段。
+        if (! is_array($value) || ! is_array($payoff)
             || ! in_array($payoff['type'] ?? null, [...$rhythm['payoff_types'], self::NONE], true)
             || ! array_key_exists($payoff['size'] ?? '', self::SIZES) || ! is_string($payoff['description'] ?? null)
             || ! is_string($value['emotional_peak'] ?? null) || ! array_key_exists($value['hook_type'] ?? '', self::HOOK_TYPES)) {

@@ -2,7 +2,9 @@
 
 namespace App\Filament\Resources\Novels\Schemas;
 
+use App\Services\Pipeline\OpeningBrief;
 use App\Services\Pipeline\SettingSchema;
+use App\Services\Pipeline\StoryFoundation;
 use Filament\Forms\Components\Checkbox;
 use Filament\Forms\Components\Hidden;
 use Filament\Forms\Components\Repeater;
@@ -48,6 +50,26 @@ final class SettingConfirmationForm
                 Textarea::make('setting.core_conflict')->label('核心矛盾')->required()->rows(3),
                 Repeater::make('setting.preserved_details')->label('必须保留的创意细节')->simple(Textarea::make('detail')->label('具体细节')->required()->rows(2))->minItems(1),
             ]),
+            // 冻结了故事根基的书才有以下两节；旧设定没有这些字段，不显示也不保存。
+            Section::make('主角处境与主线目标')->description('主角开篇时的身份、营生和日常安排，以及主线按先后要做成的几件事。大纲会让每一级目标有明确的达成或放弃章节；创意里互相打架的目标列在下方“待确认问题”里，请选定取舍。')
+                ->visible(fn (Get $get): bool => filled($get('setting.protagonist_situation')))->schema([
+                    Textarea::make('setting.protagonist_situation')->label('主角当前处境')->required()->rows(3),
+                    Repeater::make('setting.goal_ladder')->label('主线目标阶梯（按先后，'.StoryFoundation::MIN_GOALS.'–'.StoryFoundation::MAX_GOALS.'级）')->schema([
+                        Textarea::make('goal')->label('这一阶段要做成什么')->required()->rows(2),
+                        Textarea::make('done_when')->label('读者怎么看出它做成了')->required()->rows(2),
+                        Textarea::make('tradeoff')->label('为此放弃或付出什么')->required()->rows(2),
+                    ])->columns(3)->minItems(StoryFoundation::MIN_GOALS)->maxItems(StoryFoundation::MAX_GOALS),
+                ]),
+            Section::make('开篇交代（前三章）')->description('读者在前三章必须知道的背景：重生、穿越这类设定怎么来的、主角是谁、带着什么、想要什么。大纲和前三章正文会逐项安排，检查会记录是否写清楚。')
+                ->visible(fn (Get $get): bool => filled($get('setting.opening_brief.premise_hook')))->schema([
+                    Textarea::make('setting.opening_brief.premise_hook')->label('本书立足的设定')->required()->rows(2),
+                    Repeater::make('setting.opening_brief.items')->label('交代项（'.OpeningBrief::MIN_ITEMS.'–'.OpeningBrief::MAX_ITEMS.'项，第1章至少一项）')->schema([
+                        TextInput::make('topic')->label('交代什么')->required()->maxLength(255),
+                        Select::make('chapter')->label('安排在')->options(array_combine(range(1, OpeningBrief::LAST_CHAPTER), array_map(fn (int $n): string => '第'.$n.'章', range(1, OpeningBrief::LAST_CHAPTER))))->native(false)->required(),
+                        Textarea::make('content')->label('具体内容')->required()->rows(3)->columnSpanFull(),
+                        Textarea::make('technique')->label('建议写法')->required()->rows(2)->columnSpanFull(),
+                    ])->columns(2)->minItems(OpeningBrief::MIN_ITEMS)->maxItems(OpeningBrief::MAX_ITEMS),
+                ]),
             Repeater::make('answers')->label('来源待确认问题')->addable(false)->deletable(false)->reorderable(false)->schema([
                 Textarea::make('question')->label('问题')->disabled()->dehydrated(false)->rows(2),
                 Textarea::make('impact')->label('影响')->disabled()->dehydrated(false)->rows(2),

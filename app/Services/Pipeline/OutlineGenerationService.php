@@ -27,6 +27,15 @@ use Throwable;
 /** 固定范围大纲编排；沿用小说锁与次数额度，每批成功后才推进游标。 */
 final class OutlineGenerationService
 {
+    /** 带故事根基的新计划首批章数；之后每批10章。 */
+    public const FIRST_BATCH_SIZE = 5;
+
+    /** 全书大纲批次数：带故事根基的书首批5章，之后每批10章；其余每批10章。 */
+    public static function batchCount(int $chapters, bool $shortFirstBatch = true): int
+    {
+        return $shortFirstBatch ? 1 + (int) ceil(max(0, $chapters - self::FIRST_BATCH_SIZE) / 10) : max(1, (int) ceil($chapters / 10));
+    }
+
     /** 明确付费启动，输入只能引用同一本小说的有效确认版本。 */
     public function start(Novel $reference, int $confirmationId, User $author, ?string $modelOverride = null): NovelOutlinePlan
     {
@@ -56,7 +65,11 @@ final class OutlineGenerationService
                 'snapshot' => ['confirmation_hash' => $confirmation->content_hash, 'novel' => $novel->planningInput(), 'confirmed_setting' => $confirmation->setting, 'decisions' => $confirmation->decisions],
                 // 新计划冻结爽点节奏：每章标兑现点、情绪最高点与钩子类型，爽点类型取本书题材包。
                 'config' => [...$config, 'model' => $model, 'batch_size' => 10, 'prompt_version' => 'b03-outline-prompt-v1', 'enable_fine_outline' => data_get($novel->generation_config, 'enable_fine_outline'),
-                    'payoff_rhythm' => OutlineRhythm::config($novel->planningInput())],
+                    'payoff_rhythm' => OutlineRhythm::config($novel->planningInput()),
+                    // 新计划冻结自动登记伏笔：首批列出长程伏笔，接纳时登记进伏笔账本。
+                    'outline_foreshadows' => OutlineForeshadows::VERSION,
+                    // 带故事根基的书首批另要安排开篇交代、全书走向、节奏和伏笔，10章会超出8192输出上限，首批只排5章。
+                    ...(isset($confirmation->setting['opening_brief']) ? ['first_batch_size' => self::FIRST_BATCH_SIZE] : [])],
                 'next_chapter' => 1, 'status' => 'pending', 'invocation_id' => $token,
                 'control_history' => [$this->control('start', $author->id, $novel->max_execution_count, $novel->max_execution_count, '作者显式启动大纲')],
             ]);
@@ -157,7 +170,7 @@ final class OutlineGenerationService
             return null;
         }
         $start = $plan->next_chapter;
-        $end = min($start + 9, $plan->target_chapters);
+        $end = min($start + ($start === 1 ? (int) ($plan->config['first_batch_size'] ?? 10) : 10) - 1, $plan->target_chapters);
         $previous = $novel->stages()->where('stage', Stage::Outline->value)->where('status', StageStatus::Completed->value)->where('input->outline_plan_id', $plan->id)->latest('id')->first();
         if ($start > 1 && ($previous === null || PlanningJson::hash($plan->handoff) !== PlanningJson::hash(data_get($previous->output, 'data.handoff')))) {
             $this->reject('前批延续摘要与成功记录不一致。');
@@ -213,6 +226,10 @@ final class OutlineGenerationService
             $plan->handoff = $result->output['handoff'];
             if ($plan->roadmap === null) {
                 $plan->roadmap = $result->output['roadmap'];
+                // 首批伏笔登记进账本；登记结果写进本批输出，失败不影响大纲接纳。
+                if (OutlineForeshadows::frozen($plan->config) && isset($result->output['roadmap']['foreshadows'])) {
+                    $result = StageResult::completed([...$result->output, 'foreshadow_registration' => OutlineForeshadows::register($plan, $result->output['roadmap']['foreshadows'])], $result->cost);
+                }
             }
         }
         $stage->update(['status' => $result->succeeded ? StageStatus::Completed : StageStatus::Failed,
